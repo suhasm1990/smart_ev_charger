@@ -1,0 +1,167 @@
+import schedule
+import time
+import requests
+import signal
+import sys
+from datetime import datetime
+
+import config
+import state
+from logger import log, log_mode, log_netzero, log_chargepoint
+from api_netzero import get_powerwall_stats
+from api_chargepoint import start_charger, stop_charger, get_charger_status
+from tou import get_tou_period, get_tou_rate, is_in_night_blackout
+from manual_override import check_manual_mode
+from decision import evaluate
+from csv_logger import log_to_csv, get_session_minutes
+from notifications import notify
+
+def daily_reset():
+    log.info(
+        f"DAILY RESET | sessions_today={state.session_count_today} | "
+        f"grid_draw_events={state.grid_draw_count}"
+    )
+    state.session_count_today = 0
+    state.grid_draw_count     = 0
+
+def run_cycle():
+    now = datetime.now(config.TZ)
+
+    # Check manual override first — still fetch real stats for CSV
+    if check_manual_mode():
+        try:
+            stats = get_powerwall_stats()
+            tou   = get_tou_period(now)
+            log_mode.debug(
+                f"Manual mode | battery={stats['battery_pct']}% | "
+                f"solar={stats['solar_kw']}kW | grid={stats['grid_kw']}kW | tou={tou}"
+            )
+            if stats["grid_kw"] > 0.1:
+                log_mode.warning(
+                    f"GRID DRAW IN MANUAL MODE | grid={stats['grid_kw']}kW | "
+                    f"rate=${get_tou_rate(now)}/kWh | tou={tou}"
+                )
+            log_to_csv(stats, "manual", "Manual override active — automation paused", now)
+        except Exception as e:
+            log_mode.warning(f"Manual mode stats fetch failed: {e}")
+        return
+
+    try:
+        stats = get_powerwall_stats()
+        tou   = get_tou_period(now)
+
+        if stats["grid_kw"] > 0.1:
+            state.grid_draw_count += 1
+            log_netzero.warning(
+                f"GRID DRAW DETECTED | grid={stats['grid_kw']}kW | "
+                f"solar={stats['solar_kw']}kW | battery={stats['battery_pct']}% | "
+                f"tou={tou} | rate=${get_tou_rate(now)}/kWh | "
+                f"charger_state={state.charger_state}"
+            )
+
+        if stats.get("island_mode") == "off_grid":
+            log.warning(
+                f"OFF-GRID DETECTED | Skipping cycle | battery={stats['battery_pct']}%"
+            )
+            log_to_csv(stats, "skipped", "Powerwall off-grid — protecting home load", now)
+            return
+        if stats.get("storm_mode"):
+            log.warning(
+                f"STORM MODE ACTIVE | Skipping cycle | battery={stats['battery_pct']}%"
+            )
+            log_to_csv(stats, "skipped", "Storm mode active — preserving backup reserve", now)
+            return
+
+        action, reason = evaluate(stats, now)
+
+        log.info(
+            f"CYCLE | action={action} | state={state.charger_state} | tou={tou} | "
+            f"battery={stats['battery_pct']}% | solar={stats['solar_kw']}kW | "
+            f"surplus={stats['solar_surplus_kw']}kW | home={stats['home_kw']}kW | "
+            f"grid={stats['grid_kw']}kW | session={get_session_minutes():.0f}min | "
+            f"blackout={is_in_night_blackout(now)} | {reason}"
+        )
+
+        if action == "start":
+            start_charger()
+            log_chargepoint.info(
+                f"CHARGE STARTED | battery={stats['battery_pct']}% | "
+                f"solar={stats['solar_kw']}kW | tou={tou} | reason={reason}"
+            )
+            notify(
+                f"🟢 Charging started\n{reason}\n"
+                f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
+                f"TOU: {tou}"
+            )
+
+        elif action == "stop":
+            stop_charger()
+            log_chargepoint.info(
+                f"CHARGE STOPPED | battery={stats['battery_pct']}% | "
+                f"solar={stats['solar_kw']}kW | tou={tou} | reason={reason} | "
+                f"session_duration={get_session_minutes():.0f}min"
+            )
+            notify(
+                f"🔴 Charging stopped\n{reason}\n"
+                f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
+                f"Session: {get_session_minutes():.0f} min"
+            )
+
+        log_to_csv(stats, action, reason, now)
+
+    except requests.exceptions.HTTPError as e:
+        log.error(
+            f"NETZERO API ERROR | status={e.response.status_code if e.response else 'N/A'} | "
+            f"url={e.request.url if e.request else 'N/A'} | {e}"
+        )
+    except Exception as e:
+        log.error(f"CYCLE ERROR | {type(e).__name__}: {e}", exc_info=True)
+
+def handle_shutdown(signum, frame):
+    log.info("SHUTDOWN | Signal received — stopping gracefully")
+    if state.charger_state == state.State.CHARGING:
+        log.info("SHUTDOWN | Active session detected — stopping charger")
+        try:
+            stop_charger()
+        except Exception as e:
+            log.error(f"SHUTDOWN | Failed to stop charger: {e}")
+    sys.exit(0)
+
+def main():
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT,  handle_shutdown)
+
+    log.info("=" * 70)
+    log.info("STARTUP | Smart EV Charger")
+    log.info(f"STARTUP | Battery thresholds: start={config.BATTERY_START_PCT}% | "
+             f"stop={config.BATTERY_STOP_PCT}% | resume={config.BATTERY_RESUME_PCT}%")
+    log.info(f"STARTUP | Solar thresholds: start={config.SOLAR_START_KW}kW | stop={config.SOLAR_STOP_KW}kW")
+    log.info(f"STARTUP | Night blackout: {config.NIGHT_BLACKOUT_START_HOUR}:00–{config.NIGHT_BLACKOUT_END_HOUR}:00")
+    log.info(f"STARTUP | Peak surplus threshold: {config.PEAK_MIN_SOLAR_SURPLUS_KW}kW")
+    log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_SECONDS}s")
+    log.info(f"STARTUP | Manual override: Google Sheet A1 = 'manual' or 'auto'")
+    log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
+    log.info("=" * 70)
+
+    try:
+        s = get_charger_status()
+        log_chargepoint.info(
+            f"STARTUP CHECK | status={s['charging_status']} | "
+            f"plugged_in={s['is_plugged_in']} | "
+            f"connected={s['is_connected']} | "
+            f"amperage={s['amperage_limit']}A"
+        )
+    except Exception as e:
+        log_chargepoint.warning(f"STARTUP CHECK FAILED | {e} — will retry on first cycle")
+
+    schedule.every().day.at("00:00").do(daily_reset)
+
+    run_cycle()
+    schedule.every(config.CHECK_INTERVAL_SECONDS).seconds.do(run_cycle)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()

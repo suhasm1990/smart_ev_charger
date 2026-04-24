@@ -1,0 +1,10 @@
+version: "3.8"
+services:
+  ev-charger:
+    build: .
+    container_name: smart_ev_charger
+    restart: unless-stopped
+    environment:
+      - TZ=America/Los_Angeles
+    volumes:
+      - ./logs:/app/logs
