@@ -9,7 +9,7 @@ NETZERO_BASE_URL  = "https://api.netzero.energy/api/v1"
 # ChargePoint
 CHARGEPOINT_USERNAME      = "suhasmallesh"
 CHARGEPOINT_COULOMB_TOKEN = "94803ef08378b01e91c20cf34b7f42bb%23D3d08877"
-CHARGEPOINT_DEVICE_ID     = 232941152984
+CHARGEPOINT_DEVICE_ID     = 17495831
 
 # Pushover notifications (optional — leave blank to disable)
 PUSHOVER_USER_KEY  = ""

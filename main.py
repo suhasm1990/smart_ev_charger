@@ -48,6 +48,12 @@ def run_cycle():
 
     try:
         stats = get_powerwall_stats()
+        try:
+            cp_status = get_charger_status()
+            stats["is_plugged_in"] = cp_status["is_plugged_in"]
+        except Exception as e:
+            log_chargepoint.warning(f"Failed to get charger status: {e} | Skipping cycle")
+            return
         tou   = get_tou_period(now)
 
         if stats["grid_kw"] > 0.1:

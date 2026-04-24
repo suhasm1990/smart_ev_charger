@@ -43,6 +43,13 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
             return "stop", state.session_stop_reason
         return "blackout", f"Night blackout window — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00 AM"
 
+    # ── Hard stop: unplugged ────────────────────────────────────────────
+    if not stats.get("is_plugged_in", True) and state.charger_state == state.State.CHARGING:
+        state.charger_state       = state.State.IDLE
+        state.session_stop_reason = "Car was unplugged"
+        log_decision.info(f"STOP | Unplugged | battery={battery_pct}%")
+        return "stop", state.session_stop_reason
+
     # ── Hard stop: battery too low ────────────────────────────────────────────
     if battery_pct < config.BATTERY_STOP_PCT and state.charger_state == state.State.CHARGING:
         if min_charge_time_met():
@@ -116,6 +123,8 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
 
     # ── IDLE: check if we should start ───────────────────────────────────────
     if state.charger_state == state.State.IDLE:
+        if not stats.get("is_plugged_in", True):
+            return "hold", f"Idle: Car is not plugged in (battery={battery_pct}%, solar={solar_kw}kW)"
 
         # Weekend — relaxed thresholds, no TOU risk
         if weekend:
