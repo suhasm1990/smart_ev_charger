@@ -1,5 +1,6 @@
 import csv
 import os
+import requests
 from datetime import datetime
 
 import state
@@ -70,6 +71,16 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         if not file_exists:
             writer.writerow(CSV_HEADERS)
         writer.writerow(row)
+
+    if hasattr(config, "GOOGLE_SHEET_WEBHOOK_URL") and config.GOOGLE_SHEET_WEBHOOK_URL:
+        try:
+            requests.post(
+                config.GOOGLE_SHEET_WEBHOOK_URL,
+                json={"row": row},
+                timeout=5
+            )
+        except Exception as e:
+            log_csv.warning(f"Failed to push log to Google Sheets: {e}")
 
     if est_cost > 0:
         log_csv.debug(

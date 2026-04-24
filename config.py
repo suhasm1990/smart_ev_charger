@@ -44,6 +44,7 @@ CAR_CHARGE_KW = 3.6
 CHECK_INTERVAL_SECONDS = 300
 
 CONTROL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-1aZkpT5xoVXy_TyebXZx0mOe9DdsxZ_jYA7ctYqO8w/export?format=csv&gid=0"
+GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwtWaUPwN9KqqppQYOI95GEDIfi0yBXJvQVQMqKbBSTKPHssezEgBp9WcSBXVw7lHuv/exec"
 
 CSV_LOG_FILE  = "logs/charger_log.csv"
 TEXT_LOG_FILE = "logs/charger.log"
