@@ -1,10 +1,11 @@
 import asyncio
+import config
 from python_chargepoint import ChargePoint, client, session
 
 async def main():
     client = await ChargePoint.create(
-    username="suhasmallesh",
-    coulomb_token="94803ef08378b01e91c20cf34b7f42bb%23D3d08877",
+    username=config.CHARGEPOINT_USERNAME,
+    coulomb_token=config.CHARGEPOINT_COULOMB_TOKEN,
     )
     
     charger_ids = await client.get_home_chargers()
@@ -19,8 +20,8 @@ async def main():
     tech = await client.get_home_charger_technical_info(charger_id)
     print("Home Charger Technical Info:", tech)
 
-    config = await client.get_home_charger_config(charger_id)
-    print("Home Charger Config:", config)
+    charger_config = await client.get_home_charger_config(charger_id)
+    print("Home Charger Config:", charger_config)
 
     # print(status.possible_amperage_limits)
 
@@ -37,12 +38,12 @@ async def main():
         print(session.miles_added)     # 22.3
 
         # Stop the current session
-        session = await client.get_charging_session(status.session_id)
-        await session.stop()
+        # session = await client.get_charging_session(status.session_id)
+        # await session.stop()
 
     # Start a new session on any device
-    new_session = await client.start_charging_session(device_id=charger_id)
-    print(new_session.session_id)
+    # new_session = await client.start_charging_session(device_id=charger_id)
+    # print(new_session.session_id)
 
     await client.close()
 

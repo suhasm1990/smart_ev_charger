@@ -139,11 +139,7 @@ def main():
 
     log.info("=" * 70)
     log.info("STARTUP | Smart EV Charger")
-    log.info(f"STARTUP | Battery thresholds: start={config.BATTERY_START_PCT}% | "
-             f"stop={config.BATTERY_STOP_PCT}% | resume={config.BATTERY_RESUME_PCT}%")
-    log.info(f"STARTUP | Solar thresholds: start={config.SOLAR_START_KW}kW | stop={config.SOLAR_STOP_KW}kW")
-    log.info(f"STARTUP | Night blackout: {config.NIGHT_BLACKOUT_START_HOUR}:00–{config.NIGHT_BLACKOUT_END_HOUR}:00")
-    log.info(f"STARTUP | Peak surplus threshold: {config.PEAK_MIN_SOLAR_SURPLUS_KW}kW")
+    log.info(f"STARTUP | Thresholds: start={config.BATTERY_START_PCT}% | stop={config.BATTERY_STOP_PCT}%")
     log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_SECONDS}s")
     log.info(f"STARTUP | Manual override: Google Sheet A1 = 'manual' or 'auto'")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")

@@ -26,3 +26,4 @@ logs/
 *.tar
 *.gz
 *.zip
+.env

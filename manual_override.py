@@ -8,16 +8,16 @@ from notifications import notify
 def check_manual_mode() -> bool:
     now = datetime.now(config.TZ)
 
-    # Auto-reset manual mode at SOLAR_START_HOUR each morning
+    # Auto-reset manual mode at NIGHT_BLACKOUT_END_HOUR each morning
     if state.manual_mode and state.manual_mode_set_at:
         reset_time = state.manual_mode_set_at.replace(
-            hour=config.SOLAR_START_HOUR, minute=0, second=0, microsecond=0
+            hour=config.NIGHT_BLACKOUT_END_HOUR, minute=0, second=0, microsecond=0
         )
-        if state.manual_mode_set_at.hour >= config.SOLAR_START_HOUR:
+        if state.manual_mode_set_at.hour >= config.NIGHT_BLACKOUT_END_HOUR:
             reset_time += timedelta(days=1)
         if now >= reset_time:
             log_mode.info(
-                f"MANUAL→AUTO | Auto-reset at {config.SOLAR_START_HOUR}:00 "
+                f"MANUAL→AUTO | Auto-reset at {config.NIGHT_BLACKOUT_END_HOUR}:00 "
                 f"(was set at {state.manual_mode_set_at.strftime('%H:%M')})"
             )
             state.manual_mode        = False
@@ -43,9 +43,9 @@ def check_manual_mode() -> bool:
         state.manual_mode_set_at = now
         log_mode.warning(
             f"MANUAL MODE ACTIVATED | Automation paused | "
-            f"Will auto-resume at {config.SOLAR_START_HOUR}:00"
+            f"Will auto-resume at {config.NIGHT_BLACKOUT_END_HOUR}:00"
         )
-        notify(f"⚙️ Manual mode ON — automation paused until {config.SOLAR_START_HOUR}:00 AM")
+        notify(f"⚙️ Manual mode ON — automation paused until {config.NIGHT_BLACKOUT_END_HOUR}:00 AM")
 
     elif not new_manual and state.prev_manual_mode:
         state.manual_mode        = False

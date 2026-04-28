@@ -1,50 +1,41 @@
+import os
 from datetime import date
 from zoneinfo import ZoneInfo
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if present
+load_dotenv()
 
 # NetZero Energy API
-NETZERO_SITE_ID   = "2252365359032855"
-NETZERO_API_TOKEN = "wy0G8DiEdSlAv7Zi9BDtao1lWcPNTCUTGZ67ISZm"
+NETZERO_SITE_ID   = os.getenv("NETZERO_SITE_ID", "")
+NETZERO_API_TOKEN = os.getenv("NETZERO_API_TOKEN", "")
 NETZERO_BASE_URL  = "https://api.netzero.energy/api/v1"
 
 # ChargePoint
-CHARGEPOINT_USERNAME      = "suhasmallesh"
-CHARGEPOINT_COULOMB_TOKEN = "94803ef08378b01e91c20cf34b7f42bb%23D3d08877"
-CHARGEPOINT_DEVICE_ID     = 17495831
+CHARGEPOINT_USERNAME      = os.getenv("CHARGEPOINT_USERNAME", "")
+CHARGEPOINT_COULOMB_TOKEN = os.getenv("CHARGEPOINT_COULOMB_TOKEN", "")
+CHARGEPOINT_DEVICE_ID     = int(os.getenv("CHARGEPOINT_DEVICE_ID", "0"))
 
 # Pushover notifications (optional — leave blank to disable)
-PUSHOVER_USER_KEY  = ""
-PUSHOVER_API_TOKEN = ""
+PUSHOVER_USER_KEY  = os.getenv("PUSHOVER_USER_KEY", "")
+PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN", "")
 
 # Timezone
-TZ = ZoneInfo("America/Los_Angeles")
+TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))
+
+# Google Sheet Webhook
+GOOGLE_SHEET_WEBHOOK_URL = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "")
+CONTROL_SHEET_URL = os.getenv("CONTROL_SHEET_URL", "")
 
 # Thresholds
-BATTERY_START_PCT       = 60
-BATTERY_STOP_PCT        = 25
-BATTERY_RESUME_PCT      = 60
-SOLAR_START_KW          = 2.0
-SOLAR_STOP_KW           = 1.0
+BATTERY_START_PCT       = float(os.getenv("BATTERY_START_PCT", "40"))
+BATTERY_STOP_PCT        = float(os.getenv("BATTERY_STOP_PCT", "25"))
+NIGHT_BLACKOUT_START_HOUR = int(os.getenv("NIGHT_BLACKOUT_START_HOUR", "16"))
+NIGHT_BLACKOUT_END_HOUR   = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
 
-PEAK_MIN_SOLAR_SURPLUS_KW     = 3.0
-PEAK_BATTERY_COVER_SURPLUS_KW = 2.0
-PEAK_BATTERY_MIN_PCT          = 50
+MIN_CHARGE_MINUTES = int(os.getenv("MIN_CHARGE_MINUTES", "30"))
 
-WEEKEND_BATTERY_START_PCT = 40
-
-SOLAR_START_HOUR          = 9
-MORNING_CHARGE_START_HOUR = 6
-MORNING_CHARGE_END_HOUR   = 13
-
-NIGHT_BLACKOUT_START_HOUR = 16
-NIGHT_BLACKOUT_END_HOUR   = 9
-
-MIN_CHARGE_MINUTES = 30
-CAR_CHARGE_KW = 3.6
-
-CHECK_INTERVAL_SECONDS = 300
-
-CONTROL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-1aZkpT5xoVXy_TyebXZx0mOe9DdsxZ_jYA7ctYqO8w/export?format=csv&gid=0"
-GOOGLE_SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwtWaUPwN9KqqppQYOI95GEDIfi0yBXJvQVQMqKbBSTKPHssezEgBp9WcSBXVw7lHuv/exec"
+CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))
 
 CSV_LOG_FILE  = "logs/charger_log.csv"
 TEXT_LOG_FILE = "logs/charger.log"

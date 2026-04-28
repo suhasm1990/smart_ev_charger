@@ -4,7 +4,7 @@ services:
     build: .
     container_name: smart_ev_charger
     restart: unless-stopped
-    environment:
-      - TZ=America/Los_Angeles
+    env_file:
+      - .env
     volumes:
       - ./logs:/app/logs

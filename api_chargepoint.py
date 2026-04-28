@@ -15,6 +15,11 @@ async def start_charger_async():
     try:
         session = await client.start_charging_session(device_id=config.CHARGEPOINT_DEVICE_ID)
         log_chargepoint.info(f"Session STARTED | session_id={session.session_id}")
+    except Exception as e:
+        if "ValidationError" in str(type(e)):
+            log_chargepoint.warning("Session started, but ChargePoint returned empty status right away (eventual consistency bug in library). Ignoring.")
+        else:
+            raise
     finally:
         await client.close()
 
