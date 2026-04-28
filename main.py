@@ -10,7 +10,7 @@ import state
 from logger import log, log_mode, log_netzero, log_chargepoint
 from api_netzero import get_powerwall_stats
 from api_chargepoint import start_charger, stop_charger, get_charger_status
-from tou import get_tou_period, get_tou_rate, is_in_night_blackout
+from tou import get_tou_period, get_tou_rate, is_in_night_blackout, is_weekend
 from manual_override import check_manual_mode
 from decision import evaluate
 from csv_logger import log_to_csv, get_session_minutes
@@ -48,13 +48,34 @@ def run_cycle():
 
     try:
         stats = get_powerwall_stats()
+        battery_pct = stats["battery_pct"]
+        tou = get_tou_period(now)
+
+        # ── Pre-filter: Skip ChargePoint API call if no action is possible ─────
+        # Condition 1: Weekday blackout window — charging is always blocked
+        in_blackout = is_in_night_blackout(now) and not is_weekend(now)
+        # Condition 2: Charger is idle and battery is below the start threshold
+        idle_and_low = (state.charger_state != state.State.CHARGING
+                        and battery_pct < config.BATTERY_START_PCT)
+
+        if in_blackout or idle_and_low:
+            skip_reason = (
+                f"Night blackout — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00"
+                if in_blackout
+                else f"Idle, battery {battery_pct}% < {config.BATTERY_START_PCT}% start threshold"
+            )
+            log.debug(f"SKIP CP CALL | {skip_reason}")
+            log_to_csv(stats, "hold", skip_reason, now)
+            return
+        # ─────────────────────────────────────────────────────────────────────
+
         try:
             cp_status = get_charger_status()
             stats["is_plugged_in"] = cp_status["is_plugged_in"]
         except Exception as e:
             log_chargepoint.warning(f"Failed to get charger status: {e} | Skipping cycle")
             return
-        tou   = get_tou_period(now)
+
 
         if stats["grid_kw"] > 0.1:
             state.grid_draw_count += 1

@@ -35,7 +35,7 @@ NIGHT_BLACKOUT_END_HOUR   = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
 
 MIN_CHARGE_MINUTES = int(os.getenv("MIN_CHARGE_MINUTES", "30"))
 
-CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "300"))
+CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "900"))
 
 CSV_LOG_FILE  = "logs/charger_log.csv"
 TEXT_LOG_FILE = "logs/charger.log"
