@@ -52,21 +52,25 @@ def run_cycle():
         tou = get_tou_period(now)
 
         # ── Pre-filter: Skip ChargePoint API call if no action is possible ─────
-        # Condition 1: Weekday blackout window — charging is always blocked
-        in_blackout = is_in_night_blackout(now) and not is_weekend(now)
-        # Condition 2: Charger is idle and battery is below the start threshold
-        idle_and_low = (state.charger_state != state.State.CHARGING
-                        and battery_pct < config.BATTERY_START_PCT)
+        # IMPORTANT: Never skip if a charging session is currently active —
+        # the full cycle must run so evaluate() can send a stop command if needed.
+        currently_charging = state.charger_state == state.State.CHARGING
 
-        if in_blackout or idle_and_low:
-            skip_reason = (
-                f"Night blackout — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00"
-                if in_blackout
-                else f"Idle, battery {battery_pct}% < {config.BATTERY_START_PCT}% start threshold"
-            )
-            log.debug(f"SKIP CP CALL | {skip_reason}")
-            log_to_csv(stats, "hold", skip_reason, now)
-            return
+        if not currently_charging:
+            # Condition 1: Weekday blackout window — charging cannot start
+            in_blackout = is_in_night_blackout(now) and not is_weekend(now)
+            # Condition 2: Charger is idle and battery is below the start threshold
+            idle_and_low = battery_pct < config.BATTERY_START_PCT
+
+            if in_blackout or idle_and_low:
+                skip_reason = (
+                    f"Night blackout — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00"
+                    if in_blackout
+                    else f"Idle, battery {battery_pct}% < {config.BATTERY_START_PCT}% start threshold"
+                )
+                log.debug(f"SKIP CP CALL | {skip_reason}")
+                log_to_csv(stats, "hold", skip_reason, now)
+                return
         # ─────────────────────────────────────────────────────────────────────
 
         try:
@@ -90,12 +94,22 @@ def run_cycle():
             log.warning(
                 f"OFF-GRID DETECTED | Skipping cycle | battery={stats['battery_pct']}%"
             )
+            if state.charger_state == state.State.CHARGING:
+                log.warning("OFF-GRID | Active session detected — stopping charger to protect home load")
+                stop_charger()
+                state.charger_state       = state.State.IDLE
+                state.session_stop_reason = "Powerwall went off-grid — stopping to protect home"
             log_to_csv(stats, "skipped", "Powerwall off-grid — protecting home load", now)
             return
         if stats.get("storm_mode"):
             log.warning(
                 f"STORM MODE ACTIVE | Skipping cycle | battery={stats['battery_pct']}%"
             )
+            if state.charger_state == state.State.CHARGING:
+                log.warning("STORM MODE | Active session detected — stopping charger to preserve backup reserve")
+                stop_charger()
+                state.charger_state       = state.State.IDLE
+                state.session_stop_reason = "Storm mode activated — stopping to preserve backup reserve"
             log_to_csv(stats, "skipped", "Storm mode active — preserving backup reserve", now)
             return
 
