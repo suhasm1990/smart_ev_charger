@@ -16,6 +16,7 @@ Thumbs.db
 venv/
 env/
 ENV/
+.venv/
 
 # IDEs
 .idea/

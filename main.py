@@ -51,31 +51,22 @@ def run_cycle():
         battery_pct = stats["battery_pct"]
         tou = get_tou_period(now)
 
-        # ── Pre-filter: Skip ChargePoint API call if no action is possible ─────
-        # IMPORTANT: Never skip if a charging session is currently active —
-        # the full cycle must run so evaluate() can send a stop command if needed.
-        currently_charging = state.charger_state == state.State.CHARGING
-
-        if not currently_charging:
-            # Condition 1: Weekday blackout window — charging cannot start
-            in_blackout = is_in_night_blackout(now) and not is_weekend(now)
-            # Condition 2: Charger is idle and battery is below the start threshold
-            idle_and_low = battery_pct < config.BATTERY_START_PCT
-
-            if in_blackout or idle_and_low:
-                skip_reason = (
-                    f"Night blackout — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00"
-                    if in_blackout
-                    else f"Idle, battery {battery_pct}% < {config.BATTERY_START_PCT}% start threshold"
-                )
-                log.debug(f"SKIP CP CALL | {skip_reason}")
-                log_to_csv(stats, "hold", skip_reason, now)
-                return
-        # ─────────────────────────────────────────────────────────────────────
-
         try:
             cp_status = get_charger_status()
             stats["is_plugged_in"] = cp_status["is_plugged_in"]
+            
+            # Sync internal state with physical reality
+            physical_charging = (cp_status["charging_status"] == "CHARGING")
+            internal_charging = (state.charger_state == state.State.CHARGING)
+            
+            if physical_charging and not internal_charging:
+                log.info("SYNC | Charger is physically charging but internal state was IDLE. Synchronizing state.")
+                state.charger_state = state.State.CHARGING
+                state.charge_session_start = now
+            elif not physical_charging and internal_charging:
+                log.info("SYNC | Charger is physically NOT charging but internal state was CHARGING. Synchronizing state.")
+                state.charger_state = state.State.IDLE
+                
         except Exception as e:
             log_chargepoint.warning(f"Failed to get charger status: {e} | Skipping cycle")
             return
@@ -159,13 +150,7 @@ def run_cycle():
         log.error(f"CYCLE ERROR | {type(e).__name__}: {e}", exc_info=True)
 
 def handle_shutdown(signum, frame):
-    log.info("SHUTDOWN | Signal received — stopping gracefully")
-    if state.charger_state == state.State.CHARGING:
-        log.info("SHUTDOWN | Active session detected — stopping charger")
-        try:
-            stop_charger()
-        except Exception as e:
-            log.error(f"SHUTDOWN | Failed to stop charger: {e}")
+    log.info("SHUTDOWN | Signal received — shutting down without altering charger state")
     sys.exit(0)
 
 def main():
@@ -175,7 +160,7 @@ def main():
     log.info("=" * 70)
     log.info("STARTUP | Smart EV Charger")
     log.info(f"STARTUP | Thresholds: start={config.BATTERY_START_PCT}% | stop={config.BATTERY_STOP_PCT}%")
-    log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_SECONDS}s")
+    log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_MINUTES}min")
     log.info(f"STARTUP | Manual override: Google Sheet A1 = 'manual' or 'auto'")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
     log.info("=" * 70)
@@ -188,13 +173,19 @@ def main():
             f"connected={s['is_connected']} | "
             f"amperage={s['amperage_limit']}A"
         )
+        if s["charging_status"] == "CHARGING":
+            log.info("STARTUP SYNC | Adopting active charging session.")
+            state.charger_state = state.State.CHARGING
+            state.charge_session_start = datetime.now(config.TZ)
+        else:
+            state.charger_state = state.State.IDLE
     except Exception as e:
         log_chargepoint.warning(f"STARTUP CHECK FAILED | {e} — will retry on first cycle")
 
     schedule.every().day.at("00:00").do(daily_reset)
 
     run_cycle()
-    schedule.every(config.CHECK_INTERVAL_SECONDS).seconds.do(run_cycle)
+    schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(run_cycle)
 
     while True:
         schedule.run_pending()
