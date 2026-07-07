@@ -35,6 +35,7 @@ async def stop_charger_async():
             log_chargepoint.warning("No active session found to stop")
     except Exception as e:
         log_chargepoint.warning(f"Stop failed: {e}")
+        raise
     finally:
         await client.close()
 

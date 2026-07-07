@@ -115,29 +115,38 @@ def run_cycle():
         )
 
         if action == "start":
-            start_charger()
-            log_chargepoint.info(
-                f"CHARGE STARTED | battery={stats['battery_pct']}% | "
-                f"solar={stats['solar_kw']}kW | tou={tou} | reason={reason}"
-            )
-            notify(
-                f"🟢 Charging started\n{reason}\n"
-                f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
-                f"TOU: {tou}"
-            )
+            try:
+                start_charger()
+                log_chargepoint.info(
+                    f"CHARGE STARTED | battery={stats['battery_pct']}% | "
+                    f"solar={stats['solar_kw']}kW | tou={tou} | reason={reason}"
+                )
+                notify(
+                    f"🟢 Charging started\n{reason}\n"
+                    f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
+                    f"TOU: {tou}"
+                )
+            except Exception as e:
+                state.charger_state = state.State.IDLE
+                state.charge_session_start = None
+                raise
 
         elif action == "stop":
-            stop_charger()
-            log_chargepoint.info(
-                f"CHARGE STOPPED | battery={stats['battery_pct']}% | "
-                f"solar={stats['solar_kw']}kW | tou={tou} | reason={reason} | "
-                f"session_duration={get_session_minutes():.0f}min"
-            )
-            notify(
-                f"🔴 Charging stopped\n{reason}\n"
-                f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
-                f"Session: {get_session_minutes():.0f} min"
-            )
+            try:
+                stop_charger()
+                log_chargepoint.info(
+                    f"CHARGE STOPPED | battery={stats['battery_pct']}% | "
+                    f"solar={stats['solar_kw']}kW | tou={tou} | reason={reason} | "
+                    f"session_duration={get_session_minutes():.0f}min"
+                )
+                notify(
+                    f"🔴 Charging stopped\n{reason}\n"
+                    f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
+                    f"Session: {get_session_minutes():.0f} min"
+                )
+            except Exception as e:
+                state.charger_state = state.State.CHARGING
+                raise
 
         log_to_csv(stats, action, reason, now)
 
