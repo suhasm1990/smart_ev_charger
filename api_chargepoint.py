@@ -43,8 +43,13 @@ async def get_charger_status_async() -> dict:
     client = await get_cp_client()
     try:
         s = await client.get_home_charger_status(config.CHARGEPOINT_DEVICE_ID)
+        
+        # Fallback check: query active session status to bypass ChargePoint API synchronization lag
+        user_status = await client.get_user_charging_status()
+        is_charging = (s.charging_status == "CHARGING") or (user_status is not None)
+        
         return {
-            "charging_status": s.charging_status,
+            "charging_status": "CHARGING" if is_charging else s.charging_status,
             "is_plugged_in":   s.is_plugged_in,
             "is_connected":    s.is_connected,
             "amperage_limit":  s.amperage_limit,
