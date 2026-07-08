@@ -24,20 +24,34 @@ async def start_charger_async():
         await client.close()
 
 async def stop_charger_async():
-    client = await get_cp_client()
-    try:
-        status = await client.get_user_charging_status()
-        if status:
-            session = await client.get_charging_session(status.session_id)
-            await session.stop()
-            log_chargepoint.info(f"Session STOPPED via lookup | session_id={status.session_id}")
-        else:
-            log_chargepoint.warning("No active session found to stop")
-    except Exception as e:
-        log_chargepoint.warning(f"Stop failed: {e}")
-        raise
-    finally:
-        await client.close()
+    max_retries = 3
+    retry_delay_seconds = 60
+    
+    for attempt in range(1, max_retries + 1):
+        client = None
+        try:
+            client = await get_cp_client()
+            status = await client.get_user_charging_status()
+            if status:
+                session = await client.get_charging_session(status.session_id)
+                await session.stop()
+                log_chargepoint.info(f"Session STOPPED via lookup | session_id={status.session_id}")
+                return
+            else:
+                log_chargepoint.warning("No active session found to stop")
+                return
+        except Exception as e:
+            log_chargepoint.warning(f"Stop attempt {attempt}/{max_retries} failed: {e}")
+            if attempt < max_retries:
+                if client:
+                    await client.close()
+                log_chargepoint.info(f"Waiting {retry_delay_seconds}s before retrying stop...")
+                await asyncio.sleep(retry_delay_seconds)
+            else:
+                raise
+        finally:
+            if client:
+                await client.close()
 
 async def get_charger_status_async() -> dict:
     client = await get_cp_client()
