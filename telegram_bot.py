@@ -198,7 +198,7 @@ def handle_message_with_gemini(text: str) -> str:
     
     # Generate content with tools enabled. The SDK will automatically handle function calling (AFC).
     response = client.models.generate_content(
-        model='gemini-1.5-flash',
+        model='gemini-flash-latest',
         contents=text,
         config=types.GenerateContentConfig(
             system_instruction=(
