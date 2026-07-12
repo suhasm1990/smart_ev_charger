@@ -24,7 +24,16 @@ def daily_reset():
     state.session_count_today = 0
     state.grid_draw_count     = 0
 
+import threading
+
+cycle_lock = threading.Lock()
+
+def run_cycle_safe():
+    with cycle_lock:
+        run_cycle()
+
 def run_cycle():
+    config.load_dynamic_config()
     now = datetime.now(config.TZ)
 
     # Check manual override first — still fetch real stats for CSV
@@ -193,8 +202,13 @@ def main():
 
     schedule.every().day.at("00:00").do(daily_reset)
 
-    run_cycle()
-    schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(run_cycle)
+    # Start Telegram Bot if configured
+    if config.TELEGRAM_BOT_TOKEN:
+        import telegram_bot
+        telegram_bot.start_telegram_bot(run_cycle_safe)
+
+    run_cycle_safe()
+    schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(run_cycle_safe)
 
     while True:
         schedule.run_pending()

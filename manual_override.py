@@ -22,20 +22,32 @@ def check_manual_mode() -> bool:
             )
             state.manual_mode        = False
             state.manual_mode_set_at = None
+            if config.MANUAL_MODE_OVERRIDE == "manual":
+                config.MANUAL_MODE_OVERRIDE = "default"
+                config.save_dynamic_config()
 
-    # Read A1 from Google Sheet
-    try:
-        r    = requests.get(config.CONTROL_SHEET_URL, timeout=10)
-        r.raise_for_status()
-        mode = r.text.strip().split("\n")[0].strip().lower()
-        log_mode.debug(f"Sheet value: '{mode}'")
-    except Exception as e:
-        log_mode.warning(
-            f"Could not read control sheet: {e} — keeping current mode ({('manual' if state.manual_mode else 'auto')})"
-        )
-        return state.manual_mode
+    # Load dynamic configs first to ensure we check local override
+    config.load_dynamic_config()
 
-    new_manual = mode == "manual"
+    if config.MANUAL_MODE_OVERRIDE == "manual":
+        new_manual = True
+        log_mode.debug("Local override active: manual mode forced")
+    elif config.MANUAL_MODE_OVERRIDE == "auto":
+        new_manual = False
+        log_mode.debug("Local override active: auto mode forced")
+    else:
+        # Fallback to Google Sheet
+        try:
+            r    = requests.get(config.CONTROL_SHEET_URL, timeout=10)
+            r.raise_for_status()
+            mode = r.text.strip().split("\n")[0].strip().lower()
+            log_mode.debug(f"Sheet value: '{mode}'")
+            new_manual = mode == "manual"
+        except Exception as e:
+            log_mode.warning(
+                f"Could not read control sheet: {e} — keeping current mode ({('manual' if state.manual_mode else 'auto')})"
+            )
+            return state.manual_mode
 
     # Log transitions only
     if new_manual and not state.prev_manual_mode:

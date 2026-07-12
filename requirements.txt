@@ -2,3 +2,5 @@ requests
 schedule
 python-chargepoint
 python-dotenv
+google-genai
+pyTelegramBotAPI
