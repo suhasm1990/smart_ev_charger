@@ -37,6 +37,7 @@ if TELEGRAM_ALLOWED_USER_ID:
     except ValueError:
         pass
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
 # Path for dynamic configuration file
 DYNAMIC_CONFIG_FILE = "logs/config_dynamic.json"

@@ -1,5 +1,5 @@
 # Project-Scoped Rules
 
 ## Git Constraints
-- Do NOT push code automatically to GitHub.
-- Commit changes locally and let the user review and push them manually.
+- Do NOT perform any git operations (e.g., git add, git commit, git push, etc.).
+- Leave all version control operations completely to the user.

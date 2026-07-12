@@ -178,6 +178,7 @@ def stop_charging() -> str:
 
 # ── 2. Gemini Response Handler ──────────────────────────────────────────────
 
+gemini_client = None
 gemini_chat = None
 
 def handle_message_with_gemini(text: str) -> str:
@@ -185,7 +186,7 @@ def handle_message_with_gemini(text: str) -> str:
     if not config.GEMINI_API_KEY:
         return "Gemini API key is not configured. Please add GEMINI_API_KEY to your env variables."
         
-    global gemini_chat
+    global gemini_client, gemini_chat
     
     # Allow manual conversation history reset
     if text.strip().lower() in ["/clear", "/reset"]:
@@ -193,7 +194,8 @@ def handle_message_with_gemini(text: str) -> str:
         log.info("DEBUG: Gemini chat session cleared.")
         return "Conversation history cleared."
         
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    if gemini_client is None:
+        gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
     
     tools = [
         get_system_status,
@@ -208,15 +210,17 @@ def handle_message_with_gemini(text: str) -> str:
     
     if gemini_chat is None:
         log.info("DEBUG: Initializing new Gemini chat session.")
-        gemini_chat = client.chats.create(
-            model='gemini-flash-latest',
+        gemini_chat = gemini_client.chats.create(
+            model=config.GEMINI_MODEL,
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "You are an AI assistant for a Smart EV Charger. "
                     "You can query status, modify thresholds (battery levels, blackout hours), "
                     "or force start/stop charging by calling tools. "
                     "Always run the appropriate tools when requested, and summarize the actions taken "
-                    "in a friendly natural language response. If the user asks general questions, "
+                    "in a friendly natural language response. "
+                    "Format all your responses in HTML format supported by Telegram (e.g. use <b>bold</b>, <i>italic</i>, <code>code</code>). "
+                    "Never use Markdown markers like * or ** or _ or ` in your output. If the user asks general questions, "
                     "just reply politely without calling tools."
                 ),
                 tools=tools,
@@ -243,16 +247,16 @@ def _bot_polling_loop():
                 return
                 
         help_text = (
-            "🔋 **Welcome to the Smart EV Charger Assistant!**\n\n"
+            "🔋 <b>Welcome to the Smart EV Charger Assistant!</b>\n\n"
             "I'm powered by Gemini and can help you control your solar charger. You can text me in natural language, for example:\n"
-            "• _'How is my charger doing right now?'_\n"
-            "• _'Stop charging when the battery goes below 40%'_\n"
-            "• _'Turn on manual mode'_\n"
-            "• _'Force start the charger'_\n"
-            "• _'Force stop the charger'_\n"
-            "• _'Change night blackout hours to 5pm to 8am'_"
+            "• <i>'How is my charger doing right now?'</i>\n"
+            "• <i>'Stop charging when the battery goes below 40%'</i>\n"
+            "• <i>'Turn on manual mode'</i>\n"
+            "• <i>'Force start the charger'</i>\n"
+            "• <i>'Force stop the charger'</i>\n"
+            "• <i>'Change night blackout hours to 5pm to 8am'</i>"
         )
-        bot.reply_to(message, help_text, parse_mode="Markdown")
+        bot.reply_to(message, help_text, parse_mode="HTML")
 
     @bot.message_handler(func=lambda message: True)
     def handle_incoming_message(message):
@@ -267,7 +271,7 @@ def _bot_polling_loop():
         
         try:
             response_text = handle_message_with_gemini(user_text)
-            bot.reply_to(message, response_text, parse_mode="Markdown")
+            bot.reply_to(message, response_text, parse_mode="HTML")
         except Exception as e:
             log.error(f"Telegram Bot error processing Gemini request: {e}", exc_info=True)
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")
