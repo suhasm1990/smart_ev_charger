@@ -63,6 +63,23 @@ def get_tesla_powerwall_status() -> str:
         log.warning(f"Bot failed to get Powerwall stats: {e}")
         return json.dumps({"error": f"Failed to get Powerwall stats: {e}"})
 
+def read_application_logs(num_lines: int = 50) -> str:
+    """Reads the last N lines of the application log file (logs/charger.log) to check for warnings, errors, or execution history.
+    
+    Args:
+        num_lines: Number of trailing lines to read (default 50).
+    """
+    log_file = config.TEXT_LOG_FILE
+    if not os.path.exists(log_file):
+        return f"Log file {log_file} does not exist yet."
+    try:
+        with open(log_file, "r") as f:
+            lines = f.readlines()
+            last_lines = lines[-num_lines:]
+            return "".join(last_lines)
+    except Exception as e:
+        return f"Failed to read logs: {e}"
+
 def set_battery_thresholds(start_pct: float, stop_pct: float) -> str:
     """Updates the battery start and stop percentage thresholds.
     
@@ -171,6 +188,7 @@ def handle_message_with_gemini(text: str) -> str:
     tools = [
         get_system_status,
         get_tesla_powerwall_status,
+        read_application_logs,
         set_battery_thresholds,
         set_blackout_hours,
         set_override_mode,
@@ -180,7 +198,7 @@ def handle_message_with_gemini(text: str) -> str:
     
     # Generate content with tools enabled. The SDK will automatically handle function calling (AFC).
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=text,
         config=types.GenerateContentConfig(
             system_instruction=(
