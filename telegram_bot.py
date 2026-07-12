@@ -178,10 +178,20 @@ def stop_charging() -> str:
 
 # ── 2. Gemini Response Handler ──────────────────────────────────────────────
 
+gemini_chat = None
+
 def handle_message_with_gemini(text: str) -> str:
     log.info(f"DEBUG: Gemini input text: '{text}'")
     if not config.GEMINI_API_KEY:
         return "Gemini API key is not configured. Please add GEMINI_API_KEY to your env variables."
+        
+    global gemini_chat
+    
+    # Allow manual conversation history reset
+    if text.strip().lower() in ["/clear", "/reset"]:
+        gemini_chat = None
+        log.info("DEBUG: Gemini chat session cleared.")
+        return "Conversation history cleared."
         
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     
@@ -196,24 +206,26 @@ def handle_message_with_gemini(text: str) -> str:
         stop_charging
     ]
     
-    # Generate content with tools enabled. The SDK will automatically handle function calling (AFC).
-    response = client.models.generate_content(
-        model='gemini-flash-latest',
-        contents=text,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                "You are an AI assistant for a Smart EV Charger. "
-                "You can query status, modify thresholds (battery levels, blackout hours), "
-                "or force start/stop charging by calling tools. "
-                "Always run the appropriate tools when requested, and summarize the actions taken "
-                "in a friendly natural language response. If the user asks general questions, "
-                "just reply politely without calling tools."
-            ),
-            tools=tools,
-            temperature=0.0
+    if gemini_chat is None:
+        log.info("DEBUG: Initializing new Gemini chat session.")
+        gemini_chat = client.chats.create(
+            model='gemini-flash-latest',
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "You are an AI assistant for a Smart EV Charger. "
+                    "You can query status, modify thresholds (battery levels, blackout hours), "
+                    "or force start/stop charging by calling tools. "
+                    "Always run the appropriate tools when requested, and summarize the actions taken "
+                    "in a friendly natural language response. If the user asks general questions, "
+                    "just reply politely without calling tools."
+                ),
+                tools=tools,
+                temperature=0.0
+            )
         )
-    )
-    
+        
+    # Send message to chat session to preserve context
+    response = gemini_chat.send_message(text)
     log.info(f"DEBUG: Gemini response: {response}")
     return response.text
 
