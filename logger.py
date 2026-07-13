@@ -24,3 +24,6 @@ log_chargepoint = logging.getLogger("CHARGEPOINT")
 log_decision    = logging.getLogger("DECISION")
 log_mode        = logging.getLogger("MODE")
 log_csv         = logging.getLogger("CSV")
+
+# Silence verbose urllib3 connection logs
+logging.getLogger("urllib3").setLevel(logging.WARNING)

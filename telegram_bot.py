@@ -277,7 +277,7 @@ def _bot_polling_loop():
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")
 
     log.info("Telegram Bot starting infinity polling...")
-    bot.infinity_polling(timeout=20, long_polling_timeout=10)
+    bot.infinity_polling(timeout=50, long_polling_timeout=40)
 
 def start_telegram_bot(run_cycle_callback):
     global RUN_CYCLE_CALLBACK
