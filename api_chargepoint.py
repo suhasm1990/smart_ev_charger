@@ -85,6 +85,30 @@ async def get_charger_status_async() -> dict:
             _cp_client = None
         raise
 
-def start_charger():  asyncio.run(start_charger_async())
-def stop_charger():   asyncio.run(stop_charger_async())
-def get_charger_status() -> dict: return asyncio.run(get_charger_status_async())
+import threading
+
+_loop = None
+_thread = None
+
+def _start_background_loop():
+    global _loop
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+    _loop.run_forever()
+
+def _run_sync(coro):
+    global _loop, _thread
+    if _thread is None or not _thread.is_alive():
+        _loop = None
+        _thread = threading.Thread(target=_start_background_loop, daemon=True)
+        _thread.start()
+        while _loop is None or not _loop.is_running():
+            import time
+            time.sleep(0.01)
+    
+    future = asyncio.run_coroutine_threadsafe(coro, _loop)
+    return future.result()
+
+def start_charger():  _run_sync(start_charger_async())
+def stop_charger():   _run_sync(stop_charger_async())
+def get_charger_status() -> dict: return _run_sync(get_charger_status_async())

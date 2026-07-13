@@ -80,6 +80,26 @@ def run_cycle():
             log_chargepoint.warning(f"Failed to get charger status: {e} | Skipping cycle")
             return
 
+        # Check dynamic alerts
+        try:
+            from alerts import check_alerts, check_recent_log_errors
+            current_state = {
+                "battery_pct": stats.get("battery_pct"),
+                "solar_kw": stats.get("solar_kw"),
+                "home_kw": stats.get("home_kw"),
+                "surplus_kw": stats.get("solar_surplus_kw"),
+                "grid_kw": stats.get("grid_kw"),
+                "island_mode": stats.get("island_mode"),
+                "storm_mode": stats.get("storm_mode"),
+                "charging_status": cp_status.get("charging_status"),
+                "is_plugged_in": cp_status.get("is_plugged_in"),
+                "is_connected": cp_status.get("is_connected"),
+                "log_errors": check_recent_log_errors(interval_minutes=config.CHECK_INTERVAL_MINUTES + 5)
+            }
+            check_alerts(current_state)
+        except Exception as alert_err:
+            log.warning(f"Error evaluating custom alerts during cycle: {alert_err}")
+
 
         if stats["grid_kw"] > 0.1:
             state.grid_draw_count += 1

@@ -132,6 +132,7 @@ def set_override_mode(mode: str) -> str:
 def start_charging() -> str:
     """Immediately forces the charger to start charging, bypassing solar/battery rules."""
     from api_chargepoint import start_charger
+    from notifications import notify
     try:
         # Start physically
         start_charger()
@@ -146,6 +147,8 @@ def start_charging() -> str:
         config.MANUAL_MODE_OVERRIDE = "manual"
         config.save_dynamic_config()
         
+        notify("🟢 Charging started (Forced manually via Telegram)")
+        
         if RUN_CYCLE_CALLBACK:
             threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
             
@@ -156,6 +159,7 @@ def start_charging() -> str:
 def stop_charging() -> str:
     """Immediately forces the charger to stop charging."""
     from api_chargepoint import stop_charger
+    from notifications import notify
     try:
         # Stop physically
         stop_charger()
@@ -169,12 +173,54 @@ def stop_charging() -> str:
         config.MANUAL_MODE_OVERRIDE = "manual"
         config.save_dynamic_config()
         
+        notify("🔴 Charging stopped (Forced manually via Telegram)")
+        
         if RUN_CYCLE_CALLBACK:
             threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
             
         return "Success: Sent stop command to charger. Switched mode to Manual override to prevent automatic restart."
     except Exception as e:
         return f"Error stopping charger: {e}"
+
+def set_custom_alert(field: str, operator: str, value: float, message: str, once: bool = True) -> str:
+    """Sets a dynamic notification alert when a metric condition is met.
+    
+    Args:
+        field: The system attribute to monitor. Must be one of:
+               - 'battery_pct' (float, Powerwall SoC percentage, e.g., 75.5)
+               - 'solar_kw' (float, solar generation in kW)
+               - 'home_kw' (float, home power consumption in kW)
+               - 'surplus_kw' (float, solar generation minus home usage in kW)
+               - 'grid_kw' (float, grid draw in kW)
+               - 'island_mode' (string, 'on_grid' or 'off_grid')
+               - 'storm_mode' (boolean, true if Tesla storm watch mode is active)
+               - 'charging_status' (string, 'CHARGING', 'AVAILABLE', etc.)
+               - 'is_plugged_in' (boolean, true if vehicle is plugged in)
+               - 'is_connected' (boolean, true if charger is connected)
+               - 'log_errors' (boolean, true if error severity logs are parsed)
+        operator: Comparison operator. Must be one of:
+                  - 'eq' (equal to)
+                  - 'ne' (not equal to)
+                  - 'gt' (greater than)
+                  - 'gte' (greater than or equal to)
+                  - 'lt' (less than)
+                  - 'lte' (less than or equal to)
+        value: The target value to compare against. Strings, booleans, or floats.
+        message: The notification text to push when the condition triggers.
+        once: If true (default), the alert is removed after triggering once.
+    """
+    from alerts import add_alert
+    return add_alert(field, operator, value, message, once)
+
+def clear_custom_alert(alert_id: str) -> str:
+    """Clears/removes an active custom alert by its 8-character ID."""
+    from alerts import remove_alert
+    return remove_alert(alert_id)
+
+def list_custom_alerts() -> str:
+    """Returns a list of all currently active custom alerts."""
+    from alerts import list_alerts
+    return list_alerts()
 
 # ── 2. Gemini Response Handler ──────────────────────────────────────────────
 
@@ -205,7 +251,10 @@ def handle_message_with_gemini(text: str) -> str:
         set_blackout_hours,
         set_override_mode,
         start_charging,
-        stop_charging
+        stop_charging,
+        set_custom_alert,
+        clear_custom_alert,
+        list_custom_alerts
     ]
     
     if gemini_chat is None:
@@ -219,9 +268,12 @@ def handle_message_with_gemini(text: str) -> str:
                     "or force start/stop charging by calling tools. "
                     "Always run the appropriate tools when requested, and summarize the actions taken "
                     "in a friendly natural language response. "
-                    "Format all your responses in HTML format supported by Telegram (e.g. use <b>bold</b>, <i>italic</i>, <code>code</code>). "
-                    "Never use Markdown markers like * or ** or _ or ` in your output. If the user asks general questions, "
-                    "just reply politely without calling tools."
+                    "Format all your responses in the strict HTML subset supported by Telegram. "
+                    "You may only use: <b>, <i>, <u>, <s>, <code>, <pre>, and <blockquote> tags. "
+                    "WARNING: Telegram does NOT support <ul>, <ol>, <li>, <p>, or <br> tags. "
+                    "To make lists or line breaks, simply use plain text list characters (like bullets • or -) and standard newlines (\\n). "
+                    "Never use Markdown markers like * or ** or _ or ` in your output. "
+                    "If the user asks general questions, just reply politely without calling tools."
                 ),
                 tools=tools,
                 temperature=0.0
