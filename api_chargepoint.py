@@ -15,12 +15,18 @@ async def get_cp_client():
         )
     return _cp_client
 
-async def start_charger_async():
+async def start_charger_async(amperage_limit: int = 20):
     global _cp_client
     try:
         client = await get_cp_client()
+        try:
+            await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage_limit)
+            log_chargepoint.info(f"Amperage limit set to {amperage_limit}A")
+        except Exception as err:
+            log_chargepoint.warning(f"Failed to set initial amperage limit: {err}")
+            
         session = await client.start_charging_session(device_id=config.CHARGEPOINT_DEVICE_ID)
-        log_chargepoint.info(f"Session STARTED | session_id={session.session_id}")
+        log_chargepoint.info(f"Session STARTED | session_id={session.session_id} | amperage_limit={amperage_limit}A")
     except Exception as e:
         if "ValidationError" in str(type(e)):
             log_chargepoint.warning("Session started, but ChargePoint returned empty status right away (eventual consistency bug in library). Ignoring.")
@@ -85,6 +91,19 @@ async def get_charger_status_async() -> dict:
             _cp_client = None
         raise
 
+async def set_charger_amperage_limit_async(amperage: int):
+    global _cp_client
+    try:
+        client = await get_cp_client()
+        await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage)
+        log_chargepoint.info(f"Amperage limit set to {amperage}A")
+    except Exception as e:
+        if _cp_client:
+            try: await _cp_client.close()
+            except Exception: pass
+            _cp_client = None
+        raise
+
 import threading
 
 _loop = None
@@ -109,6 +128,7 @@ def _run_sync(coro):
     future = asyncio.run_coroutine_threadsafe(coro, _loop)
     return future.result()
 
-def start_charger():  _run_sync(start_charger_async())
+def start_charger(amperage_limit: int = 20):  _run_sync(start_charger_async(amperage_limit))
 def stop_charger():   _run_sync(stop_charger_async())
 def get_charger_status() -> dict: return _run_sync(get_charger_status_async())
+def set_charger_amperage_limit(amperage: int): _run_sync(set_charger_amperage_limit_async(amperage))

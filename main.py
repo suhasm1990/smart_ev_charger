@@ -199,7 +199,7 @@ def main():
     log.info("STARTUP | Smart EV Charger")
     log.info(f"STARTUP | Thresholds: start={config.BATTERY_START_PCT}% | stop={config.BATTERY_STOP_PCT}%")
     log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_MINUTES}min")
-    log.info(f"STARTUP | Manual override: Google Sheet A1 = 'manual' or 'auto'")
+    log.info("STARTUP | Manual override: Controlled dynamically via Telegram Bot")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
     log.info("=" * 70)
 

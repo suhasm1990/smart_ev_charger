@@ -129,13 +129,17 @@ def set_override_mode(mode: str) -> str:
         
     return f"Success: Configured override mode to '{mode}'."
 
-def start_charging() -> str:
-    """Immediately forces the charger to start charging, bypassing solar/battery rules."""
+def start_charging(amperage: int = 20) -> str:
+    """Immediately forces the charger to start charging, bypassing solar/battery rules.
+    
+    Args:
+        amperage: The current limit to set in Amps (default is 20, max is 32, range 8-32).
+    """
     from api_chargepoint import start_charger
     from notifications import notify
     try:
         # Start physically
-        start_charger()
+        start_charger(amperage)
         
         # Sync in-memory state
         state.charger_state = state.State.CHARGING
@@ -147,12 +151,12 @@ def start_charging() -> str:
         config.MANUAL_MODE_OVERRIDE = "manual"
         config.save_dynamic_config()
         
-        notify("🟢 Charging started (Forced manually via Telegram)")
+        notify(f"🟢 Charging started (Forced manually via Telegram at {amperage}A)")
         
         if RUN_CYCLE_CALLBACK:
             threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
             
-        return "Success: Sent start command to charger. Switched mode to Manual override to prevent automatic shutdown."
+        return f"Success: Sent start command to charger at {amperage}A. Switched mode to Manual override to prevent automatic shutdown."
     except Exception as e:
         return f"Error starting charger: {e}"
 
@@ -181,6 +185,21 @@ def stop_charging() -> str:
         return "Success: Sent stop command to charger. Switched mode to Manual override to prevent automatic restart."
     except Exception as e:
         return f"Error stopping charger: {e}"
+
+def set_charger_amperage(amperage: int) -> str:
+    """Updates the charger's current amperage limit dynamically (between 8 and 32 Amps).
+    
+    Args:
+        amperage: The current limit to set in Amps (must be between 8 and 32).
+    """
+    from api_chargepoint import set_charger_amperage_limit
+    if amperage < 8 or amperage > 32:
+        return "Error: Amperage limit must be between 8 and 32 Amps."
+    try:
+        set_charger_amperage_limit(amperage)
+        return f"Success: Charger amperage limit set to {amperage}A."
+    except Exception as e:
+        return f"Error setting amperage: {e}"
 
 def set_custom_alert(field: str, operator: str, value: float, message: str, once: bool = True) -> str:
     """Sets a dynamic notification alert when a metric condition is met.
@@ -252,6 +271,7 @@ def handle_message_with_gemini(text: str) -> str:
         set_override_mode,
         start_charging,
         stop_charging,
+        set_charger_amperage,
         set_custom_alert,
         clear_custom_alert,
         list_custom_alerts

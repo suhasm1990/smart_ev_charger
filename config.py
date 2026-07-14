@@ -24,10 +24,6 @@ PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN", "")
 # Timezone
 TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))
 
-# Google Sheet Webhook
-GOOGLE_SHEET_WEBHOOK_URL = os.getenv("GOOGLE_SHEET_WEBHOOK_URL", "")
-CONTROL_SHEET_URL = os.getenv("CONTROL_SHEET_URL", "")
-
 # Telegram AI Agent Configs
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID", "")

@@ -36,18 +36,8 @@ def check_manual_mode() -> bool:
         new_manual = False
         log_mode.debug("Local override active: auto mode forced")
     else:
-        # Fallback to Google Sheet
-        try:
-            r    = requests.get(config.CONTROL_SHEET_URL, timeout=10)
-            r.raise_for_status()
-            mode = r.text.strip().split("\n")[0].strip().lower()
-            log_mode.debug(f"Sheet value: '{mode}'")
-            new_manual = mode == "manual"
-        except Exception as e:
-            log_mode.warning(
-                f"Could not read control sheet: {e} — keeping current mode ({('manual' if state.manual_mode else 'auto')})"
-            )
-            return state.manual_mode
+        # Default is auto
+        new_manual = False
 
     # Log transitions only
     if new_manual and not state.prev_manual_mode:
