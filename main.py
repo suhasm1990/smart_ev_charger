@@ -221,8 +221,12 @@ def main():
         log_chargepoint.warning(f"STARTUP CHECK FAILED | {e} — will retry on first cycle")
 
     from daily_agent import run_daily_agent
-    schedule.every().day.at("00:00").do(daily_reset)
-    schedule.every().day.at("23:50").do(run_daily_agent)
+    
+    # Explicitly bind the schedule to the user's timezone to prevent UTC drift
+    tz_str = getattr(config.TZ, "key", "America/Los_Angeles")
+    
+    schedule.every().day.at(config.DAILY_RESET_TIME, tz_str).do(daily_reset)
+    schedule.every().day.at(config.DAILY_AGENT_TIME, tz_str).do(run_daily_agent)
 
     # Start Telegram Bot if configured
     if config.TELEGRAM_BOT_TOKEN:

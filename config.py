@@ -24,6 +24,10 @@ PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN", "")
 # Google Sheets Integration
 GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA")
 
+# Schedule Config
+DAILY_RESET_TIME = os.getenv("DAILY_RESET_TIME", "00:00")
+DAILY_AGENT_TIME = os.getenv("DAILY_AGENT_TIME", "23:50")
+
 # Timezone
 TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))
 

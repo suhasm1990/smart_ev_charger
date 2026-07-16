@@ -6,3 +6,5 @@ google-genai
 pyTelegramBotAPI
 gspread
 google-auth
+tzdata
+pytz
