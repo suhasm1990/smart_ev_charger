@@ -220,7 +220,9 @@ def main():
     except Exception as e:
         log_chargepoint.warning(f"STARTUP CHECK FAILED | {e} — will retry on first cycle")
 
+    from daily_agent import run_daily_agent
     schedule.every().day.at("00:00").do(daily_reset)
+    schedule.every().day.at("23:50").do(run_daily_agent)
 
     # Start Telegram Bot if configured
     if config.TELEGRAM_BOT_TOKEN:

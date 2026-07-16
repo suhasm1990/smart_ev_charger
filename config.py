@@ -21,6 +21,9 @@ CHARGEPOINT_DEVICE_ID     = int(os.getenv("CHARGEPOINT_DEVICE_ID", "0"))
 PUSHOVER_USER_KEY  = os.getenv("PUSHOVER_USER_KEY", "")
 PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN", "")
 
+# Google Sheets Integration
+GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA")
+
 # Timezone
 TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))
 
@@ -46,17 +49,22 @@ NIGHT_BLACKOUT_START_HOUR = int(os.getenv("NIGHT_BLACKOUT_START_HOUR", "16"))
 NIGHT_BLACKOUT_END_HOUR   = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
 
 MIN_CHARGE_MINUTES = int(os.getenv("MIN_CHARGE_MINUTES", "15"))
+ALLOWED_CHARGE_START_HOUR = int(os.getenv("ALLOWED_CHARGE_START_HOUR", "0"))
+ALLOWED_CHARGE_END_HOUR = int(os.getenv("ALLOWED_CHARGE_END_HOUR", "24"))
 
 def load_dynamic_config():
     global BATTERY_START_PCT, BATTERY_STOP_PCT
     global NIGHT_BLACKOUT_START_HOUR, NIGHT_BLACKOUT_END_HOUR
     global MANUAL_MODE_OVERRIDE
+    global ALLOWED_CHARGE_START_HOUR, ALLOWED_CHARGE_END_HOUR
 
     # Re-read defaults first
     BATTERY_START_PCT = float(os.getenv("BATTERY_START_PCT", "40"))
     BATTERY_STOP_PCT = float(os.getenv("BATTERY_STOP_PCT", "25"))
     NIGHT_BLACKOUT_START_HOUR = int(os.getenv("NIGHT_BLACKOUT_START_HOUR", "16"))
     NIGHT_BLACKOUT_END_HOUR = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
+    ALLOWED_CHARGE_START_HOUR = int(os.getenv("ALLOWED_CHARGE_START_HOUR", "0"))
+    ALLOWED_CHARGE_END_HOUR = int(os.getenv("ALLOWED_CHARGE_END_HOUR", "24"))
     MANUAL_MODE_OVERRIDE = "default"
 
     if os.path.exists(DYNAMIC_CONFIG_FILE):
@@ -73,8 +81,33 @@ def load_dynamic_config():
                     NIGHT_BLACKOUT_END_HOUR = int(data["NIGHT_BLACKOUT_END_HOUR"])
                 if "MANUAL_MODE_OVERRIDE" in data:
                     MANUAL_MODE_OVERRIDE = str(data["MANUAL_MODE_OVERRIDE"])
+                if "ALLOWED_CHARGE_START_HOUR" in data:
+                    ALLOWED_CHARGE_START_HOUR = int(data["ALLOWED_CHARGE_START_HOUR"])
+                if "ALLOWED_CHARGE_END_HOUR" in data:
+                    ALLOWED_CHARGE_END_HOUR = int(data["ALLOWED_CHARGE_END_HOUR"])
         except Exception:
             pass
+
+    # Merge from Google Sheets if available
+    try:
+        from sheets_db import get_settings
+        sheet_settings = get_settings()
+        if "BATTERY_START_PCT" in sheet_settings:
+            BATTERY_START_PCT = float(sheet_settings["BATTERY_START_PCT"])
+        if "BATTERY_STOP_PCT" in sheet_settings:
+            BATTERY_STOP_PCT = float(sheet_settings["BATTERY_STOP_PCT"])
+        if "NIGHT_BLACKOUT_START_HOUR" in sheet_settings:
+            NIGHT_BLACKOUT_START_HOUR = int(sheet_settings["NIGHT_BLACKOUT_START_HOUR"])
+        if "NIGHT_BLACKOUT_END_HOUR" in sheet_settings:
+            NIGHT_BLACKOUT_END_HOUR = int(sheet_settings["NIGHT_BLACKOUT_END_HOUR"])
+        if "MANUAL_MODE_OVERRIDE" in sheet_settings:
+            MANUAL_MODE_OVERRIDE = str(sheet_settings["MANUAL_MODE_OVERRIDE"])
+        if "ALLOWED_CHARGE_START_HOUR" in sheet_settings:
+            ALLOWED_CHARGE_START_HOUR = int(sheet_settings["ALLOWED_CHARGE_START_HOUR"])
+        if "ALLOWED_CHARGE_END_HOUR" in sheet_settings:
+            ALLOWED_CHARGE_END_HOUR = int(sheet_settings["ALLOWED_CHARGE_END_HOUR"])
+    except Exception:
+        pass
 
 def save_dynamic_config():
     os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE), exist_ok=True)
@@ -85,9 +118,17 @@ def save_dynamic_config():
             "NIGHT_BLACKOUT_START_HOUR": NIGHT_BLACKOUT_START_HOUR,
             "NIGHT_BLACKOUT_END_HOUR": NIGHT_BLACKOUT_END_HOUR,
             "MANUAL_MODE_OVERRIDE": MANUAL_MODE_OVERRIDE,
+            "ALLOWED_CHARGE_START_HOUR": ALLOWED_CHARGE_START_HOUR,
+            "ALLOWED_CHARGE_END_HOUR": ALLOWED_CHARGE_END_HOUR,
         }
         with open(DYNAMIC_CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=4)
+            
+        try:
+            from sheets_db import update_settings
+            update_settings(data)
+        except Exception:
+            pass
     except Exception:
         pass
 

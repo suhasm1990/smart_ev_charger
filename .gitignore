@@ -28,3 +28,4 @@ logs/
 *.gz
 *.zip
 .env
+service_account.json

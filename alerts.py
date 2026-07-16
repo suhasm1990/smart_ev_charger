@@ -134,6 +134,22 @@ def check_alerts(current_state: dict):
         remaining = [a for a in alerts if a["id"] not in triggered_ids]
         save_alerts(remaining)
 
+    # Built-in Real-Time Solar Surplus Alert (1.0 kW threshold)
+    surplus_kw = current_state.get("surplus_kw", 0)
+    is_plugged = current_state.get("is_plugged_in", True)
+    if surplus_kw and surplus_kw >= 1.0:
+        import state
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        if getattr(state, "last_surplus_alert_date", None) != today_str:
+            if not is_plugged:
+                notify(
+                    f"☀️ **Real-Time Surplus Alert**\n"
+                    f"You are currently exporting {surplus_kw:.1f} kW to the grid!\n"
+                    f"This is a great time to plug in the EV or run heavy appliances (AC, washing machine)."
+                )
+            # Mark as alerted for today whether plugged in or not, to prevent spam
+            state.last_surplus_alert_date = today_str
+
 def check_recent_log_errors(interval_minutes: int = 20) -> bool:
     log_file = "logs/charger.log"
     if not os.path.exists(log_file):

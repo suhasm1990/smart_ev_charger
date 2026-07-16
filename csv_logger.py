@@ -16,7 +16,7 @@ CSV_HEADERS = [
     "charger_state", "action", "reason",
     "session_active_minutes", "session_count_today", "session_stop_reason",
     "is_night_blackout", "manual_mode", "island_mode", "storm_mode",
-    "est_grid_cost_this_minute",
+    "est_grid_cost_this_minute", "charge_window_start_hour", "charge_window_end_hour"
 ]
 
 def get_session_minutes() -> float:
@@ -62,6 +62,8 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         stats["island_mode"],
         stats["storm_mode"],
         est_cost,
+        config.ALLOWED_CHARGE_START_HOUR,
+        config.ALLOWED_CHARGE_END_HOUR,
     ]
 
     file_exists = os.path.exists(config.CSV_LOG_FILE)
@@ -72,7 +74,11 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
             writer.writerow(CSV_HEADERS)
         writer.writerow(row)
 
-
+    try:
+        from sheets_db import append_log_row
+        append_log_row(row)
+    except Exception as e:
+        log_csv.error(f"Failed to push row to Google Sheets: {e}")
 
     if est_cost > 0:
         log_csv.debug(

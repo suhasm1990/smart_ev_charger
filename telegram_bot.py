@@ -241,6 +241,15 @@ def list_custom_alerts() -> str:
     from alerts import list_alerts
     return list_alerts()
 
+def add_agent_instruction(text: str) -> str:
+    """Saves a special note or override instruction for the Daily AI Agent. Use this if the user wants to prioritize charging the car tonight or overriding normal solar-saving logic."""
+    from sheets_db import add_user_instruction
+    success = add_user_instruction(text)
+    if success:
+        return f"Success: Saved instruction '{text}' for the Daily AI Agent. It will process this at midnight."
+    else:
+        return "Error: Failed to save instruction. Please check Google Sheets integration."
+
 # ── 2. Gemini Response Handler ──────────────────────────────────────────────
 
 gemini_client = None
@@ -274,7 +283,8 @@ def handle_message_with_gemini(text: str) -> str:
         set_charger_amperage,
         set_custom_alert,
         clear_custom_alert,
-        list_custom_alerts
+        list_custom_alerts,
+        add_agent_instruction
     ]
     
     if gemini_chat is None:

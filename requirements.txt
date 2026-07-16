@@ -4,3 +4,5 @@ python-chargepoint
 python-dotenv
 google-genai
 pyTelegramBotAPI
+gspread
+google-auth

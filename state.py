@@ -14,3 +14,5 @@ prev_manual_mode     = False
 
 session_count_today  = 0
 grid_draw_count      = 0
+
+last_surplus_alert_date = None

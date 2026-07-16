@@ -45,6 +45,34 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
             return "hold", f"Battery low ({battery_pct}%), but min {config.MIN_CHARGE_MINUTES}min session not met"
         return "hold", f"Battery {battery_pct}% < {config.BATTERY_STOP_PCT}% (need {config.BATTERY_START_PCT}% to restart)"
 
+    # ── 1.5. Dynamic Time Window ─────────────────────────────────────────────
+    current_hour = now.hour
+    
+    in_window = False
+    start_hr = config.ALLOWED_CHARGE_START_HOUR
+    end_hr = config.ALLOWED_CHARGE_END_HOUR
+    
+    # If it's a full 24h window (0 to 24), always true
+    if start_hr == 0 and end_hr == 24:
+        in_window = True
+    elif start_hr <= end_hr:
+        if start_hr <= current_hour < end_hr:
+            in_window = True
+    else:
+        # Crosses midnight (e.g., 22 to 6)
+        if current_hour >= start_hr or current_hour < end_hr:
+            in_window = True
+            
+    if not in_window:
+        if state.charger_state == state.State.CHARGING:
+            if min_charge_time_met():
+                state.charger_state       = state.State.IDLE
+                state.session_stop_reason = f"Outside AI charge window ({start_hr}:00 - {end_hr}:00)"
+                log_decision.info(f"STOP | Outside AI window | {start_hr}:00 - {end_hr}:00")
+                return "stop", state.session_stop_reason
+            return "hold", f"Outside window, but min session not met"
+        return "hold", f"Outside AI charge window ({start_hr}:00 - {end_hr}:00)"
+
     # ── 2. Core Logic: Should we charge? ─────────────────────────────────────
     
     should_charge = False
