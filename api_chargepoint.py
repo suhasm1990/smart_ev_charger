@@ -15,9 +15,27 @@ async def get_cp_client():
         )
     return _cp_client
 
+class ChargePointStartError(Exception):
+    """Raised when ChargePoint API fails to start a charging session."""
+    pass
+
 async def start_charger_async(amperage_limit: int = 20):
     global _cp_client
     try:
+        # Pre-check status before calling start_charging_session
+        try:
+            status = await get_charger_status_async()
+            if not status.get("is_plugged_in", True):
+                log_chargepoint.warning("Vehicle is NOT plugged in. Aborting start request.")
+                raise ChargePointStartError("Vehicle is not plugged in. Please plug in the connector.")
+            if status.get("charging_status") == "CHARGING":
+                log_chargepoint.info("Charger is already actively charging. Skipping redundant start request.")
+                return
+        except ChargePointStartError:
+            raise
+        except Exception as check_err:
+            log_chargepoint.warning(f"Charger pre-check warning (proceeding with start attempt): {check_err}")
+
         client = await get_cp_client()
         try:
             await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage_limit)
@@ -27,7 +45,10 @@ async def start_charger_async(amperage_limit: int = 20):
             
         session = await client.start_charging_session(device_id=config.CHARGEPOINT_DEVICE_ID)
         log_chargepoint.info(f"Session STARTED | session_id={session.session_id} | amperage_limit={amperage_limit}A")
+    except ChargePointStartError:
+        raise
     except Exception as e:
+        err_msg = str(e)
         if "ValidationError" in str(type(e)):
             log_chargepoint.warning("Session started, but ChargePoint returned empty status right away (eventual consistency bug in library). Ignoring.")
         else:
@@ -36,6 +57,8 @@ async def start_charger_async(amperage_limit: int = 20):
                 try: await _cp_client.close()
                 except Exception: pass
                 _cp_client = None
+            if "Failed to start charging" in err_msg or "422" in err_msg or "CommunicationError" in str(type(e)):
+                raise ChargePointStartError(f"ChargePoint start rejected (422/CommunicationError): {err_msg}")
             raise
 
 async def stop_charger_async():

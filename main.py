@@ -50,6 +50,16 @@ def run_cycle():
                     f"GRID DRAW IN MANUAL MODE | grid={stats['grid_kw']}kW | "
                     f"rate=${get_tou_rate(now)}/kWh | tou={tou}"
                 )
+            if stats["grid_kw"] > 1.0 and tou in ["on_peak", "partial_peak"]:
+                rate = get_tou_rate(now)
+                hour_key = now.strftime("%Y-%m-%d-%H")
+                if getattr(state, "last_manual_grid_alert", None) != hour_key:
+                    notify(
+                        f"⚠️ <b>High Grid Draw Alert (Manual Mode)</b>\n"
+                        f"Grid draw is <b>{stats['grid_kw']} kW</b> during {tou.upper()} rate (${rate}/kWh).\n"
+                        f"Consider switching to Auto mode or pausing heavy loads."
+                    )
+                    state.last_manual_grid_alert = hour_key
             log_to_csv(stats, "manual", "Manual override active — automation paused", now)
         except Exception as e:
             log_mode.warning(f"Manual mode stats fetch failed: {e}")
@@ -145,6 +155,7 @@ def run_cycle():
 
         if action == "start":
             try:
+                from api_chargepoint import ChargePointStartError
                 start_charger()
                 log_chargepoint.info(
                     f"CHARGE STARTED | battery={stats['battery_pct']}% | "
@@ -155,6 +166,11 @@ def run_cycle():
                     f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | "
                     f"TOU: {tou}"
                 )
+            except ChargePointStartError as cpe:
+                state.charger_state = state.State.IDLE
+                state.charge_session_start = None
+                log_chargepoint.warning(f"CHARGE START REJECTED | {cpe}")
+                notify(f"⚠️ <b>EV Charging Start Notice</b>\n{cpe}")
             except Exception as e:
                 state.charger_state = state.State.IDLE
                 state.charge_session_start = None

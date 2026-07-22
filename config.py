@@ -49,6 +49,7 @@ MANUAL_MODE_OVERRIDE = "default"  # Can be 'manual', 'auto', or 'default'
 # Thresholds (initialize as default)
 BATTERY_START_PCT       = float(os.getenv("BATTERY_START_PCT", "40"))
 BATTERY_STOP_PCT        = float(os.getenv("BATTERY_STOP_PCT", "25"))
+BATTERY_LOW_RESERVE_PCT = float(os.getenv("BATTERY_LOW_RESERVE_PCT", "15"))
 NIGHT_BLACKOUT_START_HOUR = int(os.getenv("NIGHT_BLACKOUT_START_HOUR", "16"))
 NIGHT_BLACKOUT_END_HOUR   = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
 
@@ -57,7 +58,7 @@ ALLOWED_CHARGE_START_HOUR = int(os.getenv("ALLOWED_CHARGE_START_HOUR", "0"))
 ALLOWED_CHARGE_END_HOUR = int(os.getenv("ALLOWED_CHARGE_END_HOUR", "24"))
 
 def load_dynamic_config():
-    global BATTERY_START_PCT, BATTERY_STOP_PCT
+    global BATTERY_START_PCT, BATTERY_STOP_PCT, BATTERY_LOW_RESERVE_PCT
     global NIGHT_BLACKOUT_START_HOUR, NIGHT_BLACKOUT_END_HOUR
     global MANUAL_MODE_OVERRIDE
     global ALLOWED_CHARGE_START_HOUR, ALLOWED_CHARGE_END_HOUR
@@ -65,6 +66,7 @@ def load_dynamic_config():
     # Re-read defaults first
     BATTERY_START_PCT = float(os.getenv("BATTERY_START_PCT", "40"))
     BATTERY_STOP_PCT = float(os.getenv("BATTERY_STOP_PCT", "25"))
+    BATTERY_LOW_RESERVE_PCT = float(os.getenv("BATTERY_LOW_RESERVE_PCT", "15"))
     NIGHT_BLACKOUT_START_HOUR = int(os.getenv("NIGHT_BLACKOUT_START_HOUR", "16"))
     NIGHT_BLACKOUT_END_HOUR = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
     ALLOWED_CHARGE_START_HOUR = int(os.getenv("ALLOWED_CHARGE_START_HOUR", "0"))
@@ -79,6 +81,8 @@ def load_dynamic_config():
                     BATTERY_START_PCT = float(data["BATTERY_START_PCT"])
                 if "BATTERY_STOP_PCT" in data:
                     BATTERY_STOP_PCT = float(data["BATTERY_STOP_PCT"])
+                if "BATTERY_LOW_RESERVE_PCT" in data:
+                    BATTERY_LOW_RESERVE_PCT = float(data["BATTERY_LOW_RESERVE_PCT"])
                 if "NIGHT_BLACKOUT_START_HOUR" in data:
                     NIGHT_BLACKOUT_START_HOUR = int(data["NIGHT_BLACKOUT_START_HOUR"])
                 if "NIGHT_BLACKOUT_END_HOUR" in data:
@@ -100,6 +104,8 @@ def load_dynamic_config():
             BATTERY_START_PCT = float(sheet_settings["BATTERY_START_PCT"])
         if "BATTERY_STOP_PCT" in sheet_settings:
             BATTERY_STOP_PCT = float(sheet_settings["BATTERY_STOP_PCT"])
+        if "BATTERY_LOW_RESERVE_PCT" in sheet_settings:
+            BATTERY_LOW_RESERVE_PCT = float(sheet_settings["BATTERY_LOW_RESERVE_PCT"])
         if "NIGHT_BLACKOUT_START_HOUR" in sheet_settings:
             NIGHT_BLACKOUT_START_HOUR = int(sheet_settings["NIGHT_BLACKOUT_START_HOUR"])
         if "NIGHT_BLACKOUT_END_HOUR" in sheet_settings:
@@ -119,6 +125,7 @@ def save_dynamic_config():
         data = {
             "BATTERY_START_PCT": BATTERY_START_PCT,
             "BATTERY_STOP_PCT": BATTERY_STOP_PCT,
+            "BATTERY_LOW_RESERVE_PCT": BATTERY_LOW_RESERVE_PCT,
             "NIGHT_BLACKOUT_START_HOUR": NIGHT_BLACKOUT_START_HOUR,
             "NIGHT_BLACKOUT_END_HOUR": NIGHT_BLACKOUT_END_HOUR,
             "MANUAL_MODE_OVERRIDE": MANUAL_MODE_OVERRIDE,

@@ -35,6 +35,14 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
             return "stop", state.session_stop_reason
         return "blackout", f"Night blackout window — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00 AM"
 
+    if battery_pct < getattr(config, "BATTERY_LOW_RESERVE_PCT", 15.0):
+        if state.charger_state == state.State.CHARGING:
+            state.charger_state       = state.State.IDLE
+            state.session_stop_reason = f"Critical low battery reserve ({battery_pct}% < {getattr(config, 'BATTERY_LOW_RESERVE_PCT', 15.0)}%)"
+            log_decision.info(f"STOP | Battery critical low reserve | {battery_pct}%")
+            return "stop", state.session_stop_reason
+        return "hold", f"Battery reserve low ({battery_pct}% < {getattr(config, 'BATTERY_LOW_RESERVE_PCT', 15.0)}% reserve limit)"
+
     if battery_pct < config.BATTERY_STOP_PCT:
         if state.charger_state == state.State.CHARGING:
             if min_charge_time_met():
