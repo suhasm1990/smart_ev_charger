@@ -61,6 +61,17 @@ async def start_charger_async(amperage_limit: int = 20):
                 raise ChargePointStartError(f"ChargePoint start rejected (422/CommunicationError): {err_msg}")
             raise
 
+def _clean_error_str(e: Exception) -> str:
+    raw = str(e)
+    if "<!DOCTYPE" in raw or "<html" in raw or "cf-error-details" in raw:
+        if "502" in raw:
+            return "ChargePoint API Bad Gateway (Cloudflare 502)"
+        if "503" in raw:
+            return "ChargePoint API Service Unavailable (Cloudflare 503)"
+        return "ChargePoint API Server Error (Cloudflare Response)"
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    return lines[0][:150] if lines else str(e)[:150]
+
 async def stop_charger_async():
     global _cp_client
     max_retries = 3
@@ -79,7 +90,11 @@ async def stop_charger_async():
                 log_chargepoint.warning("No active session found to stop")
                 return
         except Exception as e:
-            log_chargepoint.warning(f"Stop attempt {attempt}/{max_retries} failed: {e}")
+            err_clean = _clean_error_str(e)
+            if "422" in str(e) or "Failed to stop session" in str(e):
+                log_chargepoint.info(f"Charger session already stopped or finalized: {err_clean}")
+                return
+            log_chargepoint.warning(f"Stop attempt {attempt}/{max_retries} failed: {err_clean}")
             if _cp_client:
                 try: await _cp_client.close()
                 except Exception: pass
@@ -107,7 +122,8 @@ async def get_charger_status_async() -> dict:
             "amperage_limit":  s.amperage_limit,
         }
     except Exception as e:
-        log_chargepoint.warning(f"Error getting charger status, resetting client session: {e}")
+        err_clean = _clean_error_str(e)
+        log_chargepoint.warning(f"Error getting charger status, resetting client session: {err_clean}")
         if _cp_client:
             try: await _cp_client.close()
             except Exception: pass

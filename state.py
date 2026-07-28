@@ -17,4 +17,7 @@ grid_draw_count      = 0
 
 last_surplus_alert_date = None
 last_grid_export_alert_date = None
+consecutive_api_failures = 0
+last_api_failure_alert_time = None
+
 

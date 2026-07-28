@@ -194,15 +194,23 @@ def run_cycle():
                 state.charger_state = state.State.CHARGING
                 raise
 
+        state.consecutive_api_failures = 0
         log_to_csv(stats, action, reason, now)
 
     except requests.exceptions.HTTPError as e:
+        state.consecutive_api_failures += 1
         log.error(
             f"NETZERO API ERROR | status={e.response.status_code if e.response else 'N/A'} | "
             f"url={e.request.url if e.request else 'N/A'} | {e}"
         )
+        if state.consecutive_api_failures == 3:
+            notify("⚠️ <b>Smart EV Charger API Notice</b>\nFailed to fetch Powerwall stats for 3 consecutive cycles. Will continue retrying.")
     except Exception as e:
+        state.consecutive_api_failures += 1
         log.error(f"CYCLE ERROR | {type(e).__name__}: {e}", exc_info=True)
+        if state.consecutive_api_failures == 3:
+            notify(f"⚠️ <b>Smart EV Charger Warning</b>\nEncountered repeated cycle errors for 3 consecutive cycles ({type(e).__name__}). Will continue retrying.")
+
 
 def handle_shutdown(signum, frame):
     log.info("SHUTDOWN | Signal received — shutting down without altering charger state")
