@@ -22,12 +22,14 @@ def get_powerwall_stats() -> dict:
     )
 
     solar_surplus_kw = round(solar_kw - home_kw, 2)
+    grid_export_kw   = round(max(0.0, -grid_kw), 2)
     self_powered_pct = round(
         max(0, min(100, (1 - max(0, grid_kw) / max(home_kw, 0.01)) * 100)), 1
     ) if home_kw > 0 else 100.0
 
     log_netzero.debug(
         f"solar={solar_kw}kW | home={home_kw}kW | surplus={solar_surplus_kw}kW | "
+        f"grid_export={grid_export_kw}kW | "
         f"battery={battery_kw}kW ({battery_pct}%) | grid={grid_kw}kW | "
         f"self_powered={self_powered_pct}% | "
         f"island={live.get('island_status')} | storm={live.get('storm_mode_active')} | "
@@ -41,6 +43,7 @@ def get_powerwall_stats() -> dict:
         "grid_kw":          grid_kw,
         "battery_kw":       battery_kw,
         "solar_surplus_kw": solar_surplus_kw,
+        "grid_export_kw":   grid_export_kw,
         "self_powered_pct": self_powered_pct,
         "island_mode":      live.get("island_status", "on_grid"),
         "storm_mode":       live.get("storm_mode_active", False),

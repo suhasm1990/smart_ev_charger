@@ -26,7 +26,12 @@ GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spread
 
 # Schedule Config
 DAILY_RESET_TIME = os.getenv("DAILY_RESET_TIME", "00:00")
-DAILY_AGENT_TIME = os.getenv("DAILY_AGENT_TIME", "23:50")
+DAILY_AGENT_TIME = os.getenv("DAILY_AGENT_TIME", "07:00")
+
+# Notification Thresholds
+GRID_EXPORT_ALERT_THRESHOLD_KW = float(os.getenv("GRID_EXPORT_ALERT_THRESHOLD_KW", "1.0"))
+
+
 
 # Timezone
 TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))

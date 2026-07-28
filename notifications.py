@@ -20,12 +20,11 @@ def notify(message: str):
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_ALLOWED_USER_ID:
         try:
             url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-            escaped_message = html.escape(message)
             r = requests.post(
                 url,
                 json={
                     "chat_id": config.TELEGRAM_ALLOWED_USER_ID,
-                    "text": escaped_message,
+                    "text": message,
                     "parse_mode": "HTML"
                 },
                 timeout=10,

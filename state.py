@@ -16,3 +16,5 @@ session_count_today  = 0
 grid_draw_count      = 0
 
 last_surplus_alert_date = None
+last_grid_export_alert_date = None
+

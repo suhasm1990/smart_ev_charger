@@ -98,6 +98,7 @@ def run_cycle():
                 "solar_kw": stats.get("solar_kw"),
                 "home_kw": stats.get("home_kw"),
                 "surplus_kw": stats.get("solar_surplus_kw"),
+                "grid_export_kw": stats.get("grid_export_kw"),
                 "grid_kw": stats.get("grid_kw"),
                 "island_mode": stats.get("island_mode"),
                 "storm_mode": stats.get("storm_mode"),
@@ -239,10 +240,25 @@ def main():
     from daily_agent import run_daily_agent
     
     # Explicitly bind the schedule to the user's timezone to prevent UTC drift
-    tz_str = getattr(config.TZ, "key", "America/Los_Angeles")
+    tz_str = getattr(config.TZ, "key", str(config.TZ))
+    tz_param = None
+    try:
+        import pytz
+        tz_param = pytz.timezone(tz_str)
+    except Exception:
+        tz_param = None
     
-    schedule.every().day.at(config.DAILY_RESET_TIME, tz_str).do(daily_reset)
-    schedule.every().day.at(config.DAILY_AGENT_TIME, tz_str).do(run_daily_agent)
+    log.info(f"STARTUP | Scheduled Daily Reset at {config.DAILY_RESET_TIME} ({tz_str})")
+    log.info(f"STARTUP | Scheduled Daily Agent AI Planner at {config.DAILY_AGENT_TIME} ({tz_str})")
+
+    if tz_param:
+        schedule.every().day.at(config.DAILY_RESET_TIME, tz_param).do(daily_reset)
+        schedule.every().day.at(config.DAILY_AGENT_TIME, tz_param).do(run_daily_agent)
+    else:
+        schedule.every().day.at(config.DAILY_RESET_TIME).do(daily_reset)
+        schedule.every().day.at(config.DAILY_AGENT_TIME).do(run_daily_agent)
+
+
 
     # Start Telegram Bot if configured
     if config.TELEGRAM_BOT_TOKEN:

@@ -81,74 +81,84 @@ def list_alerts() -> str:
 
 def check_alerts(current_state: dict):
     alerts = load_alerts()
-    if not alerts:
-        return
-        
-    triggered_ids = []
-    for alert in alerts:
-        field = alert["field"]
-        operator = alert["operator"]
-        target = alert["value"]
-        
-        if field not in current_state:
-            continue
+    if alerts:
+        triggered_ids = []
+        for alert in alerts:
+            field = alert["field"]
+            operator = alert["operator"]
+            target = alert["value"]
             
-        val = current_state[field]
-        if val is None:
-            continue
-            
-        matched = False
-        
-        try:
-            # Handle boolean comparison
-            if isinstance(val, bool):
-                target_bool = str(target).lower() in ["true", "1", "yes", "on"]
-                if operator == "eq": matched = (val == target_bool)
-                elif operator == "ne": matched = (val != target_bool)
-            # Handle numeric comparison
-            elif isinstance(val, (int, float)):
-                target_num = float(target)
-                if operator == "eq": matched = (val == target_num)
-                elif operator == "ne": matched = (val != target_num)
-                elif operator == "gt": matched = (val > target_num)
-                elif operator == "gte": matched = (val >= target_num)
-                elif operator == "lt": matched = (val < target_num)
-                elif operator == "lte": matched = (val <= target_num)
-            # Handle string comparison
-            else:
-                target_str = str(target).strip()
-                val_str = str(val).strip()
-                if operator == "eq": matched = (val_str.lower() == target_str.lower())
-                elif operator == "ne": matched = (val_str.lower() != target_str.lower())
-        except Exception as e:
-            log.warning(f"Failed to evaluate alert rule {alert['id']} for state value '{val}': {e}")
-            continue
-            
-        if matched:
-            log.info(f"ALERT TRIGGERED | id={alert['id']} | field={field} {operator} {target} | current={val}")
-            notify(f"🔔 <b>Alert Triggered</b>\n{alert['message']}")
-            if alert["once"]:
-                triggered_ids.append(alert["id"])
+            if field not in current_state:
+                continue
                 
-    if triggered_ids:
-        remaining = [a for a in alerts if a["id"] not in triggered_ids]
-        save_alerts(remaining)
+            val = current_state[field]
+            if val is None:
+                continue
+                
+            matched = False
+            
+            try:
+                # Handle boolean comparison
+                if isinstance(val, bool):
+                    target_bool = str(target).lower() in ["true", "1", "yes", "on"]
+                    if operator == "eq": matched = (val == target_bool)
+                    elif operator == "ne": matched = (val != target_bool)
+                # Handle numeric comparison
+                elif isinstance(val, (int, float)):
+                    target_num = float(target)
+                    if operator == "eq": matched = (val == target_num)
+                    elif operator == "ne": matched = (val != target_num)
+                    elif operator == "gt": matched = (val > target_num)
+                    elif operator == "gte": matched = (val >= target_num)
+                    elif operator == "lt": matched = (val < target_num)
+                    elif operator == "lte": matched = (val <= target_num)
+                # Handle string comparison
+                else:
+                    target_str = str(target).strip()
+                    val_str = str(val).strip()
+                    if operator == "eq": matched = (val_str.lower() == target_str.lower())
+                    elif operator == "ne": matched = (val_str.lower() != target_str.lower())
+            except Exception as e:
+                log.warning(f"Failed to evaluate alert rule {alert['id']} for state value '{val}': {e}")
+                continue
+                
+            if matched:
+                log.info(f"ALERT TRIGGERED | id={alert['id']} | field={field} {operator} {target} | current={val}")
+                notify(f"🔔 <b>Alert Triggered</b>\n{alert['message']}")
+                if alert["once"]:
+                    triggered_ids.append(alert["id"])
+                    
+        if triggered_ids:
+            remaining = [a for a in alerts if a["id"] not in triggered_ids]
+            save_alerts(remaining)
 
-    # Built-in Real-Time Solar Surplus Alert (1.0 kW threshold)
-    surplus_kw = current_state.get("surplus_kw", 0)
-    is_plugged = current_state.get("is_plugged_in", True)
-    if surplus_kw and surplus_kw >= 1.0:
-        import state
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        if getattr(state, "last_surplus_alert_date", None) != today_str:
-            if not is_plugged:
-                notify(
-                    f"☀️ **Real-Time Surplus Alert**\n"
-                    f"You are currently exporting {surplus_kw:.1f} kW to the grid!\n"
-                    f"This is a great time to plug in the EV or run heavy appliances (AC, washing machine)."
-                )
-            # Mark as alerted for today whether plugged in or not, to prevent spam
+    # Built-in Real-Time Grid Export Alert (Configurable threshold)
+    import config
+    import state
+
+    grid_export_kw = current_state.get("grid_export_kw")
+    if grid_export_kw is None:
+        grid_kw = current_state.get("grid_kw")
+        if grid_kw is not None and grid_kw < 0:
+            grid_export_kw = abs(grid_kw)
+        else:
+            grid_export_kw = current_state.get("surplus_kw", 0)
+
+    threshold = getattr(config, "GRID_EXPORT_ALERT_THRESHOLD_KW", 1.0)
+    if threshold > 0 and grid_export_kw and grid_export_kw >= threshold:
+        today_str = datetime.datetime.now(config.TZ).strftime("%Y-%m-%d")
+        if getattr(state, "last_grid_export_alert_date", None) != today_str:
+            is_plugged = current_state.get("is_plugged_in")
+            status_str = "Plugged in" if is_plugged else "Unplugged"
+            notify(
+                f"☀️ <b>Real-Time Grid Export Alert</b>\n"
+                f"You are currently exporting <b>{grid_export_kw:.1f} kW</b> to the grid!\n"
+                f"EV Status: {status_str}.\n"
+                f"This is a great time to plug in the EV or run heavy appliances (AC, washing machine)."
+            )
+            state.last_grid_export_alert_date = today_str
             state.last_surplus_alert_date = today_str
+
 
 def check_recent_log_errors(interval_minutes: int = 20) -> bool:
     log_file = "logs/charger.log"
