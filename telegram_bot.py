@@ -2,7 +2,9 @@ import os
 import json
 import re
 import threading
+import logging
 from datetime import datetime
+
 import telebot
 from google import genai
 from google.genai import types
@@ -471,20 +473,22 @@ def _bot_polling_loop():
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")
 
     log.info("Telegram Bot starting infinity polling...")
-    try:
-        bot.infinity_polling(timeout=50, long_polling_timeout=40, logger_level=telebot.logger.ERROR)
-    except Exception as poll_err:
-        log.error(f"Telegram polling encountered error: {poll_err}")
+    while True:
+        try:
+            bot.infinity_polling(timeout=50, long_polling_timeout=40, logger_level=logging.ERROR)
+        except Exception as poll_err:
+            log.error(f"Telegram polling encountered error: {poll_err}. Retrying polling in 5 seconds...")
+            import time
+            time.sleep(5)
 
 def start_telegram_bot(run_cycle_callback):
     global RUN_CYCLE_CALLBACK
     RUN_CYCLE_CALLBACK = run_cycle_callback
     
     if not config.TELEGRAM_BOT_TOKEN:
-        log.warning("Telegram Bot Token is missing, bot will not start.")
+        log.warning("TELEGRAM_BOT_TOKEN is not configured. Telegram bot disabled.")
         return
         
-    t = threading.Thread(target=_bot_polling_loop, daemon=True, name="TelegramBot")
-    t.start()
+    thread = threading.Thread(target=_bot_polling_loop, daemon=True)
+    thread.start()
     log.info("Telegram Bot thread started successfully.")
-
