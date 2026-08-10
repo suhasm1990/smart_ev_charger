@@ -61,16 +61,21 @@ async def start_charger_async(amperage_limit: int = 20):
                 raise ChargePointStartError(f"ChargePoint start rejected (422/CommunicationError): {err_msg}")
             raise
 
+import re
+
 def _clean_error_str(e: Exception) -> str:
     raw = str(e)
-    if "<!DOCTYPE" in raw or "<html" in raw or "cf-error-details" in raw:
+    if "<!DOCTYPE" in raw or "<html" in raw or "cf-error-details" in raw or "<div" in raw:
         if "502" in raw:
             return "ChargePoint API Bad Gateway (Cloudflare 502)"
         if "503" in raw:
             return "ChargePoint API Service Unavailable (Cloudflare 503)"
         return "ChargePoint API Server Error (Cloudflare Response)"
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
-    return lines[0][:150] if lines else str(e)[:150]
+    # Strip any residual HTML tags
+    clean = re.sub(r'<[^>]+>', '', raw)
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    return lines[0][:150] if lines else clean[:150]
+
 
 async def stop_charger_async():
     global _cp_client
@@ -115,11 +120,31 @@ async def get_charger_status_async() -> dict:
         user_status = await client.get_user_charging_status()
         is_charging = (s.charging_status == "CHARGING") or (user_status is not None)
         
+        energy_kwh = 0.0
+        power_kw = 0.0
+        miles_added = 0.0
+        charging_time_seconds = 0
+        
+        if user_status and getattr(user_status, "session_id", None):
+            try:
+                session = await client.get_charging_session(user_status.session_id)
+                if session:
+                    energy_kwh = float(getattr(session, "energy_kwh", 0.0) or 0.0)
+                    power_kw = float(getattr(session, "power_kw", 0.0) or 0.0)
+                    miles_added = float(getattr(session, "miles_added", 0.0) or 0.0)
+                    charging_time_seconds = int(getattr(session, "charging_time", 0) or 0)
+            except Exception as sess_err:
+                log_chargepoint.warning(f"Error fetching active charging session details: {sess_err}")
+
         return {
             "charging_status": "CHARGING" if is_charging else s.charging_status,
             "is_plugged_in":   s.is_plugged_in,
             "is_connected":    s.is_connected,
             "amperage_limit":  s.amperage_limit,
+            "energy_kwh":      energy_kwh,
+            "power_kw":        power_kw,
+            "miles_added":     miles_added,
+            "charging_time_seconds": charging_time_seconds,
         }
     except Exception as e:
         err_clean = _clean_error_str(e)
@@ -129,6 +154,7 @@ async def get_charger_status_async() -> dict:
             except Exception: pass
             _cp_client = None
         raise
+
 
 async def set_charger_amperage_limit_async(amperage: int):
     global _cp_client

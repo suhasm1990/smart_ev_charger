@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import threading
 from datetime import datetime
 import telebot
@@ -11,7 +12,7 @@ import state
 from logger import log
 from api_netzero import get_powerwall_stats
 from api_chargepoint import get_charger_status as get_cp_status
-from csv_logger import get_session_minutes
+from csv_logger import get_session_minutes, get_recent_sessions, get_daily_charging_cost as calc_daily_cost
 
 RUN_CYCLE_CALLBACK = None
 
@@ -33,6 +34,7 @@ def get_system_status() -> str:
     status_data = {
         "charger_state": str(state.charger_state),
         "session_duration_minutes": round(get_session_minutes(), 1),
+        "previous_session_stop_reason": getattr(state, "session_stop_reason", "N/A"),
         "battery_pct": pw.get("battery_pct"),
         "solar_kw": pw.get("solar_kw"),
         "home_kw": pw.get("home_kw"),
@@ -44,6 +46,12 @@ def get_system_status() -> str:
         "is_plugged_in": cp.get("is_plugged_in"),
         "is_connected": cp.get("is_connected"),
         "amperage_limit": cp.get("amperage_limit"),
+        "cp_session_energy_kwh": cp.get("energy_kwh", 0.0),
+        "cp_charging_power_kw": cp.get("power_kw", 0.0),
+        "cp_miles_added": cp.get("miles_added", 0.0),
+        "default_amperage": config.DEFAULT_CHARGER_AMPERAGE,
+        "max_amperage": config.MAX_CHARGER_AMPERAGE,
+
         "config_battery_start_pct": config.BATTERY_START_PCT,
         "config_battery_stop_pct": config.BATTERY_STOP_PCT,
         "config_blackout_start_hour": config.NIGHT_BLACKOUT_START_HOUR,
@@ -52,6 +60,62 @@ def get_system_status() -> str:
     }
     log.info(f"DEBUG: get_system_status result: {status_data}")
     return json.dumps(status_data)
+
+def get_recent_charging_sessions(limit: int = 5) -> str:
+    """Gets a list of recent EV charging sessions from logs, including start time, end time, session duration (minutes), battery level change, and the reason why charging stopped.
+    Use this tool whenever the user asks when charging stopped, why charging stopped, or about previous session charge times.
+    
+    Args:
+        limit: Number of recent sessions to return (default 5).
+    """
+    sessions = get_recent_sessions(limit=limit)
+    if not sessions:
+        return "No recent charging sessions found in logs."
+    
+    formatted = []
+    for idx, s in enumerate(sessions, 1):
+        formatted.append(
+            f"Session {idx}:\n"
+            f"  • Start Time: {s.get('start_time', 'N/A')}\n"
+            f"  • End Time: {s.get('end_time', 'N/A')}\n"
+            f"  • Duration: {s.get('max_duration_minutes', 0):.1f} min\n"
+            f"  • Battery SoC: {s.get('start_battery_pct', 'N/A')}% -> {s.get('end_battery_pct', 'N/A')}%\n"
+            f"  • Stop Reason: {s.get('stop_reason', 'Normal completion or manual stop')}"
+        )
+    return "\n\n".join(formatted)
+
+def get_tou_schedule() -> str:
+    """Gets details about PG&E Time-Of-Use (TOU) electricity rate periods, night blackout windows, peak/partial-peak/off-peak hours, and rates."""
+    from tou import get_tou_rate
+    now = datetime.now(config.TZ)
+    current_rate = get_tou_rate(now)
+    schedule_info = {
+        "timezone": str(config.TZ),
+        "current_rate_per_kwh": f"${current_rate:.5f}",
+        "summer_rates": {
+            "off_peak": "$0.14513/kWh",
+            "partial_peak": "$0.20192/kWh",
+            "on_peak": "$0.31235/kWh"
+        },
+        "winter_rates": {
+            "off_peak": "$0.14324/kWh",
+            "partial_peak": "$0.14324/kWh",
+            "on_peak": "$0.22401/kWh"
+        },
+        "weekday_schedule": {
+            "off_peak": "12:00 AM - 1:00 PM and 11:00 PM - 12:00 AM",
+            "partial_peak_1": "1:00 PM - 5:00 PM",
+            "on_peak": "5:00 PM - 8:00 PM",
+            "partial_peak_2": "8:00 PM - 11:00 PM"
+        },
+        "weekend_schedule": {
+            "off_peak": "All day on weekends and PG&E holidays"
+        },
+        "night_blackout_window": f"{config.NIGHT_BLACKOUT_START_HOUR}:00 - {config.NIGHT_BLACKOUT_END_HOUR}:00",
+        "night_blackout_description": f"No EV charging between {config.NIGHT_BLACKOUT_START_HOUR}:00 (4 PM) and {config.NIGHT_BLACKOUT_END_HOUR}:00 (9 AM) on weekdays"
+    }
+    return json.dumps(schedule_info)
+
 
 def get_tesla_powerwall_status() -> str:
     """Gets detailed stats about the Tesla Powerwall, including current battery level (SoC %), charge/discharge power (kW), solar generation (kW), home usage (kW), grid export/import (kW), self-powered percentage, and grid connection status."""
@@ -91,7 +155,6 @@ def set_battery_thresholds(start_pct: float, stop_pct: float) -> str:
     config.BATTERY_STOP_PCT = stop_pct
     config.save_dynamic_config()
     
-    # Trigger run cycle immediately in background to pick up changes
     if RUN_CYCLE_CALLBACK:
         threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
         
@@ -133,11 +196,14 @@ def start_charging(amperage: int = 20) -> str:
     """Immediately forces the charger to start charging, bypassing solar/battery rules.
     
     Args:
-        amperage: The current limit to set in Amps (default is 20, max is 32, range 8-32).
+        amperage: The current limit to set in Amps (default is 20A for normal power, set to 32A for full/max power, range 8-32).
     """
     from api_chargepoint import start_charger
     from notifications import notify
     try:
+        if amperage < 8 or amperage > 32:
+            amperage = config.DEFAULT_CHARGER_AMPERAGE
+
         # Start physically
         start_charger(amperage)
         
@@ -202,32 +268,7 @@ def set_charger_amperage(amperage: int) -> str:
         return f"Error setting amperage: {e}"
 
 def set_custom_alert(field: str, operator: str, value: float, message: str, once: bool = True) -> str:
-    """Sets a dynamic notification alert when a metric condition is met.
-    
-    Args:
-        field: The system attribute to monitor. Must be one of:
-               - 'battery_pct' (float, Powerwall SoC percentage, e.g., 75.5)
-               - 'solar_kw' (float, solar generation in kW)
-               - 'home_kw' (float, home power consumption in kW)
-               - 'surplus_kw' (float, solar generation minus home usage in kW)
-               - 'grid_kw' (float, grid draw in kW)
-               - 'island_mode' (string, 'on_grid' or 'off_grid')
-               - 'storm_mode' (boolean, true if Tesla storm watch mode is active)
-               - 'charging_status' (string, 'CHARGING', 'AVAILABLE', etc.)
-               - 'is_plugged_in' (boolean, true if vehicle is plugged in)
-               - 'is_connected' (boolean, true if charger is connected)
-               - 'log_errors' (boolean, true if error severity logs are parsed)
-        operator: Comparison operator. Must be one of:
-                  - 'eq' (equal to)
-                  - 'ne' (not equal to)
-                  - 'gt' (greater than)
-                  - 'gte' (greater than or equal to)
-                  - 'lt' (less than)
-                  - 'lte' (less than or equal to)
-        value: The target value to compare against. Strings, booleans, or floats.
-        message: The notification text to push when the condition triggers.
-        once: If true (default), the alert is removed after triggering once.
-    """
+    """Sets a dynamic notification alert when a metric condition is met."""
     from alerts import add_alert
     return add_alert(field, operator, value, message, once)
 
@@ -241,14 +282,72 @@ def list_custom_alerts() -> str:
     from alerts import list_alerts
     return list_alerts()
 
+def get_daily_charging_cost(date_or_period: str = "today") -> str:
+    """Calculates total energy drawn from grid (kWh), solar energy used (kWh), and total cost ($) for EV charging for a period or date.
+    Use this tool whenever the user asks how much it cost to charge the car today, yesterday, this week, this month, or on a specific date, or how many grid units were pulled.
+    
+    Args:
+        date_or_period: Time period or date, e.g. 'today', 'yesterday', 'this_week', 'this_month', or 'YYYY-MM-DD' (defaults to 'today').
+    """
+    from csv_logger import get_daily_charging_cost as calc_cost
+    data = calc_cost(period=date_or_period)
+    return json.dumps(data)
+
+
+def get_home_energy_summary(date_or_period: str = "today") -> str:
+    """Calculates total home electricity consumption (kWh), solar generated (kWh), grid energy imported (kWh), total electricity bill cost ($), and breakdown between EV charging vs home appliances for a given period or date.
+    Use this tool whenever the user asks how much the home consumed today, how much the total home electricity costed today, this week, this month, or yesterday.
+    
+    Args:
+        date_or_period: Time period or date, e.g. 'today', 'yesterday', 'this_week', 'this_month', or 'YYYY-MM-DD' (defaults to 'today').
+    """
+    from csv_logger import get_home_energy_summary as calc_home_summary
+    data = calc_home_summary(period=date_or_period)
+    return json.dumps(data)
+
+def get_energy_saving_advice() -> str:
+    """Analyzes recent 7-day power usage logs to calculate peak solar generation windows, identify high-cost grid draws, and provide actionable recommendations to reduce utility bills.
+    Use this tool whenever the user asks for suggestions or advice on how to reduce their bill, when to run heavy appliances, or when to charge the car.
+    """
+    from csv_logger import get_energy_saving_advice as calc_advice
+    data = calc_advice()
+    return json.dumps(data)
+
 def add_agent_instruction(text: str) -> str:
-    """Saves a special note or override instruction for the Daily AI Agent. Use this if the user wants to prioritize charging the car tonight or overriding normal solar-saving logic."""
+    """Saves a special note or override instruction for the Daily AI Agent."""
     from sheets_db import add_user_instruction
     success = add_user_instruction(text)
     if success:
         return f"Success: Saved instruction '{text}' for the Daily AI Agent. It will process this at midnight."
     else:
         return "Error: Failed to save instruction. Please check Google Sheets integration."
+
+def clean_telegram_html(text: str) -> str:
+    """Cleans and sanitizes Gemini outputs into valid Telegram HTML format."""
+    if not text:
+        return ""
+    
+    # Convert Markdown bold (**text** or __text__) -> <b>text</b>
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
+    
+    # Convert Markdown italic (*text* or _text_) -> <i>text</i>
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
+    
+    # Convert Markdown inline code (`code`) -> <code>code</code>
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    
+    # Convert bullet markers at line starts (* or - ) to unicode bullet •
+    text = re.sub(r'^[ \t]*[\*\-][ \t]+', '• ', text, flags=re.MULTILINE)
+    
+    # Strip unsupported HTML tags (ul, ol, li, p, br, div, span, etc.)
+    text = re.sub(r'</?(?:ul|ol|li|p|br|div|span|header|footer|section|h[1-6]|table|tr|td|th)[^>]*>', '\n', text, flags=re.IGNORECASE)
+    
+    # Normalize multi-newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
 
 # ── 2. Gemini Response Handler ──────────────────────────────────────────────
 
@@ -262,7 +361,6 @@ def handle_message_with_gemini(text: str) -> str:
         
     global gemini_client, gemini_chat
     
-    # Allow manual conversation history reset
     if text.strip().lower() in ["/clear", "/reset"]:
         gemini_chat = None
         log.info("DEBUG: Gemini chat session cleared.")
@@ -273,6 +371,11 @@ def handle_message_with_gemini(text: str) -> str:
     
     tools = [
         get_system_status,
+        get_recent_charging_sessions,
+        get_daily_charging_cost,
+        get_home_energy_summary,
+        get_energy_saving_advice,
+        get_tou_schedule,
         get_tesla_powerwall_status,
         read_application_logs,
         set_battery_thresholds,
@@ -294,8 +397,11 @@ def handle_message_with_gemini(text: str) -> str:
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "You are an AI assistant for a Smart EV Charger. "
-                    "You can query status, modify thresholds (battery levels, blackout hours), "
-                    "or force start/stop charging by calling tools. "
+                    "You can query status, check recent charging session history (when charging stopped and why), "
+                    "calculate daily/weekly/monthly EV charging cost and total home energy consumption/cost, "
+                    "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
+                    "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
+                    "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default) by calling tools. "
                     "Always run the appropriate tools when requested, and summarize the actions taken "
                     "in a friendly natural language response. "
                     "Format all your responses in the strict HTML subset supported by Telegram. "
@@ -309,8 +415,10 @@ def handle_message_with_gemini(text: str) -> str:
                 temperature=0.0
             )
         )
+
+
+
         
-    # Send message to chat session to preserve context
     response = gemini_chat.send_message(text)
     log.info(f"DEBUG: Gemini response: {response}")
     return response.text
@@ -322,7 +430,6 @@ def _bot_polling_loop():
     
     @bot.message_handler(commands=['start', 'help'])
     def send_welcome(message):
-        # Security check
         if config.TELEGRAM_ALLOWED_USER_ID:
             if message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
                 bot.reply_to(message, "Unauthorized.")
@@ -331,18 +438,17 @@ def _bot_polling_loop():
         help_text = (
             "🔋 <b>Welcome to the Smart EV Charger Assistant!</b>\n\n"
             "I'm powered by Gemini and can help you control your solar charger. You can text me in natural language, for example:\n"
-            "• <i>'How is my charger doing right now?'</i>\n"
-            "• <i>'Stop charging when the battery goes below 40%'</i>\n"
+            "• <i>'Why did charging stop last time?'</i>\n"
+            "• <i>'What are the peak and partial peak timings?'</i>\n"
+            "• <i>'Charge with full power'</i>\n"
+            "• <i>'Stop charging when battery goes below 40%'</i>\n"
             "• <i>'Turn on manual mode'</i>\n"
-            "• <i>'Force start the charger'</i>\n"
-            "• <i>'Force stop the charger'</i>\n"
-            "• <i>'Change night blackout hours to 5pm to 8am'</i>"
+            "• <i>'Force start the charger'</i>"
         )
         bot.reply_to(message, help_text, parse_mode="HTML")
 
     @bot.message_handler(func=lambda message: True)
     def handle_incoming_message(message):
-        # Security check
         if config.TELEGRAM_ALLOWED_USER_ID:
             if message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
                 bot.reply_to(message, "Unauthorized: You are not allowed to control this EV Charger.")
@@ -352,14 +458,23 @@ def _bot_polling_loop():
         bot.send_chat_action(message.chat.id, 'typing')
         
         try:
-            response_text = handle_message_with_gemini(user_text)
-            bot.reply_to(message, response_text, parse_mode="HTML")
+            raw_response = handle_message_with_gemini(user_text)
+            response_html = clean_telegram_html(raw_response)
+            try:
+                bot.reply_to(message, response_html, parse_mode="HTML")
+            except telebot.apihelper.ApiTelegramException as api_err:
+                log.warning(f"Telegram HTML parse error: {api_err}. Falling back to plain text reply.")
+                plain_text = re.sub(r'<[^>]+>', '', raw_response)
+                bot.reply_to(message, plain_text, parse_mode=None)
         except Exception as e:
             log.error(f"Telegram Bot error processing Gemini request: {e}", exc_info=True)
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")
 
     log.info("Telegram Bot starting infinity polling...")
-    bot.infinity_polling(timeout=50, long_polling_timeout=40)
+    try:
+        bot.infinity_polling(timeout=50, long_polling_timeout=40, logger_level=telebot.logger.ERROR)
+    except Exception as poll_err:
+        log.error(f"Telegram polling encountered error: {poll_err}")
 
 def start_telegram_bot(run_cycle_callback):
     global RUN_CYCLE_CALLBACK
@@ -372,3 +487,4 @@ def start_telegram_bot(run_cycle_callback):
     t = threading.Thread(target=_bot_polling_loop, daemon=True, name="TelegramBot")
     t.start()
     log.info("Telegram Bot thread started successfully.")
+

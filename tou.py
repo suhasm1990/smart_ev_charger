@@ -11,7 +11,13 @@ def get_tou_period(now: datetime) -> str:
         return "partial_peak"
     return "off_peak"
 
-def get_tou_rate(now: datetime) -> float:
+# MID (Modesto Irrigation District) Rate N2-EVD Constants
+MID_FIXED_MONTHLY_FEE = 32.00
+MID_VOLUMETRIC_ADDER = 0.0151  # EEA ($0.012) + CIA ($0.0028) + State Surcharge ($0.0003)
+MID_MOUNTAIN_HOUSE_TAX = 1.065 # 6.5% Mountain House Surcharge
+MID_SOLAR_EXPORT_CREDIT_RATE = 0.076 # $0.076/kWh Excess Generation Credit
+
+def get_base_tou_rate(now: datetime) -> float:
     period = get_tou_period(now)
     month  = now.month
     summer = 5 <= month <= 9
@@ -22,6 +28,12 @@ def get_tou_rate(now: datetime) -> float:
         "off_peak":     0.14513 if summer else 0.14324,
     }
     return rates[period]
+
+def get_tou_rate(now: datetime) -> float:
+    """Returns the effective MID delivered rate per kWh including volumetric surcharges and 6.5% Mountain House tax."""
+    base = get_base_tou_rate(now)
+    return round((base + MID_VOLUMETRIC_ADDER) * MID_MOUNTAIN_HOUSE_TAX, 5)
+
 
 def is_expensive_period(now: datetime) -> bool:
     return get_tou_period(now) in ("on_peak", "partial_peak")

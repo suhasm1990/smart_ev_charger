@@ -25,6 +25,12 @@ def check_manual_mode() -> bool:
             if config.MANUAL_MODE_OVERRIDE == "manual":
                 config.MANUAL_MODE_OVERRIDE = "default"
                 config.save_dynamic_config()
+                notify(
+                    f"⚙️ <b>Auto Mode Restored</b>\n"
+                    f"Daily reset at {config.NIGHT_BLACKOUT_END_HOUR}:00 AM triggered — manual override ended. "
+                    f"Solar automation and battery thresholds are active again."
+                )
+
 
     # Load dynamic configs first to ensure we check local override
     config.load_dynamic_config()
