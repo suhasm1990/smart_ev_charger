@@ -216,6 +216,24 @@ def handle_shutdown(signum, frame):
     log.info("SHUTDOWN | Signal received — shutting down without altering charger state")
     sys.exit(0)
 
+def get_scheduled_time_str(time_str: str, target_tz) -> str:
+    """
+    Converts a target local time string (e.g. '07:00' in America/Los_Angeles)
+    to the system local time string (e.g. '14:00' if container system clock is UTC)
+    for Python's `schedule` library.
+    """
+    from datetime import datetime, time
+    try:
+        h, m = map(int, time_str.split(":"))
+        now_target = datetime.now(target_tz)
+        target_dt = datetime.combine(now_target.date(), time(h, m), tzinfo=target_tz)
+        system_tz = datetime.now().astimezone().tzinfo
+        system_dt = target_dt.astimezone(system_tz)
+        return system_dt.strftime("%H:%M")
+    except Exception as e:
+        log.warning(f"Failed to convert schedule time '{time_str}': {e}")
+        return time_str
+
 def main():
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT,  handle_shutdown)
@@ -247,24 +265,15 @@ def main():
 
     from daily_agent import run_daily_agent
     
-    # Explicitly bind the schedule to the user's timezone to prevent UTC drift
     tz_str = getattr(config.TZ, "key", str(config.TZ))
-    tz_param = None
-    try:
-        import pytz
-        tz_param = pytz.timezone(tz_str)
-    except Exception:
-        tz_param = None
+    reset_sys_time = get_scheduled_time_str(config.DAILY_RESET_TIME, config.TZ)
+    agent_sys_time = get_scheduled_time_str(config.DAILY_AGENT_TIME, config.TZ)
     
-    log.info(f"STARTUP | Scheduled Daily Reset at {config.DAILY_RESET_TIME} ({tz_str})")
-    log.info(f"STARTUP | Scheduled Daily Agent AI Planner at {config.DAILY_AGENT_TIME} ({tz_str})")
+    log.info(f"STARTUP | Scheduled Daily Reset at {config.DAILY_RESET_TIME} ({tz_str}) [system time: {reset_sys_time}]")
+    log.info(f"STARTUP | Scheduled Daily Agent AI Planner at {config.DAILY_AGENT_TIME} ({tz_str}) [system time: {agent_sys_time}]")
 
-    if tz_param:
-        schedule.every().day.at(config.DAILY_RESET_TIME, tz_param).do(daily_reset)
-        schedule.every().day.at(config.DAILY_AGENT_TIME, tz_param).do(run_daily_agent)
-    else:
-        schedule.every().day.at(config.DAILY_RESET_TIME).do(daily_reset)
-        schedule.every().day.at(config.DAILY_AGENT_TIME).do(run_daily_agent)
+    schedule.every().day.at(reset_sys_time).do(daily_reset)
+    schedule.every().day.at(agent_sys_time).do(run_daily_agent)
 
 
 

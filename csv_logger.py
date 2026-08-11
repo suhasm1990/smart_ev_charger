@@ -86,55 +86,79 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
             f"est_cost_this_min=${est_cost:.5f} | tou={tou}"
         )
 
-def get_recent_sessions(limit: int = 5) -> list[dict]:
-    """Parses logs/charger_log.csv and groups contiguous charging rows into distinct charging sessions."""
+def get_all_log_rows(days: int = 7) -> list[dict]:
+    """
+    Fetches recent log rows directly from Google Sheets (primary source of truth across container restarts).
+    Falls back to local CSV file if Google Sheets API is unconfigured or temporarily unavailable.
+    """
+    # 1. Try Google Sheets first (primary single source of truth)
+    try:
+        from sheets_db import get_recent_logs
+        sheets_logs = get_recent_logs(days=days)
+        if sheets_logs:
+            return sheets_logs
+    except Exception as e:
+        log_csv.warning(f"Failed to fetch logs from Google Sheets, falling back to local CSV: {e}")
+
+    # 2. Fallback to local CSV if Sheets API fails or is offline
+    rows = []
     csv_file = config.CSV_LOG_FILE
-    if not os.path.exists(csv_file):
+    if os.path.exists(csv_file):
+        try:
+            with open(csv_file, "r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+        except Exception as e:
+            log_csv.warning(f"Error reading local CSV fallback: {e}")
+
+    return rows
+
+def get_recent_sessions(limit: int = 5) -> list[dict]:
+    """Parses logs (local CSV + Google Sheets) and groups contiguous charging rows into distinct charging sessions."""
+    rows = get_all_log_rows()
+    if not rows:
         return []
 
     sessions = []
     current_session = None
 
     try:
-        with open(csv_file, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                state_str = row.get("charger_state", "")
-                action_str = row.get("action", "")
-                is_charging = ("CHARGING" in state_str) or (action_str == "start")
+        for row in rows:
+            state_str = row.get("charger_state", "")
+            action_str = row.get("action", "")
+            is_charging = ("CHARGING" in state_str) or (action_str == "start")
 
-                if is_charging:
-                    if current_session is None:
-                        current_session = {
-                            "start_time": row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}"),
-                            "start_battery_pct": row.get("battery_pct", "N/A"),
-                            "end_time": row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}"),
-                            "end_battery_pct": row.get("battery_pct", "N/A"),
-                            "max_duration_minutes": float(row.get("session_active_minutes", 0) or 0),
-                            "stop_reason": row.get("session_stop_reason", "") or row.get("reason", ""),
-                            "solar_kw": row.get("solar_kw", "0")
-                        }
-                    else:
-                        current_session["end_time"] = row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}")
-                        current_session["end_battery_pct"] = row.get("battery_pct", "N/A")
-                        dur = float(row.get("session_active_minutes", 0) or 0)
-                        if dur > current_session["max_duration_minutes"]:
-                            current_session["max_duration_minutes"] = dur
-                        if row.get("session_stop_reason"):
-                            current_session["stop_reason"] = row.get("session_stop_reason")
+            if is_charging:
+                if current_session is None:
+                    current_session = {
+                        "start_time": row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}"),
+                        "start_battery_pct": row.get("battery_pct", "N/A"),
+                        "end_time": row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}"),
+                        "end_battery_pct": row.get("battery_pct", "N/A"),
+                        "max_duration_minutes": float(row.get("session_active_minutes", 0) or 0),
+                        "stop_reason": row.get("session_stop_reason", "") or row.get("reason", ""),
+                        "solar_kw": row.get("solar_kw", "0")
+                    }
                 else:
-                    if current_session is not None:
-                        # Session just ended
-                        if action_str == "stop" or row.get("session_stop_reason") or row.get("reason"):
-                            current_session["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current_session["stop_reason"]
-                        sessions.append(current_session)
-                        current_session = None
+                    current_session["end_time"] = row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}")
+                    current_session["end_battery_pct"] = row.get("battery_pct", "N/A")
+                    dur = float(row.get("session_active_minutes", 0) or 0)
+                    if dur > current_session["max_duration_minutes"]:
+                        current_session["max_duration_minutes"] = dur
+                    if row.get("session_stop_reason"):
+                        current_session["stop_reason"] = row.get("session_stop_reason")
+            else:
+                if current_session is not None:
+                    # Session just ended
+                    if action_str == "stop" or row.get("session_stop_reason") or row.get("reason"):
+                        current_session["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current_session["stop_reason"]
+                    sessions.append(current_session)
+                    current_session = None
 
-            if current_session is not None:
-                sessions.append(current_session)
+        if current_session is not None:
+            sessions.append(current_session)
 
     except Exception as e:
-        log_csv.error(f"Error parsing recent sessions from CSV: {e}")
+        log_csv.error(f"Error parsing recent sessions: {e}")
 
     # Return most recent sessions first
     return sessions[-limit:][::-1]
@@ -172,9 +196,9 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             end_date = now.date()
             period_label = f"Today ({start_date})"
 
-    csv_file = config.CSV_LOG_FILE
-    if not os.path.exists(csv_file):
-        return {"error": "No CSV logs found yet."}
+    rows = get_all_log_rows()
+    if not rows:
+        return {"error": "No log data found yet."}
 
     total_grid_kwh = 0.0
     total_solar_kwh = 0.0
@@ -183,43 +207,41 @@ def get_daily_charging_cost(period: str = "today") -> dict:
     charging_intervals_count = 0
 
     try:
-        with open(csv_file, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
-                try:
-                    row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
-                except Exception:
-                    continue
+        for row in rows:
+            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+            try:
+                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
 
-                if start_date <= row_date <= end_date:
-                    state_str = row.get("charger_state", "")
-                    action_str = row.get("action", "")
-                    if "CHARGING" in state_str or action_str == "start":
-                        charging_intervals_count += 1
-                        grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
-                        solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                        home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                        rate = float(row.get("tou_rate_per_kwh", 0) or 0.20)
-                        
-                        interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-                        
-                        # EV charger typical power (e.g. 20A = 4.8 kW, 32A = 7.68 kW)
-                        ev_power_kw = 4.8
-                        
-                        # EV's share of grid draw (excluding AC / home base load)
-                        ev_grid_kw = min(grid_kw, ev_power_kw)
-                        house_other_grid_kw = max(0.0, grid_kw - ev_grid_kw)
-                        
-                        grid_kwh = ev_grid_kw * interval_h
-                        solar_surplus_kw = max(0.0, solar_kw - (home_kw - ev_power_kw))
-                        solar_kwh = min(max(0.0, solar_surplus_kw), ev_power_kw) * interval_h
+            if start_date <= row_date <= end_date:
+                state_str = row.get("charger_state", "")
+                action_str = row.get("action", "")
+                if "CHARGING" in state_str or action_str == "start":
+                    charging_intervals_count += 1
+                    grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
+                    solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+                    home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+                    rate = float(row.get("tou_rate_per_kwh", 0) or 0.20)
+                    
+                    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+                    
+                    # EV charger typical power (e.g. 20A = 4.8 kW, 32A = 7.68 kW)
+                    ev_power_kw = 4.8
+                    
+                    # EV's share of grid draw (excluding AC / home base load)
+                    ev_grid_kw = min(grid_kw, ev_power_kw)
+                    house_other_grid_kw = max(0.0, grid_kw - ev_grid_kw)
+                    
+                    grid_kwh = ev_grid_kw * interval_h
+                    solar_surplus_kw = max(0.0, solar_kw - (home_kw - ev_power_kw))
+                    solar_kwh = min(max(0.0, solar_surplus_kw), ev_power_kw) * interval_h
 
-                        cost = grid_kwh * rate
-                        total_grid_kwh += grid_kwh
-                        total_solar_kwh += solar_kwh
-                        total_grid_cost += cost
-                        total_charging_mins += config.CHECK_INTERVAL_MINUTES
+                    cost = grid_kwh * rate
+                    total_grid_kwh += grid_kwh
+                    total_solar_kwh += solar_kwh
+                    total_grid_cost += cost
+                    total_charging_mins += config.CHECK_INTERVAL_MINUTES
 
         total_kwh = total_grid_kwh + total_solar_kwh
         grid_pct = (total_grid_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
@@ -279,9 +301,9 @@ def get_home_energy_summary(period: str = "today") -> dict:
 
     days_count = (end_date - start_date).days + 1
 
-    csv_file = config.CSV_LOG_FILE
-    if not os.path.exists(csv_file):
-        return {"error": "No CSV logs found yet."}
+    rows = get_all_log_rows()
+    if not rows:
+        return {"error": "No log data found yet."}
 
     total_home_kwh = 0.0
     total_solar_kwh = 0.0
@@ -293,48 +315,46 @@ def get_home_energy_summary(period: str = "today") -> dict:
     ev_grid_cost = 0.0
 
     try:
-        with open(csv_file, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+        for row in rows:
+            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+            try:
+                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
+
+            if start_date <= row_date <= end_date:
+                grid_kw = float(row.get("grid_kw", 0) or 0)
+                solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+                home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+                
+                interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+                total_home_kwh += home_kw * interval_h
+                total_solar_kwh += solar_kw * interval_h
+                
+                # Compute rate including MID EEA, CIA, State surcharges & 6.5% tax
+                ts_str = row.get("timestamp")
                 try:
-                    row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+                    dt = datetime.fromisoformat(ts_str)
+                    rate = get_tou_rate(dt)
                 except Exception:
-                    continue
+                    rate = round((float(row.get("tou_rate_per_kwh", 0) or 0.14513) + 0.0151) * 1.065, 5)
 
-                if start_date <= row_date <= end_date:
-                    grid_kw = float(row.get("grid_kw", 0) or 0)
-                    solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                    home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                    
-                    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-                    total_home_kwh += home_kw * interval_h
-                    total_solar_kwh += solar_kw * interval_h
-                    
-                    # Compute rate including MID EEA, CIA, State surcharges & 6.5% tax
-                    ts_str = row.get("timestamp")
-                    try:
-                        dt = datetime.fromisoformat(ts_str)
-                        rate = get_tou_rate(dt)
-                    except Exception:
-                        rate = round((float(row.get("tou_rate_per_kwh", 0) or 0.14513) + 0.0151) * 1.065, 5)
+                if grid_kw > 0:
+                    import_kwh = grid_kw * interval_h
+                    total_grid_import_kwh += import_kwh
+                    delivered_grid_cost += import_kwh * rate
 
-                    if grid_kw > 0:
-                        import_kwh = grid_kw * interval_h
-                        total_grid_import_kwh += import_kwh
-                        delivered_grid_cost += import_kwh * rate
-
-                        state_str = row.get("charger_state", "")
-                        action_str = row.get("action", "")
-                        if "CHARGING" in state_str or action_str == "start":
-                            ev_grid_kw_interval = min(grid_kw, 4.8)
-                            ev_kwh = ev_grid_kw_interval * interval_h
-                            ev_grid_kwh += ev_kwh
-                            ev_grid_cost += ev_kwh * rate
-                    else:
-                        export_kwh = abs(grid_kw) * interval_h
-                        total_solar_export_kwh += export_kwh
-                        solar_export_credit += export_kwh * (config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER)
+                    state_str = row.get("charger_state", "")
+                    action_str = row.get("action", "")
+                    if "CHARGING" in state_str or action_str == "start":
+                        ev_grid_kw_interval = min(grid_kw, 4.8)
+                        ev_kwh = ev_grid_kw_interval * interval_h
+                        ev_grid_kwh += ev_kwh
+                        ev_grid_cost += ev_kwh * rate
+                else:
+                    export_kwh = abs(grid_kw) * interval_h
+                    total_solar_export_kwh += export_kwh
+                    solar_export_credit += export_kwh * (config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER)
 
         fixed_service_fee = (config.UTILITY_FIXED_MONTHLY_FEE / 30.0) * days_count * config.UTILITY_TAX_MULTIPLIER
         estimated_bill_total = max(0.0, fixed_service_fee + delivered_grid_cost - solar_export_credit)
@@ -370,9 +390,9 @@ def get_energy_saving_advice() -> dict:
     from datetime import timedelta
     from tou import get_tou_rate
     
-    csv_file = config.CSV_LOG_FILE
-    if not os.path.exists(csv_file):
-        return {"error": "No CSV logs found yet."}
+    rows = get_all_log_rows()
+    if not rows:
+        return {"error": "No log data found yet."}
 
     now = datetime.now(config.TZ)
     seven_days_ago = (now - timedelta(days=7)).date()
@@ -382,42 +402,40 @@ def get_energy_saving_advice() -> dict:
     ev_grid_draw_cost = 0.0
 
     try:
-        with open(csv_file, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+        for row in rows:
+            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+            try:
+                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
+
+            if row_date >= seven_days_ago:
+                ts_str = row.get("timestamp", "")
                 try:
-                    row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+                    dt = datetime.fromisoformat(ts_str)
+                    hour = dt.hour
+                    rate = get_tou_rate(dt)
                 except Exception:
-                    continue
+                    hour = int(row.get("time", "12:00").split(":")[0])
+                    rate = 0.1706
 
-                if row_date >= seven_days_ago:
-                    ts_str = row.get("timestamp", "")
-                    try:
-                        dt = datetime.fromisoformat(ts_str)
-                        hour = dt.hour
-                        rate = get_tou_rate(dt)
-                    except Exception:
-                        hour = int(row.get("time", "12:00").split(":")[0])
-                        rate = 0.1706
+                solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+                home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+                grid_kw = float(row.get("grid_kw", 0) or 0)
+                interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
 
-                    solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                    home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                    grid_kw = float(row.get("grid_kw", 0) or 0)
-                    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+                surplus = max(0.0, solar_kw - home_kw)
+                hourly_solar_surplus[hour].append(surplus)
 
-                    surplus = max(0.0, solar_kw - home_kw)
-                    hourly_solar_surplus[hour].append(surplus)
+                period = row.get("tou_period", "")
+                if period == "on_peak" and grid_kw > 0:
+                    on_peak_grid_cost += grid_kw * interval_h * rate
 
-                    period = row.get("tou_period", "")
-                    if period == "on_peak" and grid_kw > 0:
-                        on_peak_grid_cost += grid_kw * interval_h * rate
-
-                    state_str = row.get("charger_state", "")
-                    action_str = row.get("action", "")
-                    if ("CHARGING" in state_str or action_str == "start") and grid_kw > 0:
-                        ev_grid_kw_val = min(grid_kw, 4.8)
-                        ev_grid_draw_cost += ev_grid_kw_val * interval_h * rate
+                state_str = row.get("charger_state", "")
+                action_str = row.get("action", "")
+                if ("CHARGING" in state_str or action_str == "start") and grid_kw > 0:
+                    ev_grid_kw_val = min(grid_kw, 4.8)
+                    ev_grid_draw_cost += ev_grid_kw_val * interval_h * rate
 
         avg_surplus = {h: (sum(vals)/len(vals) if vals else 0.0) for h, vals in hourly_solar_surplus.items()}
         best_hours = [h for h, avg in avg_surplus.items() if avg >= 1.0]
