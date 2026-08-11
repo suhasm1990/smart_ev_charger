@@ -75,13 +75,35 @@ Respond ONLY with a valid JSON object matching this schema exactly:
         if user_instruction:
             clear_user_instruction()
             
-        # 4. Notify User
+        # 4. Fetch Yesterday's Energy & Cost Summary
+        try:
+            from csv_logger import get_home_energy_summary
+            yest = get_home_energy_summary("yesterday")
+        except Exception as yest_err:
+            log.warning(f"Daily Agent could not fetch yesterday summary: {yest_err}")
+            yest = {}
+
+        yest_msg = ""
+        if yest and "error" not in yest:
+            yest_msg = (
+                f"📊 <b>Yesterday's Energy & Bill Summary</b>:\n"
+                f"• <b>Estimated Total Bill</b>: ${yest.get('estimated_total_mid_utility_bill_dollars', 0.0):.2f}\n"
+                f"  - 🚗 <b>EV Charging Share</b>: ${yest.get('ev_charging_share_of_bill_dollars', 0.0):.2f}\n"
+                f"  - 🏠 <b>Home Appliances Share</b>: ${yest.get('home_appliances_share_of_bill_dollars', 0.0):.2f}\n"
+                f"• <b>Home Self-Powered</b>: {yest.get('home_self_powered_percentage', 100.0)}%\n"
+                f"• <b>Solar Generated</b>: {yest.get('total_solar_generated_kwh', 0.0)} kWh\n"
+                f"• <b>Grid Imported</b>: {yest.get('total_grid_imported_kwh', 0.0)} kWh\n\n"
+            )
+
+        # 5. Notify User via Telegram & Pushover
         msg = (
-            f"🤖 **Daily AI Agent Update**\n"
-            f"• **Charge Window**: {config.ALLOWED_CHARGE_START_HOUR}:00 - {config.ALLOWED_CHARGE_END_HOUR}:00\n"
-            f"• **Battery Start/Stop**: {config.BATTERY_START_PCT}% / {config.BATTERY_STOP_PCT}%\n\n"
-            f"💡 **Energy Suggestion for Tomorrow**: \n_{result.get('daily_suggestion', '')}_\n\n"
-            f"*{result.get('reasoning', '')}*"
+            f"🤖 <b>Daily AI Agent Update (7:00 AM)</b>\n\n"
+            f"{yest_msg}"
+            f"⚙️ <b>Today's Charging Strategy</b>:\n"
+            f"• <b>Charge Window</b>: {config.ALLOWED_CHARGE_START_HOUR}:00 - {config.ALLOWED_CHARGE_END_HOUR}:00\n"
+            f"• <b>Battery Start/Stop</b>: {config.BATTERY_START_PCT}% / {config.BATTERY_STOP_PCT}%\n\n"
+            f"💡 <b>Energy Suggestion for Today</b>:\n<i>{result.get('daily_suggestion', '')}</i>\n\n"
+            f"<i>{result.get('reasoning', '')}</i>"
         )
         notify(msg)
         
@@ -90,3 +112,4 @@ Respond ONLY with a valid JSON object matching this schema exactly:
 
 if __name__ == "__main__":
     run_daily_agent()
+
