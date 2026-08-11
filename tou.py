@@ -21,18 +21,31 @@ def get_base_tou_rate(now: datetime) -> float:
     period = get_tou_period(now)
     month  = now.month
     summer = 5 <= month <= 9
+    provider = getattr(config, "UTILITY_PROVIDER", "MID").upper()
 
-    rates = {
-        "on_peak":      0.31235 if summer else 0.22401,
-        "partial_peak": 0.20192 if summer else 0.14324,
-        "off_peak":     0.14513 if summer else 0.14324,
-    }
+    if provider == "PGE":
+        # PG&E EV2-A Rate Schedule
+        rates = {
+            "on_peak":      0.59251 if summer else 0.43512,
+            "partial_peak": 0.44812 if summer else 0.41200,
+            "off_peak":     0.28312 if summer else 0.26512,
+        }
+    else:
+        # MID (Modesto Irrigation District) Rate N2-EVD Schedule
+        rates = {
+            "on_peak":      0.31235 if summer else 0.22401,
+            "partial_peak": 0.20192 if summer else 0.14324,
+            "off_peak":     0.14513 if summer else 0.14324,
+        }
     return rates[period]
 
 def get_tou_rate(now: datetime) -> float:
-    """Returns the effective MID delivered rate per kWh including volumetric surcharges and 6.5% Mountain House tax."""
+    """Returns the effective delivered rate per kWh including volumetric surcharges and local taxes."""
     base = get_base_tou_rate(now)
-    return round((base + MID_VOLUMETRIC_ADDER) * MID_MOUNTAIN_HOUSE_TAX, 5)
+    adder = getattr(config, "UTILITY_VOLUMETRIC_ADDER", 0.0151)
+    tax = getattr(config, "UTILITY_TAX_MULTIPLIER", 1.065)
+    return round((base + adder) * tax, 5)
+
 
 
 def is_expensive_period(now: datetime) -> bool:

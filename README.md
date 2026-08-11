@@ -2,7 +2,7 @@
 
 An intelligent, fully automated Python daemon that optimally charges your EV based on solar production, Tesla Powerwall battery levels, ChargePoint hardware metrics, and Time-Of-Use (TOU) rates. 
 
-Designed specifically to maximize free solar energy usage, isolate EV charging costs from general home loads (like AC or washing machines), provide personalized bill reduction advice, and calculate exact utility bills matching your electric statements.
+Designed specifically to maximize free solar energy usage, isolate EV charging costs from general home loads (like AC or washing machines), provide personalized bill reduction advice, and dynamically calculate electric bills matching your utility provider's rates.
 
 ---
 
@@ -10,8 +10,12 @@ Designed specifically to maximize free solar energy usage, isolate EV charging c
 
 - ☀️ **Solar & Battery Synchronized:** Integrates directly with the **NetZero API** to read your Tesla Powerwall state in real time. It acts as a "daytime solar sponge," only charging your EV when your house battery is healthy (e.g. `> 40%`) and stopping when it dips too low (e.g. `< 25%`).
 - ⚡ **ChargePoint Hardware Integration:** Directly interfaces with your ChargePoint Home Flex charger to monitor real-time charging power (`kW`), total energy delivered (`kWh`), driving range added (`miles`), and dynamic amperage limits (8A–32A).
-- 💡 **AI Bill Reduction & Appliance Scheduling Advice:** Analyzes 7 days of solar production and home consumption logs to determine the best hours for running heavy appliances (AC, washing machine, dishwasher, dryer) and charging the car.
-- 🧾 **100% Utility Statement Bill Precision (MID N2-EVD Net Metering 2):** Tailored specifically for Modesto Irrigation District (MID) Rate N2-EVD. Calculates exact monthly electric bills including fixed monthly service fees ($32.00), volumetric surcharges (EEA + CIA + State = +$0.0151/kWh), Mountain House 6.5% tax, and NEM solar export credits (-$0.076/kWh).
+- ⚙️ **Dynamic Utility Provider Rate Engine (MID, PG&E, or Custom):** Easily switch utility rate schedules by setting `UTILITY_PROVIDER` (`MID`, `PGE`, or `CUSTOM`) in `.env`. Supports configurable fixed monthly service fees, volumetric surcharges, local tax multipliers, and NEM solar export credits.
+- 🧠 **Daily 7:00 AM AI Planner & Morning Briefing:** Every morning at **7:00 AM**, the AI Planner analyzes your past 7 days of solar production and home load logs, processes any special user instructions sent via Telegram, and sends a comprehensive morning update:
+  - 📊 **Yesterday's Energy & Bill Summary**: Total estimated electric bill ($), EV charging share ($), home appliances share ($), self-powered percentage (%), solar kWh generated, and grid kWh imported.
+  - ⚙️ **Today's Charging Strategy**: Selected charge windows (`ALLOWED_CHARGE_START_HOUR` – `ALLOWED_CHARGE_END_HOUR`) and Powerwall battery start/stop thresholds.
+  - 💡 **AI Energy Suggestions & Reasoning**: Actionable appliance scheduling recommendations tailored for the upcoming day's solar generation forecast.
+- 💡 **AI Bill Reduction & Appliance Scheduling Advice:** Analyzes 7 days of solar production and home consumption logs to determine the best hours for running heavy appliances (AC, washing machine, dishwasher, dryer) and charging the car for free.
 - 💰 **EV vs. Home Cost Isolation & Tracking:** Intelligently isolates the EV charger's grid energy draw from heavy home appliances (AC, washing machine, fridge) to calculate exact grid kWh pulled, grid costs ($), solar energy used, and solar savings ($) for **today**, **yesterday**, **this week**, or **this month**.
 - 🕐 **TOU & Night Blackout Optimization:** Implements a customized weekday nighttime blackout window (default 4 PM to 9 AM) to prevent the EV from draining your Powerwall overnight or pulling from the grid during expensive Peak rate hours.
 - 🤖 **Gemini AI Telegram Assistant:** Natural-language conversational interface powered by Google Gemini function calling. Ask questions like:
@@ -19,30 +23,10 @@ Designed specifically to maximize free solar energy usage, isolate EV charging c
   - *"When is the best time to run my washing machine or AC?"*
   - *"Why did charging stop last time?"*
   - *"How much did EV charging cost me this week?"*
-  - *"What is my total MID utility bill for this month?"*
+  - *"What is my total electric bill for this month?"*
   - *"Charge with full power (32A)"*
-- 🧠 **Daily AI Planner:** Every morning at 7:00 AM (or 11:50 PM), the AI Planner analyzes your past 7 days of solar production logs in Google Sheets and customizes charge windows and battery thresholds for the upcoming day.
 - 📊 **Google Sheets & CSV Sync:** Every 15-minute cycle logs detailed metrics (Solar kW, Home kW, Grid kW, Battery %, Charger State, Action, Reason, TOU Rate, and Grid Cost) to `logs/charger_log.csv` and Google Sheets.
 - 🛡️ **Emergency Safety Overrides:** Automatically halts EV charging if your Powerwall goes Off-Grid (`island_mode`) or if Tesla activates Storm Watch mode.
-
----
-
-## 🧾 Utility Billing & Exact Cost Math
-
-The system implements the exact rate structure of **Modesto Irrigation District (MID) Rate N2-EVD (Net Metering 2)**:
-
-$$\text{MID Bill Total} = \text{Fixed Fee (\$32/mo)} + \sum\left(\text{Delivered kWh} \times \text{Effective TOU Rate}\right) - \left(\text{Solar Export kWh} \times \$0.0809\right)$$
-
-### 1. Effective Delivered Rates (Base + Surcharges + 6.5% Tax)
-- **Summer On-Peak Effective Rate**: `($0.31235 + $0.0151) × 1.065` = **$0.3487 / kWh**
-- **Summer Part-Peak Effective Rate**: `($0.20192 + $0.0151) × 1.065` = **$0.2311 / kWh**
-- **Summer Off-Peak Effective Rate**: `($0.14513 + $0.0151) × 1.065` = **$0.1706 / kWh**
-
-### 2. Solar NEM Export Credit
-- Surplus solar exported to MID's grid is credited at **-$0.076 / kWh** (+ 6.5% tax credit = **-$0.0809 / kWh**).
-
-### 3. EV Load Isolation
-- When EV charging occurs simultaneously with AC or washing machines, EV grid draw is capped at charger max power (`min(grid_kw, ev_power_kw)`), ensuring you are only charged for the EV's actual grid share.
 
 ---
 
@@ -93,6 +77,17 @@ TELEGRAM_ALLOWED_USER_ID=your_user_id
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-flash-latest
 
+# Schedule Config
+DAILY_RESET_TIME=00:00
+DAILY_AGENT_TIME=07:00
+
+# Utility Rate Provider (MID, PGE, or CUSTOM)
+UTILITY_PROVIDER=MID
+UTILITY_FIXED_MONTHLY_FEE=32.00
+UTILITY_VOLUMETRIC_ADDER=0.0151
+UTILITY_TAX_MULTIPLIER=1.065
+UTILITY_SOLAR_EXPORT_CREDIT_RATE=0.076
+
 # Charging & Battery Thresholds
 BATTERY_START_PCT=40
 BATTERY_STOP_PCT=25
@@ -123,9 +118,15 @@ docker-compose up -d
 
 ---
 
-## 🤖 Telegram Bot AI Capabilities
+## 🤖 Telegram Bot AI Capabilities & Daily AI Planner
 
 Text your charger naturally via Telegram! Powered by Gemini function calling:
+
+### 🧠 Daily 7:00 AM Morning AI Briefing
+Every morning at **7:00 AM**, the Daily AI Planner automatically sends a Telegram update containing:
+- 📊 **Yesterday's Energy & Bill Summary** (Total bill $, EV charging share $, home appliances share $, self-powered %, solar kWh, grid kWh).
+- ⚙️ **Today's Charging Strategy** (Dynamically selected charge window and battery thresholds).
+- 💡 **AI Energy Suggestion & Reasoning** (Personalized advice on when to run heavy appliances based on solar production).
 
 ### 💡 Bill Reduction & Appliance Advice
 - *"How can I reduce my electric bill?"*
@@ -135,7 +136,7 @@ Text your charger naturally via Telegram! Powered by Gemini function calling:
 ### 💰 Cost & Energy Inquiries
 - *"How much did EV charging cost me today / this week / this month?"*
 - *"How many grid units (kWh) did I pull for charging this week?"*
-- *"How much electricity did my home consume today and what is my total MID bill?"*
+- *"How much electricity did my home consume today and what is my total electric bill?"*
 
 ### 📊 Session & History Lookup
 - *"Why did charging stop last time?"*
@@ -153,18 +154,19 @@ Text your charger naturally via Telegram! Powered by Gemini function calling:
 
 ```
 smart_ev_charger/
-├── main.py              # Main automation loop & scheduled tasks
+├── main.py              # Main automation loop & scheduled tasks (Daily Agent at 07:00 AM)
+├── daily_agent.py       # Daily AI Planner & morning energy briefing generator
 ├── decision.py          # State-machine evaluator (safety, battery, solar rules)
 ├── telegram_bot.py      # Telegram Bot & Gemini AI function calling tools
 ├── csv_logger.py        # CSV logging, session history, cost & bill advice tools
 ├── api_chargepoint.py   # Async ChargePoint API client with error sanitization
 ├── api_netzero.py       # Tesla Powerwall stats client via NetZero API
 ├── manual_override.py   # Manual override tracking & 9 AM daily auto-reset
-├── tou.py               # MID Net Metering 2 rates, surcharges & schedule calculator
+├── tou.py               # TOU rates (MID / PG&E / Custom), surcharges & schedule calculator
 ├── config.py            # Configuration loader & dynamic JSON state manager
 ├── alerts.py            # Custom dynamic notifications & grid export alerts
 ├── sheets_db.py         # Google Sheets synchronization
-├── notifications.py     # Pushover notification client
+├── notifications.py     # Pushover & Telegram notification client
 ├── requirements.txt     # Python dependencies
 └── docker-compose.yml   # Docker container setup
 ```

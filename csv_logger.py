@@ -334,12 +334,15 @@ def get_home_energy_summary(period: str = "today") -> dict:
                     else:
                         export_kwh = abs(grid_kw) * interval_h
                         total_solar_export_kwh += export_kwh
-                        solar_export_credit += export_kwh * (MID_SOLAR_EXPORT_CREDIT_RATE * MID_MOUNTAIN_HOUSE_TAX)
+                        solar_export_credit += export_kwh * (config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER)
 
-        fixed_service_fee = (MID_FIXED_MONTHLY_FEE / 30.0) * days_count * MID_MOUNTAIN_HOUSE_TAX
+        fixed_service_fee = (config.UTILITY_FIXED_MONTHLY_FEE / 30.0) * days_count * config.UTILITY_TAX_MULTIPLIER
         estimated_bill_total = max(0.0, fixed_service_fee + delivered_grid_cost - solar_export_credit)
         non_ev_home_cost = max(0.0, estimated_bill_total - ev_grid_cost)
         self_powered_pct = round(max(0.0, min(100.0, (1 - total_grid_import_kwh / max(total_home_kwh, 0.01)) * 100.0)), 1) if total_home_kwh > 0 else 100.0
+
+        provider_name = getattr(config, "UTILITY_PROVIDER", "MID")
+        plan_label = f"Modesto Irrigation District (MID) Rate N2-EVD" if provider_name == "MID" else f"PG&E EV2-A Rate Schedule" if provider_name == "PGE" else f"Custom Utility Rate ({provider_name})"
 
         return {
             "period": period_label,
@@ -355,11 +358,12 @@ def get_home_energy_summary(period: str = "today") -> dict:
             "ev_charging_share_of_bill_dollars": round(ev_grid_cost, 2),
             "home_appliances_share_of_bill_dollars": round(non_ev_home_cost, 2),
             "home_self_powered_percentage": self_powered_pct,
-            "utility_rate_plan": "Modesto Irrigation District (MID) Rate N2-EVD Net Metering 2"
+            "utility_rate_plan": plan_label
         }
     except Exception as e:
         log_csv.error(f"Error calculating home energy summary: {e}")
         return {"error": f"Failed to calculate home energy summary: {e}"}
+
 
 def get_energy_saving_advice() -> dict:
     """Analyzes recent 7-day power usage logs to calculate solar generation windows, identify high-cost grid draws, and provide actionable tips to reduce electric bills."""
