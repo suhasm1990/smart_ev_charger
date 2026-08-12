@@ -25,7 +25,9 @@ Designed to maximize free solar energy consumption, isolate EV charging costs fr
   - *"Set battery start threshold to 50% and stop at 30%"*
 - 💰 **EV vs. Home Cost Isolation & Tracking**: Intelligently isolates EV charger grid energy draw from heavy home appliances (AC, washing machine, fridge) to calculate exact grid kWh pulled, grid costs ($), solar energy used, and solar savings ($) for **today**, **yesterday**, **this week**, **this month**, or custom dates.
 - 🕐 **TOU & Night Blackout Optimization**: Enforces a customizable weekday nighttime blackout window (default 4 PM to 9 AM) to prevent EV charging during expensive Peak rate hours or draining the Powerwall overnight.
-- 🚨 **Custom Dynamic Alerts & Error Monitoring**: Create real-time alerts for battery, solar, grid export, or log error conditions via Telegram.
+- 📊 **Automated Monthly PNG Utility Bill & Usage Graph Generator**: On the **1st day of every month at 07:00 AM** (or on-demand via `/monthly_report`), the system automatically aggregates the previous month's daily usage logs, calculates exact MID/utility costs, and generates a 188 KB modern PNG infographic report sent inline to your Telegram chat.
+  - **Daily Usage vs. Cost Graph**: Bar chart plotting daily usage dates against **Variable Grid Energy Cost ($)** (strictly excluding fixed daily connection fees) and **Solar Generation (kWh)**.
+  - **Executive Cards & Bill Breakdown**: Displays Net Bill ($), Solar Self-Powered %, EV Charging Cost ($), Appliance Energy Cost ($), Solar Export Credits (-$), and Fixed Monthly Connection Fees (+$).
 - 📊 **Google Sheets & Dual Logging System**: Every 15-minute automation cycle logs detailed telemetry to `logs/charger_log.csv` and syncs with Google Sheets. Supports two-way dynamic configuration via `logs/config_dynamic.json` and Google Sheets.
 - 🛡️ **Emergency Safety Overrides**: Automatically halts EV charging if the Powerwall goes Off-Grid (`island_mode`) or if Tesla activates Storm Watch mode to preserve backup reserve power.
 
@@ -192,6 +194,14 @@ Every morning at **7:00 AM**, the Daily AI Planner automatically sends a Telegra
 
 ---
 
+### 📊 Sample Monthly Utility & Energy Bill Report
+
+The system generates a high-resolution 188 KB PNG infographic card delivered directly into your Telegram chat on the **1st day of every month at 07:00 AM** (or via `/monthly_report` command):
+
+![Sample Monthly Utility & Energy Bill Report](docs/sample_monthly_report.png)
+
+---
+
 ## 📁 Repository Structure
 
 ```
@@ -199,6 +209,7 @@ smart_ev_charger/
 ├── main.py              # Main automation loop, signal handling & scheduled tasks (Daily Agent at 07:00 AM)
 ├── llm_client.py        # Model-agnostic LLM adapter (NVIDIA Nemotron, OpenAI, Anthropic, Gemini)
 ├── daily_agent.py       # Daily AI Planner & morning energy briefing generator
+├── report_generator.py  # Monthly PNG infographic bill report & daily usage graph generator
 ├── decision.py          # State-machine evaluator (safety, battery, solar & blackout rules)
 ├── telegram_bot.py      # Telegram Bot & AI tool function calling integration (15+ tools)
 ├── csv_logger.py        # CSV telemetry logging, session history, cost calculations & advice tools

@@ -470,6 +470,193 @@ def get_energy_saving_advice() -> dict:
         return {"error": f"Failed to calculate energy saving advice: {e}"}
 
 
+def get_monthly_billing_data(period: str = "last_month") -> dict:
+    """
+    Aggregates log rows for a given month ('last_month', 'this_month', or 'YYYY-MM').
+    Returns daily usage records (EXCLUDING fixed daily fee from daily cost) and monthly billing summary.
+    """
+    from datetime import timedelta, date
+    from tou import get_tou_rate
+    
+    now = datetime.now(config.TZ)
+    period_clean = str(period or "last_month").lower().strip()
+    
+    if period_clean in ["last_month", "previous_month", "last month"]:
+        first_of_this_month = now.date().replace(day=1)
+        last_of_prev_month = first_of_this_month - timedelta(days=1)
+        start_date = last_of_prev_month.replace(day=1)
+        end_date = last_of_prev_month
+    elif period_clean in ["this_month", "month", "this month"]:
+        start_date = now.date().replace(day=1)
+        end_date = now.date()
+    else:
+        try:
+            parsed_dt = datetime.strptime(period_clean, "%Y-%m").date()
+            start_date = parsed_dt.replace(day=1)
+            if start_date.month == 12:
+                end_date = date(start_date.year, 12, 31)
+            else:
+                end_date = date(start_date.year, start_date.month + 1, 1) - timedelta(days=1)
+        except Exception:
+            first_of_this_month = now.date().replace(day=1)
+            last_of_prev_month = first_of_this_month - timedelta(days=1)
+            start_date = last_of_prev_month.replace(day=1)
+            end_date = last_of_prev_month
+
+    days_count = (end_date - start_date).days + 1
+    month_label = start_date.strftime("%B %Y")
+
+    rows = get_all_log_rows(days=60)
+    if not rows:
+        return {"error": "No log data available for monthly report."}
+
+    daily_map = {}
+    curr = start_date
+    while curr <= end_date:
+        daily_map[curr.strftime("%Y-%m-%d")] = {
+            "date": curr.strftime("%Y-%m-%d"),
+            "date_short": curr.strftime("%b %d"),
+            "day_num": curr.day,
+            "home_kwh": 0.0,
+            "solar_kwh": 0.0,
+            "grid_import_kwh": 0.0,
+            "solar_export_kwh": 0.0,
+            "variable_grid_cost": 0.0,
+            "solar_export_credit": 0.0,
+            "ev_grid_kwh": 0.0,
+            "ev_grid_cost": 0.0,
+            "readings_count": 0
+        }
+        curr += timedelta(days=1)
+
+    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+
+    for row in rows:
+        row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+        try:
+            row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        if start_date <= row_date <= end_date:
+            d_key = row_date.strftime("%Y-%m-%d")
+            if d_key not in daily_map:
+                continue
+
+            day_data = daily_map[d_key]
+            day_data["readings_count"] += 1
+
+            grid_kw = float(row.get("grid_kw", 0) or 0)
+            solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+            home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+
+            ts_str = row.get("timestamp")
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                rate = get_tou_rate(dt)
+            except Exception:
+                rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
+
+            day_data["home_kwh"] += home_kw * interval_h
+            day_data["solar_kwh"] += solar_kw * interval_h
+
+            if grid_kw > 0:
+                imp_kwh = grid_kw * interval_h
+                day_data["grid_import_kwh"] += imp_kwh
+                day_data["variable_grid_cost"] += imp_kwh * rate
+
+                state_str = row.get("charger_state", "")
+                action_str = row.get("action", "")
+                if "CHARGING" in state_str or action_str == "start":
+                    ev_grid_kw_val = min(grid_kw, 4.8)
+                    ev_kwh = ev_grid_kw_val * interval_h
+                    day_data["ev_grid_kwh"] += ev_kwh
+                    day_data["ev_grid_cost"] += ev_kwh * rate
+            else:
+                exp_kwh = abs(grid_kw) * interval_h
+                day_data["solar_export_kwh"] += exp_kwh
+                credit = exp_kwh * (config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER)
+                day_data["solar_export_credit"] += credit
+
+    daily_list = []
+    tot_home = 0.0
+    tot_solar = 0.0
+    tot_grid_import = 0.0
+    tot_solar_export = 0.0
+    tot_variable_cost = 0.0
+    tot_export_credit = 0.0
+    tot_ev_kwh = 0.0
+    tot_ev_cost = 0.0
+
+    expected_daily_readings = int(24 * 60 / max(1, config.CHECK_INTERVAL_MINUTES))
+
+    for d_key in sorted(daily_map.keys()):
+        d = daily_map[d_key]
+        readings = d["readings_count"]
+        # Smart Normalization: If a few readings were missed (e.g. during app updates or restarts),
+        # scale proportionally so missing a few 15-min rows does not skew totals.
+        if 0 < readings < expected_daily_readings and (expected_daily_readings - readings) <= 12:
+            scale = expected_daily_readings / float(readings)
+            d["home_kwh"] *= scale
+            d["solar_kwh"] *= scale
+            d["grid_import_kwh"] *= scale
+            d["solar_export_kwh"] *= scale
+            d["variable_grid_cost"] *= scale
+            d["solar_export_credit"] *= scale
+            d["ev_grid_kwh"] *= scale
+            d["ev_grid_cost"] *= scale
+
+        d["home_kwh"] = round(d["home_kwh"], 2)
+        d["solar_kwh"] = round(d["solar_kwh"], 2)
+        d["grid_import_kwh"] = round(d["grid_import_kwh"], 2)
+        d["solar_export_kwh"] = round(d["solar_export_kwh"], 2)
+        d["variable_grid_cost"] = round(d["variable_grid_cost"], 2)
+        d["solar_export_credit"] = round(d["solar_export_credit"], 2)
+        d["net_variable_cost"] = round(max(0.0, d["variable_grid_cost"] - d["solar_export_credit"]), 2)
+        d["ev_grid_kwh"] = round(d["ev_grid_kwh"], 2)
+        d["ev_grid_cost"] = round(d["ev_grid_cost"], 2)
+
+        daily_list.append(d)
+
+        tot_home += d["home_kwh"]
+        tot_solar += d["solar_kwh"]
+        tot_grid_import += d["grid_import_kwh"]
+        tot_solar_export += d["solar_export_kwh"]
+        tot_variable_cost += d["variable_grid_cost"]
+        tot_export_credit += d["solar_export_credit"]
+        tot_ev_kwh += d["ev_grid_kwh"]
+        tot_ev_cost += d["ev_grid_cost"]
+
+    fixed_service_fee = (config.UTILITY_FIXED_MONTHLY_FEE / 30.0) * days_count * config.UTILITY_TAX_MULTIPLIER
+    estimated_bill_total = max(0.0, fixed_service_fee + tot_variable_cost - tot_export_credit)
+    appliance_cost = max(0.0, tot_variable_cost - tot_ev_cost)
+    self_powered_pct = round(max(0.0, min(100.0, (1 - tot_grid_import / max(tot_home, 0.01)) * 100.0)), 1) if tot_home > 0 else 100.0
+
+    provider_name = getattr(config, "UTILITY_PROVIDER", "MID")
+    plan_label = f"Modesto Irrigation District (MID) Rate N2-EVD" if provider_name == "MID" else f"PG&E EV2-A Rate Schedule" if provider_name == "PGE" else f"Custom Rate ({provider_name})"
+
+    return {
+        "month_label": month_label,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "days_count": days_count,
+        "total_home_kwh": round(tot_home, 2),
+        "total_solar_kwh": round(tot_solar, 2),
+        "total_grid_import_kwh": round(tot_grid_import, 2),
+        "total_solar_export_kwh": round(tot_solar_export, 2),
+        "total_variable_grid_cost_dollars": round(tot_variable_cost, 2),
+        "total_solar_export_credit_dollars": round(tot_export_credit, 2),
+        "fixed_service_fee_dollars": round(fixed_service_fee, 2),
+        "estimated_net_bill_dollars": round(estimated_bill_total, 2),
+        "ev_charging_kwh": round(tot_ev_kwh, 2),
+        "ev_charging_cost_dollars": round(tot_ev_cost, 2),
+        "home_appliances_cost_dollars": round(appliance_cost, 2),
+        "self_powered_percentage": self_powered_pct,
+        "utility_rate_plan": plan_label,
+        "daily_records": daily_list
+    }
+
+
 
 
 

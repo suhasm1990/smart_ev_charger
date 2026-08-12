@@ -249,11 +249,19 @@ def main():
     
     tz_str = getattr(config.TZ, "key", str(config.TZ))
     
-    log.info(f"STARTUP | Scheduled Daily Reset at {config.DAILY_RESET_TIME} ({tz_str})")
-    log.info(f"STARTUP | Scheduled Daily Agent AI Planner at {config.DAILY_AGENT_TIME} ({tz_str})")
+    def check_monthly_schedule():
+        now = datetime.now(config.TZ)
+        if now.day == 1:
+            log.info("MONTHLY TRIGGER | Today is the 1st of the month. Triggering monthly bill report...")
+            try:
+                from telegram_bot import send_monthly_telegram_report
+                send_monthly_telegram_report(period="last_month")
+            except Exception as e:
+                log.error(f"Failed to execute monthly report schedule: {e}")
 
     schedule.every().day.at(config.DAILY_RESET_TIME, tz_str).do(daily_reset)
     schedule.every().day.at(config.DAILY_AGENT_TIME, tz_str).do(run_daily_agent)
+    schedule.every().day.at("07:00", tz_str).do(check_monthly_schedule)
 
 
 

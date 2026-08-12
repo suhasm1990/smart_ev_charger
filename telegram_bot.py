@@ -323,6 +323,33 @@ def add_agent_instruction(text: str) -> str:
     else:
         return "Error: Failed to save instruction. Please check Google Sheets integration."
 
+def generate_monthly_report(period: str = "last_month") -> str:
+    """Generates a high-resolution PNG monthly electricity utility bill report graphic for a given period ('last_month', 'this_month', or 'YYYY-MM').
+    Plots daily usage dates against variable grid electricity cost (EXCLUDING fixed daily connection fee) and solar generation, plus utility bill breakdown.
+    Use this tool whenever the user asks for a monthly bill report, monthly usage graph, or monthly electricity bill PNG image.
+    """
+    from report_generator import generate_monthly_report_image
+    img_path = generate_monthly_report_image(period=period)
+    if img_path and os.path.exists(img_path):
+        return json.dumps({"status": "success", "image_path": img_path, "note": "Monthly report PNG image has been generated."})
+    else:
+        return json.dumps({"error": "Failed to generate monthly report image."})
+
+def send_monthly_telegram_report(period: str = "last_month"):
+    """Triggered on 1st of every month to send the monthly report image to Telegram."""
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_ALLOWED_USER_ID:
+        return
+    try:
+        from report_generator import generate_monthly_report_image
+        img_path = generate_monthly_report_image(period=period)
+        if img_path and os.path.exists(img_path):
+            bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
+            with open(img_path, 'rb') as f:
+                bot.send_photo(config.TELEGRAM_ALLOWED_USER_ID, photo=f, caption="📊 <b>Monthly Utility & Energy Bill Briefing</b>", parse_mode="HTML")
+            log.info("Successfully sent monthly report image to Telegram user.")
+    except Exception as e:
+        log.error(f"Failed to send monthly report to Telegram: {e}")
+
 def clean_telegram_html(text: str) -> str:
     """Cleans and sanitizes Gemini outputs into valid Telegram HTML format."""
     if not text:
@@ -374,6 +401,7 @@ def handle_message_with_gemini(text: str) -> str:
         get_daily_charging_cost,
         get_home_energy_summary,
         get_energy_saving_advice,
+        generate_monthly_report,
         get_tou_schedule,
         get_tesla_powerwall_status,
         read_application_logs,
@@ -438,7 +466,19 @@ def _bot_polling_loop():
             "• <i>'Turn on manual mode'</i>\n"
             "• <i>'Force start the charger'</i>"
         )
-        bot.reply_to(message, help_text, parse_mode="HTML")
+    @bot.message_handler(commands=['monthly_report', 'bill', 'monthly_bill'])
+    def send_monthly_report_cmd(message):
+        if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
+            bot.reply_to(message, "Unauthorized.")
+            return
+        bot.send_chat_action(message.chat.id, 'upload_photo')
+        from report_generator import generate_monthly_report_image
+        img_path = generate_monthly_report_image('last_month')
+        if img_path and os.path.exists(img_path):
+            with open(img_path, 'rb') as f:
+                bot.send_photo(message.chat.id, photo=f, caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>", parse_mode="HTML")
+        else:
+            bot.reply_to(message, "Error: Could not generate monthly report image.")
 
     @bot.message_handler(func=lambda message: True)
     def handle_incoming_message(message):
