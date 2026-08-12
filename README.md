@@ -105,6 +105,7 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 #### Google Gemini:
 ```env
 LLM_PROVIDER=gemini
+LLM_MODEL=gemini-flash-lite-latest
 GEMINI_API_KEY=AIzaSy-your-key-here
 ```
 
