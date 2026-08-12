@@ -165,7 +165,7 @@ def check_recent_log_errors(interval_minutes: int = 20) -> bool:
     if not os.path.exists(log_file):
         return False
         
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(config.TZ).replace(tzinfo=None)
     threshold = now - datetime.timedelta(minutes=interval_minutes)
     
     try:
