@@ -323,15 +323,25 @@ def add_agent_instruction(text: str) -> str:
     else:
         return "Error: Failed to save instruction. Please check Google Sheets integration."
 
+_last_generated_image_path = None
+
 def generate_monthly_report(period: str = "last_month") -> str:
-    """Generates a high-resolution PNG monthly electricity utility bill report graphic for a given period ('last_month', 'this_month', or 'YYYY-MM').
+    """Generates a high-resolution PNG monthly electricity utility bill report graphic for any given month (e.g. 'last_month', 'this_month', 'June', 'June 2026', 'July 2026', or 'YYYY-MM').
     Plots daily usage dates against variable grid electricity cost (EXCLUDING fixed daily connection fee) and solar generation, plus utility bill breakdown.
-    Use this tool whenever the user asks for a monthly bill report, monthly usage graph, or monthly electricity bill PNG image.
+    Use this tool whenever the user asks for a monthly bill report, monthly usage graph, or monthly electricity bill PNG image for any month.
     """
+    global _last_generated_image_path
+    from csv_logger import get_monthly_billing_data
     from report_generator import generate_monthly_report_image
+
+    data = get_monthly_billing_data(period=period)
+    if "error" in data:
+        return json.dumps({"error": data["error"]})
+
     img_path = generate_monthly_report_image(period=period)
     if img_path and os.path.exists(img_path):
-        return json.dumps({"status": "success", "image_path": img_path, "note": "Monthly report PNG image has been generated."})
+        _last_generated_image_path = img_path
+        return json.dumps({"status": "success", "image_path": img_path, "note": "Monthly report PNG image generated successfully."})
     else:
         return json.dumps({"error": "Failed to generate monthly report image."})
 
@@ -491,6 +501,9 @@ def _bot_polling_loop():
         bot.send_chat_action(message.chat.id, 'typing')
         
         try:
+            global _last_generated_image_path
+            _last_generated_image_path = None
+
             raw_response = handle_message_with_gemini(user_text)
             response_html = clean_telegram_html(raw_response)
             try:
@@ -499,6 +512,16 @@ def _bot_polling_loop():
                 log.warning(f"Telegram HTML parse error: {api_err}. Falling back to plain text reply.")
                 plain_text = re.sub(r'<[^>]+>', '', raw_response)
                 bot.reply_to(message, plain_text, parse_mode=None)
+
+            if _last_generated_image_path and os.path.exists(_last_generated_image_path):
+                try:
+                    with open(_last_generated_image_path, 'rb') as f:
+                        bot.send_photo(message.chat.id, photo=f, caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>", parse_mode="HTML")
+                    log.info(f"Successfully uploaded report photo to Telegram: {_last_generated_image_path}")
+                except Exception as img_err:
+                    log.error(f"Failed to send report photo to Telegram: {img_err}")
+                _last_generated_image_path = None
+
         except Exception as e:
             log.error(f"Telegram Bot error processing Gemini request: {e}", exc_info=True)
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")

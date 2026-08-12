@@ -490,23 +490,43 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         start_date = now.date().replace(day=1)
         end_date = now.date()
     else:
-        try:
-            parsed_dt = datetime.strptime(period_clean, "%Y-%m").date()
-            start_date = parsed_dt.replace(day=1)
+        month_formats = [
+            "%Y-%m", "%Y/%m", "%m/%Y", "%Y-%m-%d",
+            "%B %Y", "%b %Y", "%B", "%b"
+        ]
+        parsed_date = None
+        for fmt in month_formats:
+            try:
+                dt_cand = datetime.strptime(period_clean, fmt)
+                y = dt_cand.year
+                if fmt in ["%B", "%b"]:
+                    y = now.year
+                    if dt_cand.month > now.month:
+                        y -= 1
+                parsed_date = date(y, dt_cand.month, 1)
+                break
+            except Exception:
+                continue
+
+        if parsed_date:
+            start_date = parsed_date
             if start_date.month == 12:
                 end_date = date(start_date.year, 12, 31)
             else:
                 end_date = date(start_date.year, start_date.month + 1, 1) - timedelta(days=1)
-        except Exception:
+        else:
             first_of_this_month = now.date().replace(day=1)
             last_of_prev_month = first_of_this_month - timedelta(days=1)
             start_date = last_of_prev_month.replace(day=1)
             end_date = last_of_prev_month
 
+    if start_date > now.date():
+        return {"error": f"Cannot generate monthly report for a future month ({start_date.strftime('%B %Y')})."}
+
     days_count = (end_date - start_date).days + 1
     month_label = start_date.strftime("%B %Y")
 
-    rows = get_all_log_rows(days=60)
+    rows = get_all_log_rows(days=365)
     if not rows:
         return {"error": "No log data available for monthly report."}
 
