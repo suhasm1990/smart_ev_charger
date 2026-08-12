@@ -50,7 +50,6 @@ All settings can be configured via environment variables in `.env`. Dynamic sett
 | `OPENAI_API_KEY` | OpenAI API Key (for GPT-4o / o3 models) | - | No |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | - | No |
 | `GEMINI_API_KEY` | Google Gemini API Key | - | Optional |
-| `GEMINI_MODEL` | Gemini AI model identifier fallback | `gemini-flash-latest` | No |
 | `LLM_BASE_URL` | Optional custom base URL (for NIM or vLLM/Ollama) | - | No |
 | `UTILITY_PROVIDER` | Utility rate provider: `MID`, `PGE`, or `CUSTOM` | `MID` | No |
 | `UTILITY_FIXED_MONTHLY_FEE` | Fixed monthly service fee ($) | `32.00` (MID) | No |
@@ -106,7 +105,6 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 #### Google Gemini:
 ```env
 LLM_PROVIDER=gemini
-GEMINI_MODEL=gemini-flash-latest
 GEMINI_API_KEY=AIzaSy-your-key-here
 ```
 

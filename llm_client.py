@@ -61,7 +61,7 @@ def function_to_openai_tool(fn: typing.Callable) -> dict:
 # ── Configuration Resolver --------------------------------------------------
 
 def resolve_llm_config() -> dict:
-    """Resolves provider, model, api_key, and base_url based on environment variables."""
+    """Resolves provider, model, api_key, and base_url directly from environment/config."""
     provider = config.LLM_PROVIDER
     model = config.LLM_MODEL
     api_key = config.LLM_API_KEY
@@ -77,23 +77,17 @@ def resolve_llm_config() -> dict:
             provider = "anthropic"
         elif config.GEMINI_API_KEY:
             provider = "gemini"
-        else:
-            provider = "gemini"
 
-    # Set default keys and base_urls per provider
-    if provider == "nvidia":
-        api_key = api_key or config.NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY", "")
-        base_url = base_url or "https://integrate.api.nvidia.com/v1"
-        model = model or "nvidia/llama-3.1-nemotron-70b-instruct"
-    elif provider == "openai":
-        api_key = api_key or config.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", "")
-        model = model or "gpt-4o-mini"
-    elif provider == "anthropic":
-        api_key = api_key or config.ANTHROPIC_API_KEY or os.getenv("ANTHROPIC_API_KEY", "")
-        model = model or "claude-3-5-sonnet-20241022"
-    elif provider == "gemini":
-        api_key = api_key or config.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
-        model = model or config.GEMINI_MODEL or "gemini-flash-latest"
+    # Select provider-specific key if LLM_API_KEY is not set
+    if not api_key:
+        if provider == "nvidia":
+            api_key = config.NVIDIA_API_KEY
+        elif provider == "openai":
+            api_key = config.OPENAI_API_KEY
+        elif provider == "anthropic":
+            api_key = config.ANTHROPIC_API_KEY
+        elif provider == "gemini":
+            api_key = config.GEMINI_API_KEY
 
     return {
         "provider": provider,
