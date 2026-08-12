@@ -222,7 +222,13 @@ def get_daily_charging_cost(period: str = "today") -> dict:
                     grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
                     solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
                     home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                    rate = float(row.get("tou_rate_per_kwh", 0) or 0.20)
+                    ts_str = row.get("timestamp")
+                    try:
+                        dt = datetime.fromisoformat(ts_str)
+                        from tou import get_tou_rate
+                        rate = get_tou_rate(dt)
+                    except Exception:
+                        rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
                     
                     interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
                     
@@ -247,6 +253,9 @@ def get_daily_charging_cost(period: str = "today") -> dict:
         grid_pct = (total_grid_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
         solar_pct = (total_solar_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
 
+        from tou import get_tou_rate
+        current_rate = get_tou_rate(now)
+
         return {
             "period": period_label,
             "total_charging_hours": round(total_charging_mins / 60.0, 1),
@@ -257,7 +266,7 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             "ev_grid_cost_dollars": round(total_grid_cost, 2),
             "grid_percentage": round(grid_pct, 1),
             "solar_percentage": round(solar_pct, 1),
-            "estimated_solar_savings_dollars": round(total_solar_kwh * 0.20, 2),
+            "estimated_solar_savings_dollars": round(total_solar_kwh * current_rate, 2),
             "calculation_note": "EV grid draw is isolated from home appliances (AC/washing machine) by capping grid draw at charger max power rate."
         }
     except Exception as e:
@@ -337,7 +346,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
                     dt = datetime.fromisoformat(ts_str)
                     rate = get_tou_rate(dt)
                 except Exception:
-                    rate = round((float(row.get("tou_rate_per_kwh", 0) or 0.14513) + 0.0151) * 1.065, 5)
+                    rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
 
                 if grid_kw > 0:
                     import_kwh = grid_kw * interval_h
@@ -358,7 +367,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
 
         fixed_service_fee = (config.UTILITY_FIXED_MONTHLY_FEE / 30.0) * days_count * config.UTILITY_TAX_MULTIPLIER
         estimated_bill_total = max(0.0, fixed_service_fee + delivered_grid_cost - solar_export_credit)
-        non_ev_home_cost = max(0.0, estimated_bill_total - ev_grid_cost)
+        non_ev_home_cost = max(0.0, delivered_grid_cost - ev_grid_cost)
         self_powered_pct = round(max(0.0, min(100.0, (1 - total_grid_import_kwh / max(total_home_kwh, 0.01)) * 100.0)), 1) if total_home_kwh > 0 else 100.0
 
         provider_name = getattr(config, "UTILITY_PROVIDER", "MID")
@@ -376,6 +385,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
             "solar_export_credit_dollars": round(solar_export_credit, 2),
             "estimated_total_mid_utility_bill_dollars": round(estimated_bill_total, 2),
             "ev_charging_share_of_bill_dollars": round(ev_grid_cost, 2),
+            "home_appliances_grid_energy_cost_dollars": round(non_ev_home_cost, 2),
             "home_appliances_share_of_bill_dollars": round(non_ev_home_cost, 2),
             "home_self_powered_percentage": self_powered_pct,
             "utility_rate_plan": plan_label

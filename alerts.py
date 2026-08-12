@@ -3,6 +3,7 @@ import json
 import uuid
 import time
 import datetime
+import config
 from logger import log
 from notifications import notify
 
