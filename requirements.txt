@@ -2,9 +2,10 @@ requests
 schedule
 python-chargepoint
 python-dotenv
-google-genai
 pyTelegramBotAPI
 gspread
 google-auth
 tzdata
 pytz
+litellm
+openai

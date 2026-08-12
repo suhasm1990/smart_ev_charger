@@ -6,8 +6,7 @@ import logging
 from datetime import datetime
 
 import telebot
-from google import genai
-from google.genai import types
+import llm_client
 
 import config
 import state
@@ -351,26 +350,24 @@ def clean_telegram_html(text: str) -> str:
     
     return text.strip()
 
-# ── 2. Gemini Response Handler ──────────────────────────────────────────────
+# ── 2. Model Agnostic LLM Response Handler ─────────────────────────────────
 
-gemini_client = None
-gemini_chat = None
+chat_history = []
 
 def handle_message_with_gemini(text: str) -> str:
-    log.info(f"DEBUG: Gemini input text: '{text}'")
-    if not config.GEMINI_API_KEY:
-        return "Gemini API key is not configured. Please add GEMINI_API_KEY to your env variables."
-        
-    global gemini_client, gemini_chat
+    """Model agnostic handler for Telegram messages."""
+    log.info(f"DEBUG: LLM input text: '{text}'")
+    llm_cfg = llm_client.resolve_llm_config()
+    if not llm_cfg.get("api_key"):
+        return f"LLM API key is not configured for provider '{llm_cfg.get('provider')}'. Please set environment variables."
+
+    global chat_history
     
     if text.strip().lower() in ["/clear", "/reset"]:
-        gemini_chat = None
-        log.info("DEBUG: Gemini chat session cleared.")
+        chat_history = []
+        log.info("DEBUG: LLM chat history cleared.")
         return "Conversation history cleared."
-        
-    if gemini_client is None:
-        gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
-    
+
     tools = [
         get_system_status,
         get_recent_charging_sessions,
@@ -391,39 +388,33 @@ def handle_message_with_gemini(text: str) -> str:
         list_custom_alerts,
         add_agent_instruction
     ]
-    
-    if gemini_chat is None:
-        log.info("DEBUG: Initializing new Gemini chat session.")
-        gemini_chat = gemini_client.chats.create(
-            model=config.GEMINI_MODEL,
-            config=types.GenerateContentConfig(
-                system_instruction=(
-                    "You are an AI assistant for a Smart EV Charger. "
-                    "You can query status, check recent charging session history (when charging stopped and why), "
-                    "calculate daily/weekly/monthly EV charging cost and total home energy consumption/cost, "
-                    "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
-                    "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
-                    "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default) by calling tools. "
-                    "Always run the appropriate tools when requested, and summarize the actions taken "
-                    "in a friendly natural language response. "
-                    "Format all your responses in the strict HTML subset supported by Telegram. "
-                    "You may only use: <b>, <i>, <u>, <s>, <code>, <pre>, and <blockquote> tags. "
-                    "WARNING: Telegram does NOT support <ul>, <ol>, <li>, <p>, or <br> tags. "
-                    "To make lists or line breaks, simply use plain text list characters (like bullets • or -) and standard newlines (\\n). "
-                    "Never use Markdown markers like * or ** or _ or ` in your output. "
-                    "If the user asks general questions, just reply politely without calling tools."
-                ),
-                tools=tools,
-                temperature=0.0
-            )
-        )
 
+    system_instruction = (
+        "You are an AI assistant for a Smart EV Charger. "
+        "You can query status, check recent charging session history (when charging stopped and why), "
+        "calculate daily/weekly/monthly EV charging cost and total home energy consumption/cost, "
+        "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
+        "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
+        "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default) by calling tools. "
+        "Always run the appropriate tools when requested, and summarize the actions taken "
+        "in a friendly natural language response. "
+        "Format all your responses in the strict HTML subset supported by Telegram. "
+        "You may only use: <b>, <i>, <u>, <s>, <code>, <pre>, and <blockquote> tags. "
+        "WARNING: Telegram does NOT support <ul>, <ol>, <li>, <p>, or <br> tags. "
+        "To make lists or line breaks, simply use plain text list characters (like bullets • or -) and standard newlines (\\n). "
+        "Never use Markdown markers like * or ** or _ or ` in your output. "
+        "If the user asks general questions, just reply politely without calling tools."
+    )
 
-
-        
-    response = gemini_chat.send_message(text)
-    log.info(f"DEBUG: Gemini response: {response}")
-    return response.text
+    response_text, updated_history = llm_client.chat_with_tools(
+        history=chat_history,
+        user_text=text,
+        tools=tools,
+        system_instruction=system_instruction
+    )
+    chat_history = updated_history
+    log.info(f"DEBUG: LLM response: {response_text}")
+    return response_text
 
 # ── 3. Telegram Polling Loop ────────────────────────────────────────────────
 

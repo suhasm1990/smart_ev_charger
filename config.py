@@ -55,6 +55,16 @@ if TELEGRAM_ALLOWED_USER_ID:
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 
+# Model Agnostic AI Agent Configs (NVIDIA, OpenAI, Anthropic, Gemini, etc.)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").lower().strip()
+LLM_MODEL = os.getenv("LLM_MODEL", "")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
 # Path for dynamic configuration file
 DYNAMIC_CONFIG_FILE = "logs/config_dynamic.json"
 MANUAL_MODE_OVERRIDE = "default"  # Can be 'manual', 'auto', or 'default'

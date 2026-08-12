@@ -1,17 +1,17 @@
 import json
 from datetime import datetime
-from google import genai
-from google.genai import types
 
 import config
+import llm_client
 from sheets_db import get_recent_logs, get_settings, clear_user_instruction
 from notifications import notify
 from logger import log
 
 def run_daily_agent():
     log.info("Starting Daily Agent AI planner...")
-    if not config.GEMINI_API_KEY:
-        log.warning("GEMINI_API_KEY not set. Daily Agent cannot run.")
+    llm_cfg = llm_client.resolve_llm_config()
+    if not llm_cfg.get("api_key"):
+        log.warning(f"No API key configured for LLM provider '{llm_cfg.get('provider')}'. Daily Agent cannot run.")
         return
 
     # 1. Fetch 7 days of logs
@@ -27,8 +27,6 @@ def run_daily_agent():
     settings = get_settings()
     user_instruction = settings.get("USER_INSTRUCTION", "")
 
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
-    
     prompt = f"""
 You are the AI Planner for a Smart EV Charger.
 Goal: Maximize solar self-consumption, ensure the home battery does not drop below 20% by the end of the day, minimizing grid draw.
@@ -53,16 +51,8 @@ Respond ONLY with a valid JSON object matching this schema exactly:
 """
 
     try:
-        response = client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2
-            )
-        )
-        
-        result = json.loads(response.text)
+        result = llm_client.generate_json(prompt=prompt)
+        log.info(f"Daily Agent Decision: {result}")
         log.info(f"Daily Agent Decision: {result}")
         
         # 3. Apply the settings
