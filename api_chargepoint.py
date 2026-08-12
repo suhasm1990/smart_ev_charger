@@ -7,6 +7,8 @@ _cp_client = None
 async def get_cp_client():
     global _cp_client
     if _cp_client is None:
+        if not config.CHARGEPOINT_USERNAME or not config.CHARGEPOINT_COULOMB_TOKEN:
+            raise RuntimeError("CHARGEPOINT_USERNAME or CHARGEPOINT_COULOMB_TOKEN is not configured in environment variables.")
         from python_chargepoint import ChargePoint
         log_chargepoint.info("Initializing new ChargePoint client session")
         _cp_client = await ChargePoint.create(

@@ -3,6 +3,8 @@ import config
 from logger import log_netzero
 
 def get_powerwall_stats() -> dict:
+    if not config.NETZERO_SITE_ID or not config.NETZERO_API_TOKEN:
+        raise ValueError("NETZERO_SITE_ID or NETZERO_API_TOKEN is not configured in environment variables.")
     url = f"{config.NETZERO_BASE_URL}/{config.NETZERO_SITE_ID}/config"
     r   = requests.get(
         url,
