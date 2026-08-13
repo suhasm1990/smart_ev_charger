@@ -38,21 +38,8 @@ UTILITY_VOLUMETRIC_ADDER = float(os.getenv("UTILITY_VOLUMETRIC_ADDER", "0.0151" 
 UTILITY_TAX_MULTIPLIER = float(os.getenv("UTILITY_TAX_MULTIPLIER", "1.065" if UTILITY_PROVIDER == "MID" else "1.000"))
 UTILITY_SOLAR_EXPORT_CREDIT_RATE = float(os.getenv("UTILITY_SOLAR_EXPORT_CREDIT_RATE", "0.076" if UTILITY_PROVIDER == "MID" else "0.080"))
 
-
-
-
-import time
-
 # Timezone
-TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
-os.environ["TZ"] = TZ_NAME
-if hasattr(time, "tzset"):
-    try:
-        time.tzset()
-    except Exception:
-        pass
-TZ = ZoneInfo(TZ_NAME)
-
+TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))
 
 # Telegram AI Agent Configs
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
