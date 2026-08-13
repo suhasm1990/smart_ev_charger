@@ -27,3 +27,5 @@ log_csv         = logging.getLogger("CSV")
 
 # Silence verbose urllib3 connection logs
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+

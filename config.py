@@ -41,8 +41,18 @@ UTILITY_SOLAR_EXPORT_CREDIT_RATE = float(os.getenv("UTILITY_SOLAR_EXPORT_CREDIT_
 
 
 
+import time
+
 # Timezone
-TZ = ZoneInfo(os.getenv("TZ", "America/Los_Angeles"))
+TZ_NAME = os.getenv("TZ", "America/Los_Angeles")
+os.environ["TZ"] = TZ_NAME
+if hasattr(time, "tzset"):
+    try:
+        time.tzset()
+    except Exception:
+        pass
+TZ = ZoneInfo(TZ_NAME)
+
 
 # Telegram AI Agent Configs
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
