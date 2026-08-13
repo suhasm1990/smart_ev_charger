@@ -1,7 +1,12 @@
 import os
-import gspread
-from google.oauth2.service_account import Credentials
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+except ImportError:
+    gspread = None
+    Credentials = None
 from logger import log
+
 
 # We default to the URL provided by the user
 SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA")
@@ -15,6 +20,9 @@ _client = None
 
 def get_client():
     global _client
+    if gspread is None or Credentials is None:
+        log.warning("gspread or google-auth not installed. Google Sheets integration disabled.")
+        return None
     if _client is None:
         if not os.path.exists(CREDS_FILE):
             log.warning(f"{CREDS_FILE} not found. Google Sheets integration disabled.")

@@ -182,7 +182,7 @@ def _start_background_loop():
     asyncio.set_event_loop(_loop)
     _loop.run_forever()
 
-def _run_sync(coro):
+def _run_sync(coro, timeout: float = 30.0):
     global _loop, _thread
     if _thread is None or not _thread.is_alive():
         _loop = None
@@ -193,9 +193,15 @@ def _run_sync(coro):
             time.sleep(0.01)
     
     future = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return future.result()
+    try:
+        return future.result(timeout=timeout)
+    except Exception as err:
+        if "TimeoutError" in type(err).__name__:
+            log_chargepoint.warning(f"ChargePoint API call timed out after {timeout}s")
+        raise
 
 def start_charger(amperage_limit: int = 20):  _run_sync(start_charger_async(amperage_limit))
 def stop_charger():   _run_sync(stop_charger_async())
 def get_charger_status() -> dict: return _run_sync(get_charger_status_async())
 def set_charger_amperage_limit(amperage: int): _run_sync(set_charger_amperage_limit_async(amperage))
+

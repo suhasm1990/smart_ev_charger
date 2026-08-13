@@ -29,8 +29,17 @@ import threading
 cycle_lock = threading.Lock()
 
 def run_cycle_safe():
-    with cycle_lock:
+    acquired = cycle_lock.acquire(blocking=True, timeout=10)
+    if not acquired:
+        log.warning("SKIP CYCLE | Another cycle is already running or holding lock.")
+        return
+    try:
         run_cycle()
+    except Exception as e:
+        log.error(f"Uncaught exception in run_cycle: {e}", exc_info=True)
+    finally:
+        cycle_lock.release()
+
 
 def run_cycle():
     config.load_dynamic_config()
