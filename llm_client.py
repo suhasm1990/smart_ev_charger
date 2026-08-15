@@ -7,6 +7,13 @@ import typing
 import config
 from logger import log
 
+try:
+    import litellm
+    litellm.suppress_debug_info = True
+    litellm.set_verbose = False
+except Exception:
+    pass
+
 # ── Tool / Function Spec Generator -----------------------------------------
 
 def function_to_openai_tool(fn: typing.Callable) -> dict:
@@ -145,6 +152,7 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
             api_key=cfg["api_key"],
             response_format={"type": "json_object"},
             temperature=0.2,
+            request_timeout=35,
             **extra_kwargs
         )
         content = response.choices[0].message.content
@@ -193,6 +201,7 @@ def chat_with_tools(history: list, user_text: str, tools: list, system_instructi
                 tools=openai_tools if openai_tools else None,
                 api_key=cfg["api_key"],
                 temperature=0.1,
+                request_timeout=35,
                 **extra_kwargs
             )
 

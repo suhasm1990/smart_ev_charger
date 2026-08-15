@@ -1,4 +1,12 @@
 import os
+import socket
+import queue
+import threading
+import time
+
+# Set 20-second socket timeout so network/DNS drops never hang Google Sheets calls indefinitely
+socket.setdefaulttimeout(20.0)
+
 try:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -6,7 +14,6 @@ except ImportError:
     gspread = None
     Credentials = None
 from logger import log
-
 
 # We default to the URL provided by the user
 SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA")
@@ -45,22 +52,36 @@ def get_sheet():
         log.error(f"Failed to open spreadsheet by URL: {e}")
         return None
 
+# Background asynchronous worker queue for appending log rows
+_append_queue = queue.Queue(maxsize=2000)
+
+def _queue_worker():
+    while True:
+        row_data = _append_queue.get()
+        for attempt in range(3):
+            try:
+                sheet = get_sheet()
+                if sheet:
+                    worksheet = sheet.get_worksheet(0)
+                    worksheet.append_row(row_data)
+                    break
+            except Exception as e:
+                global _client
+                _client = None  # Force re-authentication on next attempt
+                log.warning(f"Google Sheets async append attempt {attempt+1} failed: {e}")
+                time.sleep(2 ** attempt)
+        _append_queue.task_done()
+
+_worker_thread = threading.Thread(target=_queue_worker, daemon=True, name="SheetsQueueWorker")
+_worker_thread.start()
+
 def append_log_row(row_data):
-    sheet = get_sheet()
-    if not sheet:
-        return False
+    """Asynchronously enqueues a log row to be written to Google Sheets without blocking."""
     try:
-        # Assuming the first tab is the logs tab
-        worksheet = sheet.get_worksheet(0) 
-    except Exception:
-        log.error("Could not find the first worksheet for logs.")
-        return False
-        
-    try:
-        worksheet.append_row(row_data)
+        _append_queue.put_nowait(row_data)
         return True
-    except Exception as e:
-        log.error(f"Failed to append row to Google Sheets: {e}")
+    except queue.Full:
+        log.warning("Google Sheets append queue is full. Dropping row.")
         return False
 
 def get_recent_logs(days=7):

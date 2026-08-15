@@ -78,84 +78,58 @@ DEFAULT_CHARGER_AMPERAGE = int(os.getenv("DEFAULT_CHARGER_AMPERAGE", "20"))
 MAX_CHARGER_AMPERAGE = int(os.getenv("MAX_CHARGER_AMPERAGE", "32"))
 
 
+DYNAMIC_CONFIG_SCHEMA = {
+    "BATTERY_START_PCT": (float, "40"),
+    "BATTERY_STOP_PCT": (float, "25"),
+    "BATTERY_LOW_RESERVE_PCT": (float, "15"),
+    "NIGHT_BLACKOUT_START_HOUR": (int, "16"),
+    "NIGHT_BLACKOUT_END_HOUR": (int, "9"),
+    "MANUAL_MODE_OVERRIDE": (str, "default"),
+    "ALLOWED_CHARGE_START_HOUR": (int, "0"),
+    "ALLOWED_CHARGE_END_HOUR": (int, "24"),
+}
+
+def _apply_config_dict(source_dict: dict):
+    """Applies values from a dictionary to module-level globals using the schema."""
+    globals_dict = globals()
+    for key, (caster, _) in DYNAMIC_CONFIG_SCHEMA.items():
+        if key in source_dict and source_dict[key] is not None:
+            try:
+                globals_dict[key] = caster(source_dict[key])
+            except (ValueError, TypeError):
+                pass
+
 def load_dynamic_config():
-    global BATTERY_START_PCT, BATTERY_STOP_PCT, BATTERY_LOW_RESERVE_PCT
-    global NIGHT_BLACKOUT_START_HOUR, NIGHT_BLACKOUT_END_HOUR
-    global MANUAL_MODE_OVERRIDE
-    global ALLOWED_CHARGE_START_HOUR, ALLOWED_CHARGE_END_HOUR
+    """Loads default env thresholds, then layers local JSON overrides, then Google Sheets settings."""
+    # 1. Defaults from environment
+    env_defaults = {
+        key: os.getenv(key, default_val)
+        for key, (_, default_val) in DYNAMIC_CONFIG_SCHEMA.items()
+    }
+    _apply_config_dict(env_defaults)
 
-    # Re-read defaults first
-    BATTERY_START_PCT = float(os.getenv("BATTERY_START_PCT", "40"))
-    BATTERY_STOP_PCT = float(os.getenv("BATTERY_STOP_PCT", "25"))
-    BATTERY_LOW_RESERVE_PCT = float(os.getenv("BATTERY_LOW_RESERVE_PCT", "15"))
-    NIGHT_BLACKOUT_START_HOUR = int(os.getenv("NIGHT_BLACKOUT_START_HOUR", "16"))
-    NIGHT_BLACKOUT_END_HOUR = int(os.getenv("NIGHT_BLACKOUT_END_HOUR", "9"))
-    ALLOWED_CHARGE_START_HOUR = int(os.getenv("ALLOWED_CHARGE_START_HOUR", "0"))
-    ALLOWED_CHARGE_END_HOUR = int(os.getenv("ALLOWED_CHARGE_END_HOUR", "24"))
-    MANUAL_MODE_OVERRIDE = "default"
-
+    # 2. Layer local JSON file overrides
     if os.path.exists(DYNAMIC_CONFIG_FILE):
         try:
             with open(DYNAMIC_CONFIG_FILE, "r") as f:
-                data = json.load(f)
-                if "BATTERY_START_PCT" in data:
-                    BATTERY_START_PCT = float(data["BATTERY_START_PCT"])
-                if "BATTERY_STOP_PCT" in data:
-                    BATTERY_STOP_PCT = float(data["BATTERY_STOP_PCT"])
-                if "BATTERY_LOW_RESERVE_PCT" in data:
-                    BATTERY_LOW_RESERVE_PCT = float(data["BATTERY_LOW_RESERVE_PCT"])
-                if "NIGHT_BLACKOUT_START_HOUR" in data:
-                    NIGHT_BLACKOUT_START_HOUR = int(data["NIGHT_BLACKOUT_START_HOUR"])
-                if "NIGHT_BLACKOUT_END_HOUR" in data:
-                    NIGHT_BLACKOUT_END_HOUR = int(data["NIGHT_BLACKOUT_END_HOUR"])
-                if "MANUAL_MODE_OVERRIDE" in data:
-                    MANUAL_MODE_OVERRIDE = str(data["MANUAL_MODE_OVERRIDE"])
-                if "ALLOWED_CHARGE_START_HOUR" in data:
-                    ALLOWED_CHARGE_START_HOUR = int(data["ALLOWED_CHARGE_START_HOUR"])
-                if "ALLOWED_CHARGE_END_HOUR" in data:
-                    ALLOWED_CHARGE_END_HOUR = int(data["ALLOWED_CHARGE_END_HOUR"])
+                _apply_config_dict(json.load(f))
         except Exception:
             pass
 
-    # Merge from Google Sheets if available
+    # 3. Layer Google Sheets overrides (cloud single source of truth)
     try:
         from sheets_db import get_settings
-        sheet_settings = get_settings()
-        if "BATTERY_START_PCT" in sheet_settings:
-            BATTERY_START_PCT = float(sheet_settings["BATTERY_START_PCT"])
-        if "BATTERY_STOP_PCT" in sheet_settings:
-            BATTERY_STOP_PCT = float(sheet_settings["BATTERY_STOP_PCT"])
-        if "BATTERY_LOW_RESERVE_PCT" in sheet_settings:
-            BATTERY_LOW_RESERVE_PCT = float(sheet_settings["BATTERY_LOW_RESERVE_PCT"])
-        if "NIGHT_BLACKOUT_START_HOUR" in sheet_settings:
-            NIGHT_BLACKOUT_START_HOUR = int(sheet_settings["NIGHT_BLACKOUT_START_HOUR"])
-        if "NIGHT_BLACKOUT_END_HOUR" in sheet_settings:
-            NIGHT_BLACKOUT_END_HOUR = int(sheet_settings["NIGHT_BLACKOUT_END_HOUR"])
-        if "MANUAL_MODE_OVERRIDE" in sheet_settings:
-            MANUAL_MODE_OVERRIDE = str(sheet_settings["MANUAL_MODE_OVERRIDE"])
-        if "ALLOWED_CHARGE_START_HOUR" in sheet_settings:
-            ALLOWED_CHARGE_START_HOUR = int(sheet_settings["ALLOWED_CHARGE_START_HOUR"])
-        if "ALLOWED_CHARGE_END_HOUR" in sheet_settings:
-            ALLOWED_CHARGE_END_HOUR = int(sheet_settings["ALLOWED_CHARGE_END_HOUR"])
+        _apply_config_dict(get_settings())
     except Exception:
         pass
 
 def save_dynamic_config():
+    """Saves current in-memory dynamic configuration to local JSON and Google Sheets."""
     os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE), exist_ok=True)
+    data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
     try:
-        data = {
-            "BATTERY_START_PCT": BATTERY_START_PCT,
-            "BATTERY_STOP_PCT": BATTERY_STOP_PCT,
-            "BATTERY_LOW_RESERVE_PCT": BATTERY_LOW_RESERVE_PCT,
-            "NIGHT_BLACKOUT_START_HOUR": NIGHT_BLACKOUT_START_HOUR,
-            "NIGHT_BLACKOUT_END_HOUR": NIGHT_BLACKOUT_END_HOUR,
-            "MANUAL_MODE_OVERRIDE": MANUAL_MODE_OVERRIDE,
-            "ALLOWED_CHARGE_START_HOUR": ALLOWED_CHARGE_START_HOUR,
-            "ALLOWED_CHARGE_END_HOUR": ALLOWED_CHARGE_END_HOUR,
-        }
         with open(DYNAMIC_CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=4)
-            
         try:
             from sheets_db import update_settings
             update_settings(data)

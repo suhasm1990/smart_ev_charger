@@ -86,23 +86,27 @@ def get_recent_charging_sessions(limit: int = 5) -> str:
     return "\n\n".join(formatted)
 
 def get_tou_schedule() -> str:
-    """Gets details about PG&E Time-Of-Use (TOU) electricity rate periods, night blackout windows, peak/partial-peak/off-peak hours, and rates."""
+    """Gets details about Time-Of-Use (TOU) electricity rate periods, night blackout windows, peak/partial-peak/off-peak hours, and rates for the configured utility provider."""
     from tou import get_tou_rate
     now = datetime.now(config.TZ)
     current_rate = get_tou_rate(now)
+    provider = getattr(config, "UTILITY_PROVIDER", "MID").upper()
+    
+    if provider == "PGE":
+        provider_name = "PG&E EV2-A"
+        summer_rates = {"off_peak": "$0.28312/kWh", "partial_peak": "$0.44812/kWh", "on_peak": "$0.59251/kWh"}
+        winter_rates = {"off_peak": "$0.26512/kWh", "partial_peak": "$0.41200/kWh", "on_peak": "$0.43512/kWh"}
+    else:
+        provider_name = "Modesto Irrigation District (MID) Rate N2-EVD"
+        summer_rates = {"off_peak": "$0.14513/kWh", "partial_peak": "$0.20192/kWh", "on_peak": "$0.31235/kWh"}
+        winter_rates = {"off_peak": "$0.14324/kWh", "partial_peak": "$0.14324/kWh", "on_peak": "$0.22401/kWh"}
+
     schedule_info = {
+        "utility_provider": provider_name,
         "timezone": str(config.TZ),
         "current_rate_per_kwh": f"${current_rate:.5f}",
-        "summer_rates": {
-            "off_peak": "$0.14513/kWh",
-            "partial_peak": "$0.20192/kWh",
-            "on_peak": "$0.31235/kWh"
-        },
-        "winter_rates": {
-            "off_peak": "$0.14324/kWh",
-            "partial_peak": "$0.14324/kWh",
-            "on_peak": "$0.22401/kWh"
-        },
+        "summer_rates": summer_rates,
+        "winter_rates": winter_rates,
         "weekday_schedule": {
             "off_peak": "12:00 AM - 1:00 PM and 11:00 PM - 12:00 AM",
             "partial_peak_1": "1:00 PM - 5:00 PM",
@@ -110,10 +114,10 @@ def get_tou_schedule() -> str:
             "partial_peak_2": "8:00 PM - 11:00 PM"
         },
         "weekend_schedule": {
-            "off_peak": "All day on weekends and PG&E holidays"
+            "off_peak": "All day on weekends and holidays"
         },
         "night_blackout_window": f"{config.NIGHT_BLACKOUT_START_HOUR}:00 - {config.NIGHT_BLACKOUT_END_HOUR}:00",
-        "night_blackout_description": f"No EV charging between {config.NIGHT_BLACKOUT_START_HOUR}:00 (4 PM) and {config.NIGHT_BLACKOUT_END_HOUR}:00 (9 AM) on weekdays"
+        "night_blackout_description": f"No EV charging between {config.NIGHT_BLACKOUT_START_HOUR}:00 and {config.NIGHT_BLACKOUT_END_HOUR}:00 on weekdays"
     }
     return json.dumps(schedule_info)
 
@@ -476,6 +480,7 @@ def _bot_polling_loop():
             "• <i>'Turn on manual mode'</i>\n"
             "• <i>'Force start the charger'</i>"
         )
+        bot.reply_to(message, help_text, parse_mode="HTML")
     @bot.message_handler(commands=['monthly_report', 'bill', 'monthly_bill'])
     def send_monthly_report_cmd(message):
         if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
@@ -529,9 +534,9 @@ def _bot_polling_loop():
     log.info("Telegram Bot starting infinity polling...")
     while True:
         try:
-            bot.infinity_polling(timeout=50, long_polling_timeout=40, logger_level=logging.ERROR)
+            bot.infinity_polling(timeout=60, long_polling_timeout=20, logger_level=logging.WARNING)
         except Exception as poll_err:
-            log.error(f"Telegram polling encountered error: {poll_err}. Retrying polling in 5 seconds...")
+            log.warning(f"Telegram polling interrupted ({poll_err}). Reconnecting in 5 seconds...")
             import time
             time.sleep(5)
 

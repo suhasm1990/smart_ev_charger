@@ -81,36 +81,55 @@ def _clean_error_str(e: Exception) -> str:
 
 async def stop_charger_async():
     global _cp_client
-    max_retries = 3
-    retry_delay_seconds = 60
-    
-    for attempt in range(1, max_retries + 1):
-        try:
-            client = await get_cp_client()
-            status = await client.get_user_charging_status()
-            if status:
-                session = await client.get_charging_session(status.session_id)
-                await session.stop()
-                log_chargepoint.info(f"Session STOPPED via lookup | session_id={status.session_id}")
-                return
-            else:
-                log_chargepoint.warning("No active session found to stop")
-                return
-        except Exception as e:
-            err_clean = _clean_error_str(e)
-            if "422" in str(e) or "Failed to stop session" in str(e):
-                log_chargepoint.info(f"Charger session already stopped or finalized: {err_clean}")
-                return
-            log_chargepoint.warning(f"Stop attempt {attempt}/{max_retries} failed: {err_clean}")
-            if _cp_client:
-                try: await _cp_client.close()
-                except Exception: pass
-                _cp_client = None
-            if attempt < max_retries:
-                log_chargepoint.info(f"Waiting {retry_delay_seconds}s before retrying stop...")
-                await asyncio.sleep(retry_delay_seconds)
-            else:
-                raise
+    try:
+        client = await get_cp_client()
+        status = await client.get_user_charging_status()
+        if not status or not getattr(status, "session_id", None):
+            log_chargepoint.info("No active charging session found to stop (already idle).")
+            return
+
+        session_id = status.session_id
+        # Send stop command directly
+        req = {
+            "deviceId": config.CHARGEPOINT_DEVICE_ID,
+            "portNumber": 1,
+            "sessionId": session_id
+        }
+        stop_url = client.global_config.endpoints.accounts_endpoint / "v1/driver/station/stopSession"
+        resp = await client._request("POST", stop_url, json=req)
+        
+        if resp.status == 200:
+            data = await resp.json()
+            ack_id = data.get("ackId")
+            if ack_id:
+                ack_url = client.global_config.endpoints.accounts_endpoint / "v1/driver/station/session/ack"
+                ack_resp = await client._request("POST", ack_url, json={"ackId": ack_id, "action": "stop_session"})
+                if ack_resp.status == 200:
+                    log_chargepoint.info(f"Session STOPPED and confirmed | session_id={session_id}")
+                    return
+                else:
+                    try:
+                        ack_data = await ack_resp.json(content_type=None) or {}
+                    except Exception:
+                        ack_data = {}
+                    err_msg = ack_data.get("errorMessage", "")
+                    log_chargepoint.info(f"Session stop acknowledged (session already stopped/finalized by vehicle): status={ack_resp.status} msg={err_msg}")
+                    return
+            log_chargepoint.info(f"Stop command accepted for session_id={session_id}")
+            return
+        else:
+            txt = await resp.text()
+            log_chargepoint.warning(f"Stop command returned status={resp.status}: {txt[:100]}")
+    except Exception as e:
+        err_clean = _clean_error_str(e)
+        if "422" in err_clean or "Failed to stop session" in err_clean:
+            log_chargepoint.info(f"Charger session already stopped or finalized: {err_clean}")
+            return
+        log_chargepoint.warning(f"Error executing stop command: {err_clean}")
+        if _cp_client:
+            try: await _cp_client.close()
+            except Exception: pass
+            _cp_client = None
 
 async def get_charger_status_async() -> dict:
     global _cp_client
@@ -182,7 +201,7 @@ def _start_background_loop():
     asyncio.set_event_loop(_loop)
     _loop.run_forever()
 
-def _run_sync(coro, timeout: float = 30.0):
+def _run_sync(coro, timeout: float = 60.0):
     global _loop, _thread
     if _thread is None or not _thread.is_alive():
         _loop = None

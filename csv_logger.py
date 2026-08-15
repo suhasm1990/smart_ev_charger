@@ -27,9 +27,9 @@ def get_session_minutes() -> float:
 def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
     tou    = get_tou_period(now)
     rate   = get_tou_rate(now)
-    grid   = stats["grid_kw"]
-
-    est_cost = round(max(0, grid) * rate / 60, 6)
+    grid   = float(stats.get("grid_kw", 0.0) or 0.0)
+    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+    est_cost = round(max(0.0, grid) * rate * interval_h, 4)
 
     row = [
         now.isoformat(),
@@ -163,38 +163,47 @@ def get_recent_sessions(limit: int = 5) -> list[dict]:
     # Return most recent sessions first
     return sessions[-limit:][::-1]
 
-def get_daily_charging_cost(period: str = "today") -> dict:
-    """Calculates total grid energy drawn (kWh), solar energy used (kWh), and cost ($) for EV charging for a period ('today', 'yesterday', 'this_week', 'this_month', or a specific date YYYY-MM-DD)."""
-    from datetime import timedelta
-    now = datetime.now(config.TZ)
-    period_clean = str(period or "today").lower().strip()
+def _is_ev_charging_row(row: dict) -> bool:
+    """Returns True if the log row represents active EV charging."""
+    state_str = str(row.get("charger_state", "")).upper()
+    action_str = str(row.get("action", "")).lower()
+    home_kw = float(row.get("home_kw", 0) or 0)
+    return ("CHARGING" in state_str) or (action_str == "start") or (home_kw >= 4.0)
 
-    if period_clean in ["today", ""]:
-        start_date = now.date()
-        end_date = now.date()
-        period_label = f"Today ({start_date})"
-    elif period_clean == "yesterday":
-        start_date = now.date() - timedelta(days=1)
-        end_date = start_date
-        period_label = f"Yesterday ({start_date})"
-    elif period_clean in ["this_week", "week", "7days", "this week"]:
-        start_date = now.date() - timedelta(days=now.weekday())
-        end_date = now.date()
-        period_label = f"This Week ({start_date} to {end_date})"
-    elif period_clean in ["this_month", "month", "30days", "this month"]:
-        start_date = now.date().replace(day=1)
-        end_date = now.date()
-        period_label = f"This Month ({start_date.strftime('%B %Y')})"
-    else:
-        try:
-            parsed = datetime.strptime(period_clean, "%Y-%m-%d").date()
-            start_date = parsed
-            end_date = parsed
-            period_label = f"Date ({start_date})"
-        except Exception:
-            start_date = now.date()
-            end_date = now.date()
-            period_label = f"Today ({start_date})"
+def _resolve_date_range(period: str, now: datetime = None) -> tuple[datetime.date, datetime.date, str]:
+    """Resolves period string into (start_date, end_date, period_label)."""
+    from datetime import timedelta
+    if now is None:
+        now = datetime.now(config.TZ)
+    
+    clean = str(period or "today").lower().strip()
+    if clean in ["today", ""]:
+        return now.date(), now.date(), f"Today ({now.date()})"
+    if clean == "yesterday":
+        yest = now.date() - timedelta(days=1)
+        return yest, yest, f"Yesterday ({yest})"
+    if clean in ["this_week", "week", "7days", "this week"]:
+        start = now.date() - timedelta(days=now.weekday())
+        return start, now.date(), f"This Week ({start} to {now.date()})"
+    if clean in ["this_month", "month", "30days", "this month"]:
+        start = now.date().replace(day=1)
+        return start, now.date(), f"This Month ({start.strftime('%B %Y')})"
+    if clean in ["last_month", "previous_month", "last month"]:
+        first_this_month = now.date().replace(day=1)
+        last_prev_month = first_this_month - timedelta(days=1)
+        start = last_prev_month.replace(day=1)
+        return start, last_prev_month, f"Last Month ({start.strftime('%B %Y')})"
+    
+    try:
+        parsed = datetime.strptime(clean, "%Y-%m-%d").date()
+        return parsed, parsed, f"Date ({parsed})"
+    except Exception:
+        return now.date(), now.date(), f"Today ({now.date()})"
+
+def get_daily_charging_cost(period: str = "today") -> dict:
+    """Calculates total grid energy drawn (kWh), solar energy used (kWh), and cost ($) for EV charging for a period."""
+    now = datetime.now(config.TZ)
+    start_date, end_date, period_label = _resolve_date_range(period, now)
 
     rows = get_all_log_rows()
     if not rows:
@@ -214,46 +223,35 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             except Exception:
                 continue
 
-            if start_date <= row_date <= end_date:
-                state_str = row.get("charger_state", "")
-                action_str = row.get("action", "")
-                if "CHARGING" in state_str or action_str == "start":
-                    charging_intervals_count += 1
-                    grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
-                    solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                    home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                    ts_str = row.get("timestamp")
-                    try:
-                        dt = datetime.fromisoformat(ts_str)
-                        from tou import get_tou_rate
-                        rate = get_tou_rate(dt)
-                    except Exception:
-                        rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
-                    
-                    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-                    
-                    # EV charger typical power (e.g. 20A = 4.8 kW, 32A = 7.68 kW)
-                    ev_power_kw = 4.8
-                    
-                    # EV's share of grid draw (excluding AC / home base load)
-                    ev_grid_kw = min(grid_kw, ev_power_kw)
-                    house_other_grid_kw = max(0.0, grid_kw - ev_grid_kw)
-                    
-                    grid_kwh = ev_grid_kw * interval_h
-                    solar_surplus_kw = max(0.0, solar_kw - (home_kw - ev_power_kw))
-                    solar_kwh = min(max(0.0, solar_surplus_kw), ev_power_kw) * interval_h
+            if start_date <= row_date <= end_date and _is_ev_charging_row(row):
+                charging_intervals_count += 1
+                grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
+                solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+                home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+                
+                ts_str = row.get("timestamp")
+                try:
+                    dt = datetime.fromisoformat(ts_str)
+                    rate = get_tou_rate(dt)
+                except Exception:
+                    rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
+                
+                interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+                ev_power_kw = 4.8
+                
+                ev_grid_kw = min(grid_kw, ev_power_kw)
+                grid_kwh = ev_grid_kw * interval_h
+                solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - ev_power_kw))
+                solar_kwh = min(max(0.0, solar_surplus_kw), ev_power_kw) * interval_h
 
-                    cost = grid_kwh * rate
-                    total_grid_kwh += grid_kwh
-                    total_solar_kwh += solar_kwh
-                    total_grid_cost += cost
-                    total_charging_mins += config.CHECK_INTERVAL_MINUTES
+                total_grid_kwh += grid_kwh
+                total_solar_kwh += solar_kwh
+                total_grid_cost += grid_kwh * rate
+                total_charging_mins += config.CHECK_INTERVAL_MINUTES
 
         total_kwh = total_grid_kwh + total_solar_kwh
         grid_pct = (total_grid_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
         solar_pct = (total_solar_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
-
-        from tou import get_tou_rate
         current_rate = get_tou_rate(now)
 
         return {
@@ -274,40 +272,9 @@ def get_daily_charging_cost(period: str = "today") -> dict:
         return {"error": f"Failed to calculate charging cost: {e}"}
 
 def get_home_energy_summary(period: str = "today") -> dict:
-    """Calculates total home energy consumed (kWh), total solar generated (kWh), total grid energy imported (kWh), solar export credits ($), fixed service fees ($), and exact estimated MID utility bill breakdown."""
-    from datetime import timedelta
-    from tou import MID_FIXED_MONTHLY_FEE, MID_SOLAR_EXPORT_CREDIT_RATE, MID_MOUNTAIN_HOUSE_TAX, get_tou_rate
-    
+    """Calculates total home energy consumed (kWh), solar generated (kWh), grid imported (kWh), solar export credits ($), fixed fees ($), and utility bill breakdown."""
     now = datetime.now(config.TZ)
-    period_clean = str(period or "today").lower().strip()
-
-    if period_clean in ["today", ""]:
-        start_date = now.date()
-        end_date = now.date()
-        period_label = f"Today ({start_date})"
-    elif period_clean == "yesterday":
-        start_date = now.date() - timedelta(days=1)
-        end_date = start_date
-        period_label = f"Yesterday ({start_date})"
-    elif period_clean in ["this_week", "week", "7days", "this week"]:
-        start_date = now.date() - timedelta(days=now.weekday())
-        end_date = now.date()
-        period_label = f"This Week ({start_date} to {end_date})"
-    elif period_clean in ["this_month", "month", "30days", "this month"]:
-        start_date = now.date().replace(day=1)
-        end_date = now.date()
-        period_label = f"This Month ({start_date.strftime('%B %Y')})"
-    else:
-        try:
-            parsed = datetime.strptime(period_clean, "%Y-%m-%d").date()
-            start_date = parsed
-            end_date = parsed
-            period_label = f"Date ({start_date})"
-        except Exception:
-            start_date = now.date()
-            end_date = now.date()
-            period_label = f"Today ({start_date})"
-
+    start_date, end_date, period_label = _resolve_date_range(period, now)
     days_count = (end_date - start_date).days + 1
 
     rows = get_all_log_rows()
@@ -321,6 +288,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
     delivered_grid_cost = 0.0
     solar_export_credit = 0.0
     ev_grid_kwh = 0.0
+    ev_solar_kwh = 0.0
     ev_grid_cost = 0.0
 
     try:
@@ -335,12 +303,11 @@ def get_home_energy_summary(period: str = "today") -> dict:
                 grid_kw = float(row.get("grid_kw", 0) or 0)
                 solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
                 home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                
                 interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+
                 total_home_kwh += home_kw * interval_h
                 total_solar_kwh += solar_kw * interval_h
                 
-                # Compute rate including MID EEA, CIA, State surcharges & 6.5% tax
                 ts_str = row.get("timestamp")
                 try:
                     dt = datetime.fromisoformat(ts_str)
@@ -348,18 +315,21 @@ def get_home_energy_summary(period: str = "today") -> dict:
                 except Exception:
                     rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
 
+                if _is_ev_charging_row(row):
+                    ev_power_kw = 4.8
+                    if grid_kw > 0:
+                        ev_grid_kw_interval = min(grid_kw, ev_power_kw)
+                        ev_kwh = ev_grid_kw_interval * interval_h
+                        ev_grid_kwh += ev_kwh
+                        ev_grid_cost += ev_kwh * rate
+                    solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - ev_power_kw))
+                    solar_kwh_interval = min(solar_surplus_kw, ev_power_kw) * interval_h
+                    ev_solar_kwh += solar_kwh_interval
+
                 if grid_kw > 0:
                     import_kwh = grid_kw * interval_h
                     total_grid_import_kwh += import_kwh
                     delivered_grid_cost += import_kwh * rate
-
-                    state_str = row.get("charger_state", "")
-                    action_str = row.get("action", "")
-                    if "CHARGING" in state_str or action_str == "start":
-                        ev_grid_kw_interval = min(grid_kw, 4.8)
-                        ev_kwh = ev_grid_kw_interval * interval_h
-                        ev_grid_kwh += ev_kwh
-                        ev_grid_cost += ev_kwh * rate
                 else:
                     export_kwh = abs(grid_kw) * interval_h
                     total_solar_export_kwh += export_kwh
@@ -369,6 +339,14 @@ def get_home_energy_summary(period: str = "today") -> dict:
         estimated_bill_total = max(0.0, fixed_service_fee + delivered_grid_cost - solar_export_credit)
         non_ev_home_cost = max(0.0, delivered_grid_cost - ev_grid_cost)
         self_powered_pct = round(max(0.0, min(100.0, (1 - total_grid_import_kwh / max(total_home_kwh, 0.01)) * 100.0)), 1) if total_home_kwh > 0 else 100.0
+
+        ev_total_kwh = ev_grid_kwh + ev_solar_kwh
+        if ev_total_kwh > 0 and ev_grid_cost == 0.0:
+            ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (100% solar/battery self-powered, $0.00 grid cost)"
+        elif ev_total_kwh > 0:
+            ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (${round(ev_grid_cost, 2):.2f} grid cost, {round(ev_solar_kwh, 1)} kWh solar)"
+        else:
+            ev_summary_msg = "No EV charging recorded in this period"
 
         provider_name = getattr(config, "UTILITY_PROVIDER", "MID")
         plan_label = f"Modesto Irrigation District (MID) Rate N2-EVD" if provider_name == "MID" else f"PG&E EV2-A Rate Schedule" if provider_name == "PGE" else f"Custom Utility Rate ({provider_name})"
@@ -385,6 +363,10 @@ def get_home_energy_summary(period: str = "today") -> dict:
             "solar_export_credit_dollars": round(solar_export_credit, 2),
             "estimated_total_mid_utility_bill_dollars": round(estimated_bill_total, 2),
             "ev_charging_share_of_bill_dollars": round(ev_grid_cost, 2),
+            "ev_charging_total_kwh": round(ev_total_kwh, 2),
+            "ev_solar_kwh_used": round(ev_solar_kwh, 2),
+            "ev_grid_kwh_used": round(ev_grid_kwh, 2),
+            "ev_charging_summary": ev_summary_msg,
             "home_appliances_grid_energy_cost_dollars": round(non_ev_home_cost, 2),
             "home_appliances_share_of_bill_dollars": round(non_ev_home_cost, 2),
             "home_self_powered_percentage": self_powered_pct,
@@ -585,9 +567,7 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
                 day_data["grid_import_kwh"] += imp_kwh
                 day_data["variable_grid_cost"] += imp_kwh * rate
 
-                state_str = row.get("charger_state", "")
-                action_str = row.get("action", "")
-                if "CHARGING" in state_str or action_str == "start":
+                if _is_ev_charging_row(row):
                     ev_grid_kw_val = min(grid_kw, 4.8)
                     ev_kwh = ev_grid_kw_val * interval_h
                     day_data["ev_grid_kwh"] += ev_kwh

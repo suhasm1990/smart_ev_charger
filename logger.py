@@ -1,6 +1,10 @@
 import logging
 import sys
 import os
+import socket
+
+# Global 25-second socket timeout across all networking libraries (requests, urllib3, gspread, litellm)
+socket.setdefaulttimeout(25.0)
 
 from config import TEXT_LOG_FILE
 
@@ -25,7 +29,11 @@ log_decision    = logging.getLogger("DECISION")
 log_mode        = logging.getLogger("MODE")
 log_csv         = logging.getLogger("CSV")
 
-# Silence verbose urllib3 connection logs
-logging.getLogger("urllib3").setLevel(logging.WARNING)
+# Silence verbose third-party connection and debug logs
+for logger_name in (
+    "urllib3", "litellm", "LiteLLM", "httpcore", "httpx", 
+    "asyncio", "telebot", "TeleBot", "google", "gspread"
+):
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 

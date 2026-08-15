@@ -15,8 +15,10 @@ def get_powerwall_stats() -> dict:
     data = r.json()
     live = data["live_status"]
 
-    solar_kw   = round(live["solar_power"]   / 1000, 2)
-    home_kw    = round(live["load_power"]    / 1000, 2)
+    solar_kw   = max(0.0, round(live["solar_power"] / 1000, 2))
+    if solar_kw < 0.05:
+        solar_kw = 0.0
+    home_kw    = max(0.0, round(live["load_power"]    / 1000, 2))
     grid_kw    = round(live["grid_power"]    / 1000, 2)
     battery_kw = round(live["battery_power"] / 1000, 2)
     battery_pct = round(

@@ -25,54 +25,33 @@ def daily_reset():
     state.grid_draw_count     = 0
 
 import threading
+import concurrent.futures
 
 cycle_lock = threading.Lock()
+_cycle_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="CycleWorker")
 
 def run_cycle_safe():
-    acquired = cycle_lock.acquire(blocking=True, timeout=10)
+    acquired = cycle_lock.acquire(blocking=False)
     if not acquired:
         log.warning("SKIP CYCLE | Another cycle is already running or holding lock.")
         return
     try:
-        run_cycle()
+        future = _cycle_executor.submit(run_cycle)
+        future.result(timeout=45.0)
+    except concurrent.futures.TimeoutError:
+        log.error("CYCLE TIMEOUT | run_cycle exceeded 45 seconds. Terminating cycle execution to protect scheduler.")
     except Exception as e:
         log.error(f"Uncaught exception in run_cycle: {e}", exc_info=True)
     finally:
-        cycle_lock.release()
+        try:
+            cycle_lock.release()
+        except RuntimeError:
+            pass
 
 
 def run_cycle():
     config.load_dynamic_config()
     now = datetime.now(config.TZ)
-
-    # Check manual override first — still fetch real stats for CSV
-    if check_manual_mode():
-        try:
-            stats = get_powerwall_stats()
-            tou   = get_tou_period(now)
-            log_mode.debug(
-                f"Manual mode | battery={stats['battery_pct']}% | "
-                f"solar={stats['solar_kw']}kW | grid={stats['grid_kw']}kW | tou={tou}"
-            )
-            if stats["grid_kw"] > 0.1:
-                log_mode.warning(
-                    f"GRID DRAW IN MANUAL MODE | grid={stats['grid_kw']}kW | "
-                    f"rate=${get_tou_rate(now)}/kWh | tou={tou}"
-                )
-            if stats["grid_kw"] > 1.0 and tou in ["on_peak", "partial_peak"]:
-                rate = get_tou_rate(now)
-                hour_key = now.strftime("%Y-%m-%d-%H")
-                if getattr(state, "last_manual_grid_alert", None) != hour_key:
-                    notify(
-                        f"⚠️ <b>High Grid Draw Alert (Manual Mode)</b>\n"
-                        f"Grid draw is <b>{stats['grid_kw']} kW</b> during {tou.upper()} rate (${rate}/kWh).\n"
-                        f"Consider switching to Auto mode or pausing heavy loads."
-                    )
-                    state.last_manual_grid_alert = hour_key
-            log_to_csv(stats, "manual", "Manual override active — automation paused", now)
-        except Exception as e:
-            log_mode.warning(f"Manual mode stats fetch failed: {e}")
-        return
 
     try:
         stats = get_powerwall_stats()
@@ -81,22 +60,52 @@ def run_cycle():
 
         try:
             cp_status = get_charger_status()
-            stats["is_plugged_in"] = cp_status["is_plugged_in"]
+            stats["is_plugged_in"] = cp_status.get("is_plugged_in", False)
             
-            # Sync internal state with physical reality
-            physical_charging = (cp_status["charging_status"] == "CHARGING")
+            # Sync internal state with physical reality (applies to both Auto and Manual modes)
+            physical_charging = (cp_status.get("charging_status") == "CHARGING")
             internal_charging = (state.charger_state == state.State.CHARGING)
             
             if physical_charging and not internal_charging:
                 log.info("SYNC | Charger is physically charging but internal state was IDLE. Synchronizing state.")
                 state.charger_state = state.State.CHARGING
-                state.charge_session_start = now
+                if not state.charge_session_start:
+                    state.charge_session_start = now
             elif not physical_charging and internal_charging:
                 log.info("SYNC | Charger is physically NOT charging but internal state was CHARGING. Synchronizing state.")
                 state.charger_state = state.State.IDLE
+                state.charge_session_start = None
                 
         except Exception as e:
-            log_chargepoint.warning(f"Failed to get charger status: {e} | Skipping cycle")
+            log_chargepoint.warning(f"Failed to get charger status: {e}")
+            cp_status = {}
+
+        # Check manual override first — logs synchronized stats and active charger state
+        if check_manual_mode():
+            try:
+                log_mode.debug(
+                    f"Manual mode | battery={stats['battery_pct']}% | "
+                    f"solar={stats['solar_kw']}kW | grid={stats['grid_kw']}kW | "
+                    f"charger={state.charger_state} | tou={tou}"
+                )
+                if stats["grid_kw"] > 0.1:
+                    log_mode.warning(
+                        f"GRID DRAW IN MANUAL MODE | grid={stats['grid_kw']}kW | "
+                        f"rate=${get_tou_rate(now)}/kWh | tou={tou}"
+                    )
+                if stats["grid_kw"] > 1.0 and tou in ["on_peak", "partial_peak"]:
+                    rate = get_tou_rate(now)
+                    hour_key = now.strftime("%Y-%m-%d-%H")
+                    if getattr(state, "last_manual_grid_alert", None) != hour_key:
+                        notify(
+                            f"⚠️ <b>High Grid Draw Alert (Manual Mode)</b>\n"
+                            f"Grid draw is <b>{stats['grid_kw']} kW</b> during {tou.upper()} rate (${rate}/kWh).\n"
+                            f"Consider switching to Auto mode or pausing heavy loads."
+                        )
+                        state.last_manual_grid_alert = hour_key
+                log_to_csv(stats, "manual", "Manual override active — automation paused", now)
+            except Exception as e:
+                log_mode.warning(f"Manual mode stats fetch failed: {e}")
             return
 
         # Check dynamic alerts
@@ -119,7 +128,6 @@ def run_cycle():
             check_alerts(current_state)
         except Exception as alert_err:
             log.warning(f"Error evaluating custom alerts during cycle: {alert_err}")
-
 
         if stats["grid_kw"] > 0.1:
             state.grid_draw_count += 1
