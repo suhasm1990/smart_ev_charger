@@ -14,14 +14,10 @@ def run_daily_agent():
         log.warning(f"No API key configured for LLM provider '{llm_cfg.get('provider')}'. Daily Agent cannot run.")
         return
 
-    # 1. Fetch 7 days of logs
-    recent_logs = get_recent_logs(days=7)
-    if not recent_logs:
-        log.warning("No recent logs found in Google Sheets. Skipping Daily Agent.")
-        return
-
-    # Convert recent logs to json string
-    logs_str = json.dumps(recent_logs)
+    # 1. Fetch concise 7-day energy advice and recent summary
+    from csv_logger import get_energy_saving_advice, get_home_energy_summary
+    advice = get_energy_saving_advice()
+    recent_summary = get_home_energy_summary("yesterday")
 
     # 2. Check for User Instructions
     settings = get_settings()
@@ -29,24 +25,29 @@ def run_daily_agent():
 
     prompt = f"""
 You are the AI Planner for a Smart EV Charger.
-Goal: Maximize solar self-consumption, ensure the home battery does not drop below 20% by the end of the day, minimizing grid draw.
+Goal: Maximize solar self-consumption, ensure the home battery does not drop below 20% by the end of the day, and minimize utility grid draw.
 
-Here is the CSV data (in JSON format) for the home's power usage over the last 7 days (readings every 15 mins):
-{logs_str}
+Home Energy Profile (Last 7 Days):
+• Optimal Solar Surplus Window: {advice.get('optimal_solar_appliance_window', '10:00 - 15:00')}
+• Recommended EV Charging Window: {advice.get('cheapest_ev_charging_window', '10:00 - 15:00')}
+• On-Peak Avoid Hours: {advice.get('hours_to_avoid_heavy_loads', '17:00 - 20:00')}
+• Yesterday Solar Generated: {recent_summary.get('total_solar_generated_kwh', 'N/A')} kWh
+• Yesterday Grid Imported: {recent_summary.get('total_grid_imported_kwh', 'N/A')} kWh
+• Yesterday Self-Powered: {recent_summary.get('home_self_powered_percentage', 'N/A')}%
 
 {"USER INSTRUCTION OVERRIDE: " + user_instruction if user_instruction else "No special user instructions today."}
 
-If there is a USER INSTRUCTION OVERRIDE, you MUST prioritize fulfilling it (e.g., by widening the charge window to 0-24 and dropping battery thresholds) over solar savings.
+If there is a USER INSTRUCTION OVERRIDE, prioritize fulfilling it (e.g. widening charge window or dropping battery thresholds) over solar savings.
 
-Recommend the optimal configuration for tomorrow.
+Recommend the optimal configuration for today.
 Respond ONLY with a valid JSON object matching this schema exactly:
 {{
-  "battery_start_pct": <float>,
-  "battery_stop_pct": <float>,
+  "battery_start_pct": <float between 40 and 60>,
+  "battery_stop_pct": <float between 20 and 35>,
   "charge_window_start_hour": <int 0-24>,
   "charge_window_end_hour": <int 0-24>,
-  "daily_suggestion": "<string, e.g. advice on when to run heavy appliances based on solar peaks>",
-  "reasoning": "<string, why you chose these settings>"
+  "daily_suggestion": "<concise advice on when to run heavy appliances based on solar peaks>",
+  "reasoning": "<brief explanation of chosen settings>"
 }}
 """
 

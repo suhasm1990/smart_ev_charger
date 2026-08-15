@@ -96,6 +96,10 @@ def resolve_llm_config() -> dict:
         elif provider == "gemini":
             api_key = config.GEMINI_API_KEY
 
+    # Set default base URL for known providers if not specified
+    if provider == "nvidia" and not base_url:
+        base_url = "https://integrate.api.nvidia.com/v1"
+
     return {
         "provider": provider,
         "model": model,
@@ -105,8 +109,11 @@ def resolve_llm_config() -> dict:
 
 
 def extract_json_from_text(text: str) -> dict:
-    """Safely extracts JSON dict from response text even if wrapped in markdown codeblocks."""
+    """Safely extracts JSON dict from response text even if wrapped in markdown codeblocks or thinking tags."""
     text = text.strip()
+    # Strip <think>...</think> reasoning blocks if present
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+    
     match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
     if match:
         text = match.group(1)
@@ -143,16 +150,18 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
         model_name = cfg["model"]
         if cfg["provider"] == "nvidia" and not model_name.startswith("openai/") and not model_name.startswith("nvidia/"):
             model_name = f"openai/{model_name}"
+        elif cfg["provider"] == "nvidia" and model_name.startswith("nvidia/"):
+            model_name = f"openai/{model_name}"
         elif cfg["provider"] == "gemini" and not model_name.startswith("gemini/"):
             model_name = f"gemini/{model_name}"
 
+        # Note: Avoid response_format json_object for providers that don't support it in custom openai endpoints
         response = litellm.completion(
             model=model_name,
             messages=messages,
             api_key=cfg["api_key"],
-            response_format={"type": "json_object"},
             temperature=0.2,
-            request_timeout=35,
+            request_timeout=45,
             **extra_kwargs
         )
         content = response.choices[0].message.content
