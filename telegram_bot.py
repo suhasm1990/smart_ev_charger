@@ -32,8 +32,22 @@ def get_system_status() -> str:
         cp = {}
         log.warning(f"Bot failed to get Charger status: {e}")
         
+    # Synchronize internal in-memory state with physical hardware status immediately
+    physical_charging = (cp.get("charging_status") == "CHARGING")
+    if physical_charging:
+        state.charger_state = state.State.CHARGING
+        if not state.charge_session_start:
+            state.charge_session_start = datetime.now(config.TZ)
+        state.session_stop_reason = None
+    elif cp.get("charging_status") in ["NOT_CHARGING", "AVAILABLE", "UNPLUGGED"] and state.charger_state == state.State.CHARGING:
+        state.charger_state = state.State.IDLE
+        state.charge_session_start = None
+
+    effective_state = "CHARGING" if physical_charging else str(state.charger_state)
+
     status_data = {
-        "charger_state": str(state.charger_state),
+        "charger_state": effective_state,
+        "is_charging": physical_charging,
         "session_duration_minutes": round(get_session_minutes(), 1),
         "previous_session_stop_reason": getattr(state, "session_stop_reason", "N/A"),
         "battery_pct": pw.get("battery_pct"),
@@ -43,10 +57,10 @@ def get_system_status() -> str:
         "grid_kw": pw.get("grid_kw"),
         "island_mode": pw.get("island_mode"),
         "storm_mode": pw.get("storm_mode"),
-        "charging_status": cp.get("charging_status"),
-        "is_plugged_in": cp.get("is_plugged_in"),
-        "is_connected": cp.get("is_connected"),
-        "amperage_limit": cp.get("amperage_limit"),
+        "charging_status": cp.get("charging_status", "UNKNOWN"),
+        "is_plugged_in": cp.get("is_plugged_in", False),
+        "is_connected": cp.get("is_connected", False),
+        "amperage_limit": cp.get("amperage_limit", config.DEFAULT_CHARGER_AMPERAGE),
         "cp_session_energy_kwh": cp.get("energy_kwh", 0.0),
         "cp_charging_power_kw": cp.get("power_kw", 0.0),
         "cp_miles_added": cp.get("miles_added", 0.0),
