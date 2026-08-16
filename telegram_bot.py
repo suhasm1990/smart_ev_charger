@@ -17,7 +17,7 @@ from csv_logger import get_session_minutes, get_recent_sessions, get_daily_charg
 
 RUN_CYCLE_CALLBACK = None
 
-# ── 1. Helper Tools for Gemini Function Calling ─────────────────────────────
+# ── 1. Helper Tools for LLM Function Calling ─────────────────────────────
 
 def get_system_status() -> str:
     """Gets the current EV charger state, battery percentage, solar generation, house usage, current grid import, and active thresholds."""
@@ -327,6 +327,17 @@ def add_agent_instruction(text: str) -> str:
     else:
         return "Error: Failed to save instruction. Please check Google Sheets integration."
 
+def trigger_daily_agent() -> str:
+    """Manually runs the Daily AI Agent planner to analyze recent solar generation, optimize the charge window, update battery thresholds, and dispatch the daily strategy update.
+    Use this tool whenever the user asks to run the daily agent, trigger daily AI, plan today's charging, or generate the daily update.
+    """
+    from daily_agent import run_daily_agent
+    try:
+        run_daily_agent()
+        return "Success: Triggered Daily AI Agent. The daily plan and settings have been updated and sent to your Telegram."
+    except Exception as e:
+        return f"Error executing Daily AI Agent: {e}"
+
 _last_generated_image_path = None
 
 def generate_monthly_report(period: str = "last_month") -> str:
@@ -365,7 +376,7 @@ def send_monthly_telegram_report(period: str = "last_month"):
         log.error(f"Failed to send monthly report to Telegram: {e}")
 
 def clean_telegram_html(text: str) -> str:
-    """Cleans and sanitizes Gemini outputs into valid Telegram HTML format."""
+    """Cleans and sanitizes LLM response outputs into valid Telegram HTML format."""
     if not text:
         return ""
     
@@ -395,7 +406,7 @@ def clean_telegram_html(text: str) -> str:
 
 chat_history = []
 
-def handle_message_with_gemini(text: str) -> str:
+def handle_message_with_llm(text: str) -> str:
     """Model agnostic handler for Telegram messages."""
     log.info(f"DEBUG: LLM input text: '{text}'")
     llm_cfg = llm_client.resolve_llm_config()
@@ -428,7 +439,8 @@ def handle_message_with_gemini(text: str) -> str:
         set_custom_alert,
         clear_custom_alert,
         list_custom_alerts,
-        add_agent_instruction
+        add_agent_instruction,
+        trigger_daily_agent
     ]
 
     system_instruction = (
@@ -437,6 +449,7 @@ def handle_message_with_gemini(text: str) -> str:
         "calculate daily/weekly/monthly EV charging cost and total home energy consumption/cost, "
         "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
         "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
+        "run the Daily AI Agent on demand to optimize charging strategy for today, "
         "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default) by calling tools. "
         "Always run the appropriate tools when requested, and summarize the actions taken "
         "in a friendly natural language response. "
@@ -458,6 +471,7 @@ def handle_message_with_gemini(text: str) -> str:
     log.info(f"DEBUG: LLM response: {response_text}")
     return response_text
 
+
 # ── 3. Telegram Polling Loop ────────────────────────────────────────────────
 
 def _bot_polling_loop():
@@ -472,7 +486,8 @@ def _bot_polling_loop():
                 
         help_text = (
             "🔋 <b>Welcome to the Smart EV Charger Assistant!</b>\n\n"
-            "I'm powered by Gemini and can help you control your solar charger. You can text me in natural language, for example:\n"
+            "I'm powered by AI and can help you control your solar charger. You can text me in natural language, for example:\n"
+            "• <i>'Run daily agent'</i> or <i>'Plan today's charging'</i>\n"
             "• <i>'Why did charging stop last time?'</i>\n"
             "• <i>'What are the peak and partial peak timings?'</i>\n"
             "• <i>'Charge with full power'</i>\n"
@@ -481,6 +496,20 @@ def _bot_polling_loop():
             "• <i>'Force start the charger'</i>"
         )
         bot.reply_to(message, help_text, parse_mode="HTML")
+
+    @bot.message_handler(commands=['daily_agent', 'plan', 'daily_plan'])
+    def run_daily_agent_cmd(message):
+        if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
+            bot.reply_to(message, "Unauthorized.")
+            return
+        bot.send_chat_action(message.chat.id, 'typing')
+        from daily_agent import run_daily_agent
+        try:
+            run_daily_agent()
+            bot.reply_to(message, "✅ <b>Daily AI Agent executed successfully.</b> Check the update above for today's optimal schedule and thresholds!", parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(message, f"❌ <b>Error executing Daily AI Agent:</b> {e}", parse_mode="HTML")
+
     @bot.message_handler(commands=['monthly_report', 'bill', 'monthly_bill'])
     def send_monthly_report_cmd(message):
         if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
@@ -509,7 +538,7 @@ def _bot_polling_loop():
             global _last_generated_image_path
             _last_generated_image_path = None
 
-            raw_response = handle_message_with_gemini(user_text)
+            raw_response = handle_message_with_llm(user_text)
             response_html = clean_telegram_html(raw_response)
             try:
                 bot.reply_to(message, response_html, parse_mode="HTML")
@@ -528,7 +557,7 @@ def _bot_polling_loop():
                 _last_generated_image_path = None
 
         except Exception as e:
-            log.error(f"Telegram Bot error processing Gemini request: {e}", exc_info=True)
+            log.error(f"Telegram Bot error processing LLM request: {e}", exc_info=True)
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")
 
     log.info("Telegram Bot starting infinity polling...")
