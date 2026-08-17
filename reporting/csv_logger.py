@@ -1,12 +1,11 @@
 import csv
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta, date
 
-import state
-import config
-from logger import log_csv
-from tou import get_tou_period, get_tou_rate, is_expensive_period, is_in_night_blackout, is_weekend
+from core import state, config
+from core.tou import get_tou_period, get_tou_rate, is_expensive_period, is_in_night_blackout, is_weekend
+from reporting.logger import log_csv
 
 CSV_HEADERS = [
     "timestamp", "date", "time", "day_of_week", "is_weekend",
@@ -40,13 +39,13 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         tou,
         rate,
         is_expensive_period(now),
-        stats["solar_kw"],
-        stats["home_kw"],
-        stats["solar_surplus_kw"],
-        stats["battery_kw"],
-        stats["grid_kw"],
-        stats["battery_pct"],
-        stats["self_powered_pct"],
+        stats.get("solar_kw", 0.0),
+        stats.get("home_kw", 0.0),
+        stats.get("solar_surplus_kw", 0.0),
+        stats.get("battery_kw", 0.0),
+        stats.get("grid_kw", 0.0),
+        stats.get("battery_pct", 0.0),
+        stats.get("self_powered_pct", 100.0),
         config.BATTERY_START_PCT,
         config.BATTERY_STOP_PCT,
         0.0,
@@ -59,8 +58,8 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         state.session_stop_reason or "",
         is_in_night_blackout(now),
         state.manual_mode,
-        stats["island_mode"],
-        stats["storm_mode"],
+        stats.get("island_mode", "on_grid"),
+        stats.get("storm_mode", False),
         est_cost,
         config.ALLOWED_CHARGE_START_HOUR,
         config.ALLOWED_CHARGE_END_HOUR,
@@ -75,7 +74,7 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         writer.writerow(row)
 
     try:
-        from sheets_db import append_log_row
+        from services.sheets_db import append_log_row
         append_log_row(row)
     except Exception as e:
         log_csv.error(f"Failed to push row to Google Sheets: {e}")
@@ -93,7 +92,7 @@ def get_all_log_rows(days: int = 7) -> list[dict]:
     """
     # 1. Try Google Sheets first (primary single source of truth)
     try:
-        from sheets_db import get_recent_logs
+        from services.sheets_db import get_recent_logs
         sheets_logs = get_recent_logs(days=days)
         if sheets_logs:
             return sheets_logs
@@ -172,7 +171,6 @@ def _is_ev_charging_row(row: dict) -> bool:
 
 def _resolve_date_range(period: str, now: datetime = None) -> tuple[datetime.date, datetime.date, str]:
     """Resolves period string into (start_date, end_date, period_label)."""
-    from datetime import timedelta
     if now is None:
         now = datetime.now(config.TZ)
     
@@ -376,12 +374,8 @@ def get_home_energy_summary(period: str = "today") -> dict:
         log_csv.error(f"Error calculating home energy summary: {e}")
         return {"error": f"Failed to calculate home energy summary: {e}"}
 
-
 def get_energy_saving_advice() -> dict:
     """Analyzes recent 7-day power usage logs to calculate solar generation windows, identify high-cost grid draws, and provide actionable tips to reduce electric bills."""
-    from datetime import timedelta
-    from tou import get_tou_rate
-    
     rows = get_all_log_rows()
     if not rows:
         return {"error": "No log data found yet."}
@@ -451,15 +445,11 @@ def get_energy_saving_advice() -> dict:
         log_csv.error(f"Error calculating energy saving advice: {e}")
         return {"error": f"Failed to calculate energy saving advice: {e}"}
 
-
 def get_monthly_billing_data(period: str = "last_month") -> dict:
     """
     Aggregates log rows for a given month ('last_month', 'this_month', or 'YYYY-MM').
     Returns daily usage records (EXCLUDING fixed daily fee from daily cost) and monthly billing summary.
     """
-    from datetime import timedelta, date
-    from tou import get_tou_rate
-    
     now = datetime.now(config.TZ)
     period_clean = str(period or "last_month").lower().strip()
     
@@ -655,10 +645,3 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         "utility_rate_plan": plan_label,
         "daily_records": daily_list
     }
-
-
-
-
-
-
-

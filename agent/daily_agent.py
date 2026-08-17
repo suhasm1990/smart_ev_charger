@@ -1,11 +1,12 @@
 import json
 from datetime import datetime
 
-import config
-import llm_client
-from sheets_db import get_recent_logs, get_settings, clear_user_instruction
-from notifications import notify
-from logger import log
+from core import config
+from agent import llm_client
+from services.sheets_db import get_recent_logs, get_settings, clear_user_instruction
+from reporting.notifications import notify
+from reporting.logger import log
+from reporting.csv_logger import get_energy_saving_advice, get_home_energy_summary
 
 def run_daily_agent():
     log.info("Starting Daily Agent AI planner...")
@@ -15,7 +16,6 @@ def run_daily_agent():
         return
 
     # 1. Fetch concise 7-day energy advice and recent summary
-    from csv_logger import get_energy_saving_advice, get_home_energy_summary
     advice = get_energy_saving_advice()
     recent_summary = get_home_energy_summary("yesterday")
 
@@ -54,7 +54,6 @@ Respond ONLY with a valid JSON object matching this schema exactly:
     try:
         result = llm_client.generate_json(prompt=prompt)
         log.info(f"Daily Agent Decision: {result}")
-        log.info(f"Daily Agent Decision: {result}")
         
         # 3. Apply the settings
         config.BATTERY_START_PCT = float(result.get("battery_start_pct", config.BATTERY_START_PCT))
@@ -68,7 +67,6 @@ Respond ONLY with a valid JSON object matching this schema exactly:
             
         # 4. Fetch Yesterday's Energy & Cost Summary
         try:
-            from csv_logger import get_home_energy_summary
             yest = get_home_energy_summary("yesterday")
         except Exception as yest_err:
             log.warning(f"Daily Agent could not fetch yesterday summary: {yest_err}")
@@ -103,4 +101,3 @@ Respond ONLY with a valid JSON object matching this schema exactly:
 
 if __name__ == "__main__":
     run_daily_agent()
-

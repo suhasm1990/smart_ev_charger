@@ -1,6 +1,6 @@
 import requests
-import config
-from logger import log_netzero
+from core import config
+from reporting.logger import log_netzero
 
 def get_powerwall_stats() -> dict:
     if not config.NETZERO_SITE_ID or not config.NETZERO_API_TOKEN:

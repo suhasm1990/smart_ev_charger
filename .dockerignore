@@ -1,0 +1,13 @@
+.git
+.venv
+.DS_Store
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+logs/
+*.tar
+*.gz
+*.zip
+tests/
+docs/

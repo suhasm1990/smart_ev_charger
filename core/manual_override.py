@@ -1,9 +1,7 @@
-import requests
 from datetime import datetime, timedelta
-import config
-import state
-from logger import log_mode
-from notifications import notify
+from core import config, state
+from reporting.logger import log_mode
+from reporting.notifications import notify
 
 def check_manual_mode() -> bool:
     now = datetime.now(config.TZ)
@@ -22,6 +20,7 @@ def check_manual_mode() -> bool:
             )
             state.manual_mode        = False
             state.manual_mode_set_at = None
+            state.clear_manual_guards()
             if config.MANUAL_MODE_OVERRIDE == "manual":
                 config.MANUAL_MODE_OVERRIDE = "default"
                 config.save_dynamic_config()
@@ -30,7 +29,6 @@ def check_manual_mode() -> bool:
                     f"Daily reset at {config.NIGHT_BLACKOUT_END_HOUR}:00 AM triggered — manual override ended. "
                     f"Solar automation and battery thresholds are active again."
                 )
-
 
     # Load dynamic configs first to ensure we check local override
     config.load_dynamic_config()
@@ -58,6 +56,7 @@ def check_manual_mode() -> bool:
     elif not new_manual and state.prev_manual_mode:
         state.manual_mode        = False
         state.manual_mode_set_at = None
+        state.clear_manual_guards()
         log_mode.info("AUTO MODE RESTORED | Automation resumed")
         notify("✅ Auto mode restored — automation resumed")
 

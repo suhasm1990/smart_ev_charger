@@ -3,18 +3,15 @@ import time
 import requests
 import signal
 import sys
+import threading
+import concurrent.futures
 from datetime import datetime
 
-import config
-import state
-from logger import log, log_mode, log_netzero, log_chargepoint
-from api_netzero import get_powerwall_stats
-from api_chargepoint import start_charger, stop_charger, get_charger_status
-from tou import get_tou_period, get_tou_rate, is_in_night_blackout, is_weekend
-from manual_override import check_manual_mode
-from decision import evaluate
-from csv_logger import log_to_csv, get_session_minutes
-from notifications import notify
+from core import config, state, check_manual_mode, evaluate, get_tou_period, get_tou_rate, is_in_night_blackout, is_weekend
+from reporting import log, log_mode, log_netzero, log_chargepoint, log_decision, log_to_csv, get_session_minutes, notify
+from services import get_powerwall_stats, start_charger, stop_charger, get_charger_status, ChargePointStartError
+from agent import check_alerts, check_recent_log_errors, run_daily_agent, start_telegram_bot
+from agent.telegram_bot import send_monthly_telegram_report
 
 def daily_reset():
     log.info(
@@ -23,9 +20,6 @@ def daily_reset():
     )
     state.session_count_today = 0
     state.grid_draw_count     = 0
-
-import threading
-import concurrent.futures
 
 cycle_lock = threading.Lock()
 _cycle_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="CycleWorker")
@@ -47,7 +41,6 @@ def run_cycle_safe():
             cycle_lock.release()
         except RuntimeError:
             pass
-
 
 def run_cycle():
     config.load_dynamic_config()
@@ -80,7 +73,7 @@ def run_cycle():
             log_chargepoint.warning(f"Failed to get charger status: {e}")
             cp_status = {}
 
-        # Check manual override first — logs synchronized stats and active charger state
+        # Check manual override first — evaluate safety guardrails and log synchronized stats
         if check_manual_mode():
             try:
                 log_mode.debug(
@@ -88,6 +81,136 @@ def run_cycle():
                     f"solar={stats['solar_kw']}kW | grid={stats['grid_kw']}kW | "
                     f"charger={state.charger_state} | tou={tou}"
                 )
+
+                # Check custom alerts during manual mode
+                try:
+                    current_state = {
+                        "battery_pct": stats.get("battery_pct"),
+                        "solar_kw": stats.get("solar_kw"),
+                        "home_kw": stats.get("home_kw"),
+                        "surplus_kw": stats.get("solar_surplus_kw"),
+                        "grid_export_kw": stats.get("grid_export_kw"),
+                        "grid_kw": stats.get("grid_kw"),
+                        "island_mode": stats.get("island_mode"),
+                        "storm_mode": stats.get("storm_mode"),
+                        "charging_status": cp_status.get("charging_status"),
+                        "is_plugged_in": cp_status.get("is_plugged_in"),
+                        "is_connected": cp_status.get("is_connected"),
+                        "log_errors": check_recent_log_errors(interval_minutes=config.CHECK_INTERVAL_MINUTES + 5)
+                    }
+                    check_alerts(current_state)
+                except Exception as alert_err:
+                    log.warning(f"Error evaluating custom alerts in manual mode: {alert_err}")
+
+                # ── Guardrails for Active Manual Charging ───────────────────────
+                if state.charger_state == state.State.CHARGING or cp_status.get("charging_status") == "CHARGING":
+                    is_plugged = cp_status.get("is_plugged_in", True)
+                    if not is_plugged:
+                        log_chargepoint.warning("MANUAL GUARD | Car was unplugged — stopping charger and reverting to auto")
+                        stop_charger()
+                        state.charger_state = state.State.IDLE
+                        state.session_stop_reason = "Car was unplugged during manual charge"
+                        config.MANUAL_MODE_OVERRIDE = "auto"
+                        config.save_dynamic_config()
+                        state.clear_manual_guards()
+                        notify("🔴 <b>Manual Charging Ended</b>\nCar was unplugged. Returned to <b>Auto mode</b>.")
+                        log_to_csv(stats, "stop", "Car unplugged — manual override ended", now)
+                        return
+
+                    if stats.get("island_mode") == "off_grid":
+                        log.warning("OFF-GRID | Stopping manual charge to protect home load")
+                        stop_charger()
+                        state.charger_state = state.State.IDLE
+                        state.session_stop_reason = "Powerwall went off-grid during manual charge"
+                        config.MANUAL_MODE_OVERRIDE = "auto"
+                        config.save_dynamic_config()
+                        state.clear_manual_guards()
+                        notify("🔴 <b>Manual Charging Stopped</b>\nPowerwall went off-grid. Returned to <b>Auto mode</b>.")
+                        log_to_csv(stats, "stop", "Off-grid detected — manual override ended", now)
+                        return
+
+                    if stats.get("storm_mode"):
+                        log.warning("STORM MODE | Stopping manual charge to preserve backup reserve")
+                        stop_charger()
+                        state.charger_state = state.State.IDLE
+                        state.session_stop_reason = "Storm mode active during manual charge"
+                        config.MANUAL_MODE_OVERRIDE = "auto"
+                        config.save_dynamic_config()
+                        state.clear_manual_guards()
+                        notify("🔴 <b>Manual Charging Stopped</b>\nStorm Watch active. Returned to <b>Auto mode</b>.")
+                        log_to_csv(stats, "stop", "Storm mode active — manual override ended", now)
+                        return
+
+                    # 1. Battery Stop Guard (User-specified stop_pct or config.BATTERY_STOP_PCT)
+                    stop_battery_pct = state.manual_guard_stop_battery_pct if state.manual_guard_stop_battery_pct is not None else config.BATTERY_STOP_PCT
+                    if stats["battery_pct"] < stop_battery_pct:
+                        log_decision.info(f"MANUAL GUARD | Battery {stats['battery_pct']}% < {stop_battery_pct}% limit — stopping charger")
+                        stop_charger()
+                        state.charger_state = state.State.IDLE
+                        state.session_stop_reason = f"Manual stop guard triggered (Battery {stats['battery_pct']}% < {stop_battery_pct}%)"
+                        config.MANUAL_MODE_OVERRIDE = "auto"
+                        config.save_dynamic_config()
+                        state.clear_manual_guards()
+                        notify(
+                            f"🔴 <b>Manual Charging Stopped (Guardrail Triggered)</b>\n"
+                            f"Powerwall battery dropped to <b>{stats['battery_pct']}%</b> (below your <b>{stop_battery_pct}%</b> stop limit).\n"
+                            f"Manual charge ended and returned to <b>Auto mode</b>."
+                        )
+                        log_to_csv(stats, "stop", f"Battery {stats['battery_pct']}% < {stop_battery_pct}% guard — manual override ended", now)
+                        return
+
+                    # 2. Time Duration Cutoff Guard
+                    if state.manual_guard_stop_time and now >= state.manual_guard_stop_time:
+                        log_decision.info("MANUAL GUARD | Duration cutoff reached — stopping charger")
+                        stop_charger()
+                        state.charger_state = state.State.IDLE
+                        state.session_stop_reason = "Manual charging duration limit reached"
+                        config.MANUAL_MODE_OVERRIDE = "auto"
+                        config.save_dynamic_config()
+                        state.clear_manual_guards()
+                        notify(
+                            f"🔴 <b>Manual Charging Stopped (Time Limit Reached)</b>\n"
+                            f"Target charging duration completed.\n"
+                            f"Manual charge ended and returned to <b>Auto mode</b>."
+                        )
+                        log_to_csv(stats, "stop", "Duration limit reached — manual override ended", now)
+                        return
+
+                    # 3. Scheduled Hour / Night Blackout Cutoff Guard
+                    stop_hr = state.manual_guard_stop_at_hour
+                    if stop_hr is not None:
+                        if now.hour >= stop_hr:
+                            log_decision.info(f"MANUAL GUARD | Reached stop hour {stop_hr}:00 — stopping charger")
+                            stop_charger()
+                            state.charger_state = state.State.IDLE
+                            state.session_stop_reason = f"Reached scheduled stop hour ({stop_hr}:00)"
+                            config.MANUAL_MODE_OVERRIDE = "auto"
+                            config.save_dynamic_config()
+                            state.clear_manual_guards()
+                            notify(
+                                f"🔴 <b>Manual Charging Stopped (Scheduled Cutoff)</b>\n"
+                                f"Reached scheduled stop time (<b>{now.strftime('%H:%M')}</b> >= <b>{stop_hr}:00</b>).\n"
+                                f"Manual charge ended and returned to <b>Auto mode</b>."
+                            )
+                            log_to_csv(stats, "stop", f"Reached {stop_hr}:00 cutoff — manual override ended", now)
+                            return
+                    else:
+                        if is_in_night_blackout(now) and not is_weekend(now):
+                            log_decision.info(f"MANUAL GUARD | Reached night blackout window ({config.NIGHT_BLACKOUT_START_HOUR}:00) — stopping charger")
+                            stop_charger()
+                            state.charger_state = state.State.IDLE
+                            state.session_stop_reason = f"Night blackout window ({config.NIGHT_BLACKOUT_START_HOUR}:00)"
+                            config.MANUAL_MODE_OVERRIDE = "auto"
+                            config.save_dynamic_config()
+                            state.clear_manual_guards()
+                            notify(
+                                f"🔴 <b>Manual Charging Stopped (TOU Peak Blackout)</b>\n"
+                                f"Reached {config.NIGHT_BLACKOUT_START_HOUR}:00 blackout window before peak rates start.\n"
+                                f"Manual charge ended and returned to <b>Auto mode</b>."
+                            )
+                            log_to_csv(stats, "stop", f"Night blackout ({config.NIGHT_BLACKOUT_START_HOUR}:00) — manual override ended", now)
+                            return
+
                 if stats["grid_kw"] > 0.1:
                     log_mode.warning(
                         f"GRID DRAW IN MANUAL MODE | grid={stats['grid_kw']}kW | "
@@ -110,7 +233,6 @@ def run_cycle():
 
         # Check dynamic alerts
         try:
-            from alerts import check_alerts, check_recent_log_errors
             current_state = {
                 "battery_pct": stats.get("battery_pct"),
                 "solar_kw": stats.get("solar_kw"),
@@ -173,7 +295,6 @@ def run_cycle():
 
         if action == "start":
             try:
-                from api_chargepoint import ChargePointStartError
                 start_charger()
                 log_chargepoint.info(
                     f"CHARGE STARTED | battery={stats['battery_pct']}% | "
@@ -262,8 +383,6 @@ def main():
     except Exception as e:
         log_chargepoint.warning(f"STARTUP CHECK FAILED | {e} — will retry on first cycle")
 
-    from daily_agent import run_daily_agent
-    
     tz_str = getattr(config.TZ, "key", str(config.TZ))
     
     def check_monthly_schedule():
@@ -271,7 +390,6 @@ def main():
         if now.day == 1:
             log.info("MONTHLY TRIGGER | Today is the 1st of the month. Triggering monthly bill report...")
             try:
-                from telegram_bot import send_monthly_telegram_report
                 send_monthly_telegram_report(period="last_month")
             except Exception as e:
                 log.error(f"Failed to execute monthly report schedule: {e}")
@@ -280,12 +398,9 @@ def main():
     schedule.every().day.at(config.DAILY_AGENT_TIME, tz_str).do(run_daily_agent)
     schedule.every().day.at("07:00", tz_str).do(check_monthly_schedule)
 
-
-
     # Start Telegram Bot if configured
     if config.TELEGRAM_BOT_TOKEN:
-        import telegram_bot
-        telegram_bot.start_telegram_bot(run_cycle_safe)
+        start_telegram_bot(run_cycle_safe)
 
     run_cycle_safe()
     schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(run_cycle_safe)

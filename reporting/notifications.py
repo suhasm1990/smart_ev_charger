@@ -1,8 +1,8 @@
 import requests
 import re
 import html
-import config
-from logger import log
+from core import config
+from reporting.logger import log
 
 def notify(message: str):
     # 1. Pushover Notifications (if configured)

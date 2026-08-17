@@ -3,9 +3,9 @@ import json
 import uuid
 import time
 import datetime
-import config
-from logger import log
-from notifications import notify
+from core import config, state
+from reporting.logger import log
+from reporting.notifications import notify
 
 ALERTS_FILE = "logs/alerts.json"
 MAX_ALERTS = 20
@@ -134,9 +134,6 @@ def check_alerts(current_state: dict):
             save_alerts(remaining)
 
     # Built-in Real-Time Grid Export Alert (Configurable threshold)
-    import config
-    import state
-
     grid_export_kw = current_state.get("grid_export_kw")
     if grid_export_kw is None:
         grid_kw = current_state.get("grid_kw")
@@ -159,7 +156,6 @@ def check_alerts(current_state: dict):
             )
             state.last_grid_export_alert_date = today_str
             state.last_surplus_alert_date = today_str
-
 
 def check_recent_log_errors(interval_minutes: int = 20) -> bool:
     log_file = "logs/charger.log"

@@ -118,7 +118,7 @@ def load_dynamic_config():
 
     # 3. Layer Google Sheets overrides (cloud single source of truth)
     try:
-        from sheets_db import get_settings
+        from services.sheets_db import get_settings
         _apply_config_dict(get_settings())
     except Exception:
         pass
@@ -131,7 +131,7 @@ def save_dynamic_config():
         with open(DYNAMIC_CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=4)
         try:
-            from sheets_db import update_settings
+            from services.sheets_db import update_settings
             update_settings(data)
         except Exception:
             pass

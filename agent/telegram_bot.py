@@ -3,17 +3,32 @@ import json
 import re
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import telebot
-import llm_client
-
-import config
-import state
-from logger import log
-from api_netzero import get_powerwall_stats
-from api_chargepoint import get_charger_status as get_cp_status
-from csv_logger import get_session_minutes, get_recent_sessions, get_daily_charging_cost as calc_daily_cost
+from agent import llm_client
+from core import config, state
+from core.tou import get_tou_rate
+from reporting.logger import log
+from reporting.notifications import notify
+from services.netzero import get_powerwall_stats
+from services.chargepoint import (
+    get_charger_status as get_cp_status,
+    start_charger,
+    stop_charger,
+    set_charger_amperage_limit
+)
+from reporting.csv_logger import (
+    get_session_minutes,
+    get_recent_sessions,
+    get_daily_charging_cost as calc_cost,
+    get_home_energy_summary as calc_home_summary,
+    get_energy_saving_advice as calc_advice,
+    get_monthly_billing_data
+)
+from reporting.report_generator import generate_monthly_report_image
+from services.sheets_db import add_user_instruction
+from agent.alerts import add_alert, remove_alert, list_alerts
 
 RUN_CYCLE_CALLBACK = None
 
@@ -72,6 +87,9 @@ def get_system_status() -> str:
         "config_blackout_start_hour": config.NIGHT_BLACKOUT_START_HOUR,
         "config_blackout_end_hour": config.NIGHT_BLACKOUT_END_HOUR,
         "manual_mode_override": config.MANUAL_MODE_OVERRIDE,
+        "manual_guard_stop_battery_pct": state.manual_guard_stop_battery_pct,
+        "manual_guard_stop_at_hour": state.manual_guard_stop_at_hour,
+        "manual_guard_stop_time": state.manual_guard_stop_time.isoformat() if state.manual_guard_stop_time else None,
     }
     log.info(f"DEBUG: get_system_status result: {status_data}")
     return json.dumps(status_data)
@@ -101,7 +119,6 @@ def get_recent_charging_sessions(limit: int = 5) -> str:
 
 def get_tou_schedule() -> str:
     """Gets details about Time-Of-Use (TOU) electricity rate periods, night blackout windows, peak/partial-peak/off-peak hours, and rates for the configured utility provider."""
-    from tou import get_tou_rate
     now = datetime.now(config.TZ)
     current_rate = get_tou_rate(now)
     provider = getattr(config, "UTILITY_PROVIDER", "MID").upper()
@@ -134,7 +151,6 @@ def get_tou_schedule() -> str:
         "night_blackout_description": f"No EV charging between {config.NIGHT_BLACKOUT_START_HOUR}:00 and {config.NIGHT_BLACKOUT_END_HOUR}:00 on weekdays"
     }
     return json.dumps(schedule_info)
-
 
 def get_tesla_powerwall_status() -> str:
     """Gets detailed stats about the Tesla Powerwall, including current battery level (SoC %), charge/discharge power (kW), solar generation (kW), home usage (kW), grid export/import (kW), self-powered percentage, and grid connection status."""
@@ -205,23 +221,42 @@ def set_override_mode(mode: str) -> str:
         return "Error: Mode must be 'manual' or 'auto'."
     config.MANUAL_MODE_OVERRIDE = mode.lower()
     config.save_dynamic_config()
+    if mode.lower() == "auto":
+        state.clear_manual_guards()
     
     if RUN_CYCLE_CALLBACK:
         threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
         
     return f"Success: Configured override mode to '{mode}'."
 
-def start_charging(amperage: int = 20) -> str:
-    """Immediately forces the charger to start charging, bypassing solar/battery rules.
+def start_charging(amperage: int = 20, stop_battery_pct: float = None, stop_at_hour: int = None, duration_hours: float = None) -> str:
+    """Immediately forces the charger to start charging at specified amperage (8-32A), with optional safety guardrails to automatically stop and return to Auto mode if battery drops or cutoff time/duration is reached.
     
     Args:
-        amperage: The current limit to set in Amps (default is 20A for normal power, set to 32A for full/max power, range 8-32).
+        amperage: The current limit in Amps (default is 20A for normal power, set to 32A for full/max power, range 8-32).
+        stop_battery_pct: Optional battery percentage (e.g. 30.0) below which charging will automatically stop to protect home power.
+        stop_at_hour: Optional hour in 24-hour format (0-23, e.g. 16 for 4 PM / 16:00) when charging will automatically stop before peak rates.
+        duration_hours: Optional max duration in hours (e.g. 2.0 or 1.5) to run manual charge before automatically stopping.
     """
-    from api_chargepoint import start_charger
-    from notifications import notify
     try:
         if amperage < 8 or amperage > 32:
             amperage = config.DEFAULT_CHARGER_AMPERAGE
+
+        # Configure guardrails in state
+        if stop_battery_pct is not None:
+            state.manual_guard_stop_battery_pct = float(stop_battery_pct)
+        else:
+            state.manual_guard_stop_battery_pct = None
+
+        if stop_at_hour is not None:
+            state.manual_guard_stop_at_hour = int(stop_at_hour)
+        else:
+            state.manual_guard_stop_at_hour = None
+
+        if duration_hours is not None:
+            state.manual_guard_stop_time = datetime.now(config.TZ) + timedelta(hours=float(duration_hours))
+        else:
+            state.manual_guard_stop_time = None
 
         # Start physically
         start_charger(amperage)
@@ -236,27 +271,36 @@ def start_charging(amperage: int = 20) -> str:
         config.MANUAL_MODE_OVERRIDE = "manual"
         config.save_dynamic_config()
         
-        notify(f"🟢 Charging started (Forced manually via Telegram at {amperage}A)")
+        guards_desc = []
+        if state.manual_guard_stop_battery_pct is not None:
+            guards_desc.append(f"stop if battery < {state.manual_guard_stop_battery_pct}%")
+        if state.manual_guard_stop_at_hour is not None:
+            guards_desc.append(f"stop at {state.manual_guard_stop_at_hour}:00")
+        if state.manual_guard_stop_time is not None:
+            guards_desc.append(f"stop at {state.manual_guard_stop_time.strftime('%H:%M')}")
+            
+        guards_msg = f" (Guards: {', '.join(guards_desc)})" if guards_desc else ""
+        notify(f"🟢 Charging started (Forced manually via Telegram at {amperage}A{guards_msg})")
         
         if RUN_CYCLE_CALLBACK:
             threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
             
-        return f"Success: Sent start command to charger at {amperage}A. Switched mode to Manual override to prevent automatic shutdown."
+        guards_summary = ", ".join(guards_desc) if guards_desc else "Default blackout/battery limits"
+        return f"Success: Sent start command to charger at {amperage}A. Active Guardrails: {guards_summary}. Switched mode to Manual override."
     except Exception as e:
         return f"Error starting charger: {e}"
 
 def stop_charging() -> str:
     """Immediately forces the charger to stop charging."""
-    from api_chargepoint import stop_charger
-    from notifications import notify
     try:
         # Stop physically
         stop_charger()
         
-        # Sync in-memory state
+        # Sync in-memory state and clear guards
         state.charger_state = state.State.IDLE
         state.charge_session_start = None
         state.session_stop_reason = "Stopped manually via Telegram bot"
+        state.clear_manual_guards()
         
         # Save override state so it stays stopped
         config.MANUAL_MODE_OVERRIDE = "manual"
@@ -277,7 +321,6 @@ def set_charger_amperage(amperage: int) -> str:
     Args:
         amperage: The current limit to set in Amps (must be between 8 and 32).
     """
-    from api_chargepoint import set_charger_amperage_limit
     if amperage < 8 or amperage > 32:
         return "Error: Amperage limit must be between 8 and 32 Amps."
     try:
@@ -288,17 +331,14 @@ def set_charger_amperage(amperage: int) -> str:
 
 def set_custom_alert(field: str, operator: str, value: float, message: str, once: bool = True) -> str:
     """Sets a dynamic notification alert when a metric condition is met."""
-    from alerts import add_alert
     return add_alert(field, operator, value, message, once)
 
 def clear_custom_alert(alert_id: str) -> str:
     """Clears/removes an active custom alert by its 8-character ID."""
-    from alerts import remove_alert
     return remove_alert(alert_id)
 
 def list_custom_alerts() -> str:
     """Returns a list of all currently active custom alerts."""
-    from alerts import list_alerts
     return list_alerts()
 
 def get_daily_charging_cost(date_or_period: str = "today") -> str:
@@ -308,10 +348,8 @@ def get_daily_charging_cost(date_or_period: str = "today") -> str:
     Args:
         date_or_period: Time period or date, e.g. 'today', 'yesterday', 'this_week', 'this_month', or 'YYYY-MM-DD' (defaults to 'today').
     """
-    from csv_logger import get_daily_charging_cost as calc_cost
     data = calc_cost(period=date_or_period)
     return json.dumps(data)
-
 
 def get_home_energy_summary(date_or_period: str = "today") -> str:
     """Calculates total home electricity consumption (kWh), solar generated (kWh), grid energy imported (kWh), total electricity bill cost ($), and breakdown between EV charging vs home appliances for a given period or date.
@@ -320,7 +358,6 @@ def get_home_energy_summary(date_or_period: str = "today") -> str:
     Args:
         date_or_period: Time period or date, e.g. 'today', 'yesterday', 'this_week', 'this_month', or 'YYYY-MM-DD' (defaults to 'today').
     """
-    from csv_logger import get_home_energy_summary as calc_home_summary
     data = calc_home_summary(period=date_or_period)
     return json.dumps(data)
 
@@ -328,13 +365,11 @@ def get_energy_saving_advice() -> str:
     """Analyzes recent 7-day power usage logs to calculate peak solar generation windows, identify high-cost grid draws, and provide actionable recommendations to reduce utility bills.
     Use this tool whenever the user asks for suggestions or advice on how to reduce their bill, when to run heavy appliances, or when to charge the car.
     """
-    from csv_logger import get_energy_saving_advice as calc_advice
     data = calc_advice()
     return json.dumps(data)
 
 def add_agent_instruction(text: str) -> str:
     """Saves a special note or override instruction for the Daily AI Agent."""
-    from sheets_db import add_user_instruction
     success = add_user_instruction(text)
     if success:
         return f"Success: Saved instruction '{text}' for the Daily AI Agent. It will process this at midnight."
@@ -345,7 +380,7 @@ def trigger_daily_agent() -> str:
     """Manually runs the Daily AI Agent planner to analyze recent solar generation, optimize the charge window, update battery thresholds, and dispatch the daily strategy update.
     Use this tool whenever the user asks to run the daily agent, trigger daily AI, plan today's charging, or generate the daily update.
     """
-    from daily_agent import run_daily_agent
+    from agent.daily_agent import run_daily_agent
     try:
         run_daily_agent()
         return "Success: Triggered Daily AI Agent. The daily plan and settings have been updated and sent to your Telegram."
@@ -360,9 +395,6 @@ def generate_monthly_report(period: str = "last_month") -> str:
     Use this tool whenever the user asks for a monthly bill report, monthly usage graph, or monthly electricity bill PNG image for any month.
     """
     global _last_generated_image_path
-    from csv_logger import get_monthly_billing_data
-    from report_generator import generate_monthly_report_image
-
     data = get_monthly_billing_data(period=period)
     if "error" in data:
         return json.dumps({"error": data["error"]})
@@ -379,7 +411,6 @@ def send_monthly_telegram_report(period: str = "last_month"):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_ALLOWED_USER_ID:
         return
     try:
-        from report_generator import generate_monthly_report_image
         img_path = generate_monthly_report_image(period=period)
         if img_path and os.path.exists(img_path):
             bot = telebot.TeleBot(config.TELEGRAM_BOT_TOKEN)
@@ -464,7 +495,7 @@ def handle_message_with_llm(text: str) -> str:
         "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
         "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
         "run the Daily AI Agent on demand to optimize charging strategy for today, "
-        "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default) by calling tools. "
+        "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; and passing stop_battery_pct, stop_at_hour, or duration_hours if the user specifies any stop limits or guardrails) by calling tools. "
         "Always run the appropriate tools when requested, and summarize the actions taken "
         "in a friendly natural language response. "
         "Format all your responses in the strict HTML subset supported by Telegram. "
@@ -517,7 +548,7 @@ def _bot_polling_loop():
             bot.reply_to(message, "Unauthorized.")
             return
         bot.send_chat_action(message.chat.id, 'typing')
-        from daily_agent import run_daily_agent
+        from agent.daily_agent import run_daily_agent
         try:
             run_daily_agent()
             bot.reply_to(message, "✅ <b>Daily AI Agent executed successfully.</b> Check the update above for today's optimal schedule and thresholds!", parse_mode="HTML")
@@ -530,7 +561,6 @@ def _bot_polling_loop():
             bot.reply_to(message, "Unauthorized.")
             return
         bot.send_chat_action(message.chat.id, 'upload_photo')
-        from report_generator import generate_monthly_report_image
         img_path = generate_monthly_report_image('last_month')
         if img_path and os.path.exists(img_path):
             with open(img_path, 'rb') as f:

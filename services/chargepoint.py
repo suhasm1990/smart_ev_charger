@@ -1,6 +1,8 @@
 import asyncio
-import config
-from logger import log_chargepoint
+import re
+import threading
+from core import config
+from reporting.logger import log_chargepoint
 
 _cp_client = None
 
@@ -20,6 +22,19 @@ async def get_cp_client():
 class ChargePointStartError(Exception):
     """Raised when ChargePoint API fails to start a charging session."""
     pass
+
+def _clean_error_str(e: Exception) -> str:
+    raw = str(e)
+    if "<!DOCTYPE" in raw or "<html" in raw or "cf-error-details" in raw or "<div" in raw:
+        if "502" in raw:
+            return "ChargePoint API Bad Gateway (Cloudflare 502)"
+        if "503" in raw:
+            return "ChargePoint API Service Unavailable (Cloudflare 503)"
+        return "ChargePoint API Server Error (Cloudflare Response)"
+    # Strip any residual HTML tags
+    clean = re.sub(r'<[^>]+>', '', raw)
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    return lines[0][:150] if lines else clean[:150]
 
 async def start_charger_async(amperage_limit: int = 20):
     global _cp_client
@@ -62,22 +77,6 @@ async def start_charger_async(amperage_limit: int = 20):
             if "Failed to start charging" in err_msg or "422" in err_msg or "CommunicationError" in str(type(e)):
                 raise ChargePointStartError(f"ChargePoint start rejected (422/CommunicationError): {err_msg}")
             raise
-
-import re
-
-def _clean_error_str(e: Exception) -> str:
-    raw = str(e)
-    if "<!DOCTYPE" in raw or "<html" in raw or "cf-error-details" in raw or "<div" in raw:
-        if "502" in raw:
-            return "ChargePoint API Bad Gateway (Cloudflare 502)"
-        if "503" in raw:
-            return "ChargePoint API Service Unavailable (Cloudflare 503)"
-        return "ChargePoint API Server Error (Cloudflare Response)"
-    # Strip any residual HTML tags
-    clean = re.sub(r'<[^>]+>', '', raw)
-    lines = [line.strip() for line in clean.splitlines() if line.strip()]
-    return lines[0][:150] if lines else clean[:150]
-
 
 async def stop_charger_async():
     global _cp_client
@@ -176,7 +175,6 @@ async def get_charger_status_async() -> dict:
             _cp_client = None
         raise
 
-
 async def set_charger_amperage_limit_async(amperage: int):
     global _cp_client
     try:
@@ -189,8 +187,6 @@ async def set_charger_amperage_limit_async(amperage: int):
             except Exception: pass
             _cp_client = None
         raise
-
-import threading
 
 _loop = None
 _thread = None
@@ -223,4 +219,3 @@ def start_charger(amperage_limit: int = 20):  _run_sync(start_charger_async(ampe
 def stop_charger():   _run_sync(stop_charger_async())
 def get_charger_status() -> dict: return _run_sync(get_charger_status_async())
 def set_charger_amperage_limit(amperage: int): _run_sync(set_charger_amperage_limit_async(amperage))
-

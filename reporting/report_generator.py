@@ -5,8 +5,8 @@ matplotlib.use('Agg')  # Non-interactive background renderer for Docker/headless
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
-from csv_logger import get_monthly_billing_data
-from logger import log
+from reporting.csv_logger import get_monthly_billing_data
+from reporting.logger import log
 
 def generate_monthly_report_image(period: str = "last_month") -> str:
     """

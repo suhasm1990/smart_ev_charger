@@ -6,7 +6,7 @@ import socket
 # Global 25-second socket timeout across all networking libraries (requests, urllib3, gspread, litellm)
 socket.setdefaulttimeout(25.0)
 
-from config import TEXT_LOG_FILE
+from core.config import TEXT_LOG_FILE
 
 # Ensure logs directory exists
 os.makedirs(os.path.dirname(TEXT_LOG_FILE) or ".", exist_ok=True)
@@ -35,5 +35,3 @@ for logger_name in (
     "asyncio", "telebot", "TeleBot", "google", "gspread"
 ):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
-
-

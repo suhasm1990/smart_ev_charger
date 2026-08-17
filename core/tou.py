@@ -1,5 +1,5 @@
 from datetime import datetime
-import config
+from core import config
 
 def get_tou_period(now: datetime) -> str:
     hour = now.hour
@@ -46,8 +46,6 @@ def get_tou_rate(now: datetime) -> float:
     tax = getattr(config, "UTILITY_TAX_MULTIPLIER", 1.065)
     return round((base + adder) * tax, 5)
 
-
-
 def is_expensive_period(now: datetime) -> bool:
     return get_tou_period(now) in ("on_peak", "partial_peak")
 
@@ -56,9 +54,6 @@ def is_in_night_blackout(now: datetime) -> bool:
     if config.NIGHT_BLACKOUT_START_HOUR > config.NIGHT_BLACKOUT_END_HOUR:
         return hour >= config.NIGHT_BLACKOUT_START_HOUR or hour < config.NIGHT_BLACKOUT_END_HOUR
     return config.NIGHT_BLACKOUT_START_HOUR <= hour < config.NIGHT_BLACKOUT_END_HOUR
-
-def is_morning_window(now: datetime) -> bool:
-    return now.weekday() < 5 and config.MORNING_CHARGE_START_HOUR <= now.hour < config.MORNING_CHARGE_END_HOUR
 
 def is_weekend(now: datetime) -> bool:
     return now.weekday() >= 5

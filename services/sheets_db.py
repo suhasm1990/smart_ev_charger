@@ -13,7 +13,7 @@ try:
 except ImportError:
     gspread = None
     Credentials = None
-from logger import log
+from reporting.logger import log
 
 # We default to the URL provided by the user
 SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA")

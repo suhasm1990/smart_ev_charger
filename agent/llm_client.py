@@ -4,8 +4,8 @@ import json
 import inspect
 import typing
 
-import config
-from logger import log
+from core import config
+from reporting.logger import log
 
 try:
     import litellm
@@ -155,7 +155,6 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
         elif cfg["provider"] == "gemini" and not model_name.startswith("gemini/"):
             model_name = f"gemini/{model_name}"
 
-        # Note: Avoid response_format json_object for providers that don't support it in custom openai endpoints
         response = litellm.completion(
             model=model_name,
             messages=messages,
