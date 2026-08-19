@@ -52,11 +52,14 @@ def get_system_status() -> str:
     if physical_charging:
         state.charger_state = state.State.CHARGING
         if not state.charge_session_start:
-            state.charge_session_start = datetime.now(config.TZ)
+            state.charge_session_start = cp.get("session_start_time") or datetime.now(config.TZ)
+        elif cp.get("session_start_time") and abs((state.charge_session_start - cp.get("session_start_time")).total_seconds()) > 3600:
+            state.charge_session_start = cp.get("session_start_time")
         state.session_stop_reason = None
-    elif cp.get("charging_status") in ["NOT_CHARGING", "AVAILABLE", "UNPLUGGED"] and state.charger_state == state.State.CHARGING:
-        state.charger_state = state.State.IDLE
-        state.charge_session_start = None
+    else:
+        if state.charger_state == state.State.CHARGING or state.charge_session_start is not None:
+            state.charger_state = state.State.IDLE
+            state.charge_session_start = None
 
     effective_state = "CHARGING" if physical_charging else str(state.charger_state)
 
@@ -186,6 +189,12 @@ def set_battery_thresholds(start_pct: float, stop_pct: float) -> str:
         start_pct: The battery level (%) required to start/resume charging.
         stop_pct: The battery level (%) at which charging is stopped to protect home power.
     """
+    try:
+        start_pct = float(start_pct)
+        stop_pct = float(stop_pct)
+    except (ValueError, TypeError):
+        return "Error: Invalid numeric value for battery thresholds."
+
     config.BATTERY_START_PCT = start_pct
     config.BATTERY_STOP_PCT = stop_pct
     config.save_dynamic_config()
@@ -202,6 +211,12 @@ def set_blackout_hours(start_hour: int, end_hour: int) -> str:
         start_hour: Hour (0-23) when night blackout begins (default 16 for 4 PM).
         end_hour: Hour (0-23) when night blackout ends (default 9 for 9 AM).
     """
+    try:
+        start_hour = int(start_hour)
+        end_hour = int(end_hour)
+    except (ValueError, TypeError):
+        return "Error: Invalid hour values for blackout window."
+
     config.NIGHT_BLACKOUT_START_HOUR = start_hour
     config.NIGHT_BLACKOUT_END_HOUR = end_hour
     config.save_dynamic_config()
@@ -239,22 +254,39 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None, stop_at_h
         duration_hours: Optional max duration in hours (e.g. 2.0 or 1.5) to run manual charge before automatically stopping.
     """
     try:
+        if amperage is not None:
+            try:
+                amperage = int(amperage)
+            except (ValueError, TypeError):
+                amperage = config.DEFAULT_CHARGER_AMPERAGE
+        else:
+            amperage = config.DEFAULT_CHARGER_AMPERAGE
+
         if amperage < 8 or amperage > 32:
             amperage = config.DEFAULT_CHARGER_AMPERAGE
 
         # Configure guardrails in state
         if stop_battery_pct is not None:
-            state.manual_guard_stop_battery_pct = float(stop_battery_pct)
+            try:
+                state.manual_guard_stop_battery_pct = float(stop_battery_pct)
+            except (ValueError, TypeError):
+                state.manual_guard_stop_battery_pct = None
         else:
             state.manual_guard_stop_battery_pct = None
 
         if stop_at_hour is not None:
-            state.manual_guard_stop_at_hour = int(stop_at_hour)
+            try:
+                state.manual_guard_stop_at_hour = int(stop_at_hour)
+            except (ValueError, TypeError):
+                state.manual_guard_stop_at_hour = None
         else:
             state.manual_guard_stop_at_hour = None
 
         if duration_hours is not None:
-            state.manual_guard_stop_time = datetime.now(config.TZ) + timedelta(hours=float(duration_hours))
+            try:
+                state.manual_guard_stop_time = datetime.now(config.TZ) + timedelta(hours=float(duration_hours))
+            except (ValueError, TypeError):
+                state.manual_guard_stop_time = None
         else:
             state.manual_guard_stop_time = None
 
@@ -321,6 +353,11 @@ def set_charger_amperage(amperage: int) -> str:
     Args:
         amperage: The current limit to set in Amps (must be between 8 and 32).
     """
+    try:
+        amperage = int(amperage)
+    except (ValueError, TypeError):
+        return "Error: Amperage must be a valid integer between 8 and 32."
+
     if amperage < 8 or amperage > 32:
         return "Error: Amperage limit must be between 8 and 32 Amps."
     try:
@@ -513,6 +550,8 @@ def handle_message_with_llm(text: str) -> str:
         system_instruction=system_instruction
     )
     chat_history = updated_history
+    if len(chat_history) > 20:
+        chat_history = chat_history[-20:]
     log.info(f"DEBUG: LLM response: {response_text}")
     return response_text
 
@@ -561,12 +600,14 @@ def _bot_polling_loop():
             bot.reply_to(message, "Unauthorized.")
             return
         bot.send_chat_action(message.chat.id, 'upload_photo')
-        img_path = generate_monthly_report_image('last_month')
+        args = (message.text or "").split(maxsplit=1)
+        period = args[1].strip() if len(args) > 1 else 'last_month'
+        img_path = generate_monthly_report_image(period)
         if img_path and os.path.exists(img_path):
             with open(img_path, 'rb') as f:
                 bot.send_photo(message.chat.id, photo=f, caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>", parse_mode="HTML")
         else:
-            bot.reply_to(message, "Error: Could not generate monthly report image.")
+            bot.reply_to(message, f"Error: Could not generate monthly report image for '{period}'.")
 
     @bot.message_handler(func=lambda message: True)
     def handle_incoming_message(message):
@@ -584,12 +625,17 @@ def _bot_polling_loop():
 
             raw_response = handle_message_with_llm(user_text)
             response_html = clean_telegram_html(raw_response)
-            try:
-                bot.reply_to(message, response_html, parse_mode="HTML")
-            except telebot.apihelper.ApiTelegramException as api_err:
-                log.warning(f"Telegram HTML parse error: {api_err}. Falling back to plain text reply.")
-                plain_text = re.sub(r'<[^>]+>', '', raw_response)
-                bot.reply_to(message, plain_text, parse_mode=None)
+            
+            if response_html and response_html.strip():
+                try:
+                    bot.reply_to(message, response_html, parse_mode="HTML")
+                except telebot.apihelper.ApiTelegramException as api_err:
+                    log.warning(f"Telegram HTML parse error: {api_err}. Falling back to plain text reply.")
+                    plain_text = re.sub(r'<[^>]+>', '', raw_response).strip()
+                    if plain_text:
+                        bot.reply_to(message, plain_text, parse_mode=None)
+            elif not _last_generated_image_path:
+                bot.reply_to(message, "Processed request.", parse_mode=None)
 
             if _last_generated_image_path and os.path.exists(_last_generated_image_path):
                 try:

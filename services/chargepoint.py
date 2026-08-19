@@ -144,6 +144,7 @@ async def get_charger_status_async() -> dict:
         power_kw = 0.0
         miles_added = 0.0
         charging_time_seconds = 0
+        session_start_time = None
         
         if user_status and getattr(user_status, "session_id", None):
             try:
@@ -152,7 +153,10 @@ async def get_charger_status_async() -> dict:
                     energy_kwh = float(getattr(session, "energy_kwh", 0.0) or 0.0)
                     power_kw = float(getattr(session, "power_kw", 0.0) or 0.0)
                     miles_added = float(getattr(session, "miles_added", 0.0) or 0.0)
-                    charging_time_seconds = int(getattr(session, "charging_time", 0) or 0)
+                    raw_time = int(getattr(session, "charging_time", 0) or 0)
+                    charging_time_seconds = raw_time // 1000 if raw_time > 1000 else raw_time
+                    if getattr(session, "start_time", None):
+                        session_start_time = session.start_time.astimezone(config.TZ)
             except Exception as sess_err:
                 log_chargepoint.warning(f"Error fetching active charging session details: {sess_err}")
 
@@ -165,6 +169,7 @@ async def get_charger_status_async() -> dict:
             "power_kw":        power_kw,
             "miles_added":     miles_added,
             "charging_time_seconds": charging_time_seconds,
+            "session_start_time": session_start_time,
         }
     except Exception as e:
         err_clean = _clean_error_str(e)

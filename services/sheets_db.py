@@ -120,7 +120,7 @@ def update_settings(settings: dict):
             cells.append([str(k), str(v)])
         
         worksheet.clear()
-        worksheet.update('A1', cells)
+        worksheet.update(range_name='A1', values=cells)
         return True
     except Exception as e:
         log.error(f"Failed to update settings in Sheets: {e}")

@@ -21,7 +21,7 @@ CSV_HEADERS = [
 def get_session_minutes() -> float:
     if state.charge_session_start is None:
         return 0.0
-    return round((datetime.now(config.TZ) - state.charge_session_start).total_seconds() / 60, 1)
+    return max(0.0, round((datetime.now(config.TZ) - state.charge_session_start).total_seconds() / 60, 1))
 
 def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
     tou    = get_tou_period(now)
@@ -29,6 +29,9 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
     grid   = float(stats.get("grid_kw", 0.0) or 0.0)
     interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
     est_cost = round(max(0.0, grid) * rate * interval_h, 4)
+
+    # Only record active session minutes if charging or at the moment of stop
+    session_mins = get_session_minutes() if (state.charger_state == state.State.CHARGING or action == "stop") else 0.0
 
     row = [
         now.isoformat(),
@@ -53,7 +56,7 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         state.charger_state,
         action,
         reason,
-        get_session_minutes(),
+        session_mins,
         state.session_count_today,
         state.session_stop_reason or "",
         is_in_night_blackout(now),
@@ -166,8 +169,7 @@ def _is_ev_charging_row(row: dict) -> bool:
     """Returns True if the log row represents active EV charging."""
     state_str = str(row.get("charger_state", "")).upper()
     action_str = str(row.get("action", "")).lower()
-    home_kw = float(row.get("home_kw", 0) or 0)
-    return ("CHARGING" in state_str) or (action_str == "start") or (home_kw >= 4.0)
+    return ("CHARGING" in state_str) or (action_str in ["start", "stop"])
 
 def _resolve_date_range(period: str, now: datetime = None) -> tuple[datetime.date, datetime.date, str]:
     """Resolves period string into (start_date, end_date, period_label)."""
@@ -180,18 +182,45 @@ def _resolve_date_range(period: str, now: datetime = None) -> tuple[datetime.dat
     if clean == "yesterday":
         yest = now.date() - timedelta(days=1)
         return yest, yest, f"Yesterday ({yest})"
-    if clean in ["this_week", "week", "7days", "this week"]:
+    if clean in ["this_week", "week", "this week"]:
         start = now.date() - timedelta(days=now.weekday())
         return start, now.date(), f"This Week ({start} to {now.date()})"
-    if clean in ["this_month", "month", "30days", "this month"]:
+    if clean in ["last_week", "last week", "previous_week", "previous week"]:
+        this_week_start = now.date() - timedelta(days=now.weekday())
+        start = this_week_start - timedelta(days=7)
+        end = this_week_start - timedelta(days=1)
+        return start, end, f"Last Week ({start} to {end})"
+    if clean in ["7days", "7_days", "last_7_days", "last 7 days", "past_7_days", "past 7 days", "past week"]:
+        start = now.date() - timedelta(days=7)
+        return start, now.date(), f"Past 7 Days ({start} to {now.date()})"
+    if clean in ["this_month", "month", "30days", "30 days", "this month"]:
         start = now.date().replace(day=1)
         return start, now.date(), f"This Month ({start.strftime('%B %Y')})"
-    if clean in ["last_month", "previous_month", "last month"]:
+    if clean in ["last_month", "previous_month", "last month", "previous month"]:
         first_this_month = now.date().replace(day=1)
         last_prev_month = first_this_month - timedelta(days=1)
         start = last_prev_month.replace(day=1)
         return start, last_prev_month, f"Last Month ({start.strftime('%B %Y')})"
     
+    # Try parsing month strings (e.g. 'July', 'July 2026', '2026-07')
+    month_formats = ["%Y-%m", "%B %Y", "%b %Y", "%B", "%b"]
+    for fmt in month_formats:
+        try:
+            dt_cand = datetime.strptime(clean, fmt)
+            y = dt_cand.year
+            if fmt in ["%B", "%b"]:
+                y = now.year
+                if dt_cand.month > now.month:
+                    y -= 1
+            m_start = date(y, dt_cand.month, 1)
+            if m_start.month == 12:
+                m_end = date(m_start.year, 12, 31)
+            else:
+                m_end = date(m_start.year, m_start.month + 1, 1) - timedelta(days=1)
+            return m_start, m_end, f"{m_start.strftime('%B %Y')}"
+        except Exception:
+            continue
+
     try:
         parsed = datetime.strptime(clean, "%Y-%m-%d").date()
         return parsed, parsed, f"Date ({parsed})"

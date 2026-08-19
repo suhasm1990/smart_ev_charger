@@ -2,7 +2,7 @@ from datetime import datetime
 from core import config, state
 from core.tou import is_in_night_blackout, is_weekend
 from reporting.logger import log_decision
-from reporting.csv_logger import get_session_minutes
+from core.state import get_session_minutes
 
 def is_in_charge_window(current_hour: int, start_hr: int, end_hr: int) -> bool:
     """Checks whether current_hour falls inside the configured charging window (supports wrapping midnight)."""

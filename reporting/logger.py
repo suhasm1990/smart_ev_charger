@@ -6,7 +6,7 @@ import socket
 # Global 25-second socket timeout across all networking libraries (requests, urllib3, gspread, litellm)
 socket.setdefaulttimeout(25.0)
 
-from core.config import TEXT_LOG_FILE
+TEXT_LOG_FILE = os.getenv("TEXT_LOG_FILE", "logs/charger.log")
 
 # Ensure logs directory exists
 os.makedirs(os.path.dirname(TEXT_LOG_FILE) or ".", exist_ok=True)

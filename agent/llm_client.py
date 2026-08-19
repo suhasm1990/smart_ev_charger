@@ -26,13 +26,20 @@ def function_to_openai_tool(fn: typing.Callable) -> dict:
     
     for param_name, param in sig.parameters.items():
         param_type = "string"
-        if param.annotation in (int,):
+        ann = param.annotation
+        origin = typing.get_origin(ann)
+        if origin is typing.Union:
+            non_none = [a for a in typing.get_args(ann) if a is not type(None)]
+            if non_none:
+                ann = non_none[0]
+
+        if ann in (int,):
             param_type = "integer"
-        elif param.annotation in (float,):
+        elif ann in (float,):
             param_type = "number"
-        elif param.annotation in (bool,):
+        elif ann in (bool,):
             param_type = "boolean"
-        elif param.annotation in (dict, list):
+        elif ann in (dict, list):
             param_type = "object"
             
         param_doc = f"Parameter {param_name}"
@@ -236,7 +243,14 @@ def chat_with_tools(history: list, user_text: str, tools: list, system_instructi
 
                 if fn_name in tool_map:
                     try:
-                        result = tool_map[fn_name](**fn_args)
+                        fn = tool_map[fn_name]
+                        if isinstance(fn_args, dict):
+                            sig = inspect.signature(fn)
+                            valid_params = sig.parameters.keys()
+                            filtered_args = {k: v for k, v in fn_args.items() if k in valid_params}
+                            result = fn(**filtered_args)
+                        else:
+                            result = fn()
                     except Exception as exec_err:
                         result = f"Error executing {fn_name}: {exec_err}"
                 else:

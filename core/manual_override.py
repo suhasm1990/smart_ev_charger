@@ -20,6 +20,7 @@ def check_manual_mode() -> bool:
             )
             state.manual_mode        = False
             state.manual_mode_set_at = None
+            state.prev_manual_mode   = False
             state.clear_manual_guards()
             if config.MANUAL_MODE_OVERRIDE == "manual":
                 config.MANUAL_MODE_OVERRIDE = "default"

@@ -56,10 +56,14 @@ Respond ONLY with a valid JSON object matching this schema exactly:
         log.info(f"Daily Agent Decision: {result}")
         
         # 3. Apply the settings
-        config.BATTERY_START_PCT = float(result.get("battery_start_pct", config.BATTERY_START_PCT))
-        config.BATTERY_STOP_PCT = float(result.get("battery_stop_pct", config.BATTERY_STOP_PCT))
-        config.ALLOWED_CHARGE_START_HOUR = int(result.get("charge_window_start_hour", config.ALLOWED_CHARGE_START_HOUR))
-        config.ALLOWED_CHARGE_END_HOUR = int(result.get("charge_window_end_hour", config.ALLOWED_CHARGE_END_HOUR))
+        if result.get("battery_start_pct") is not None:
+            config.BATTERY_START_PCT = float(result["battery_start_pct"])
+        if result.get("battery_stop_pct") is not None:
+            config.BATTERY_STOP_PCT = float(result["battery_stop_pct"])
+        if result.get("charge_window_start_hour") is not None:
+            config.ALLOWED_CHARGE_START_HOUR = int(result["charge_window_start_hour"])
+        if result.get("charge_window_end_hour") is not None:
+            config.ALLOWED_CHARGE_END_HOUR = int(result["charge_window_end_hour"])
         config.save_dynamic_config()
         
         if user_instruction:

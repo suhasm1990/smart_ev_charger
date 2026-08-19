@@ -1,10 +1,10 @@
 import requests
 import re
 import html
-from core import config
 from reporting.logger import log
 
 def notify(message: str):
+    from core import config
     # 1. Pushover Notifications (if configured)
     if config.PUSHOVER_USER_KEY and config.PUSHOVER_API_TOKEN:
         try:

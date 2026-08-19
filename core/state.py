@@ -30,3 +30,11 @@ def clear_manual_guards():
     manual_guard_stop_battery_pct = None
     manual_guard_stop_at_hour = None
     manual_guard_stop_time = None
+
+def get_session_minutes() -> float:
+    if charge_session_start is None:
+        return 0.0
+    from datetime import datetime
+    from core import config
+    return max(0.0, round((datetime.now(config.TZ) - charge_session_start).total_seconds() / 60, 1))
+

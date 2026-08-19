@@ -158,7 +158,7 @@ def check_alerts(current_state: dict):
             state.last_surplus_alert_date = today_str
 
 def check_recent_log_errors(interval_minutes: int = 20) -> bool:
-    log_file = "logs/charger.log"
+    log_file = getattr(config, "TEXT_LOG_FILE", "logs/charger.log")
     if not os.path.exists(log_file):
         return False
         
