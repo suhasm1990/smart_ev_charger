@@ -212,10 +212,22 @@ def dispatch_dev_task_background(task_description: str, pr_number: int = None):
     def worker():
         notify("⚙️ <b>Autonomous Dev Agent Started</b>\nInvestigating codebase and logs to prepare changes...")
         try:
+            import shutil
+            if shutil.which("agy"):
+                prompt = (
+                    f"Checkout PR #{pr_number} and implement: {task_description}"
+                    if pr_number
+                    else f"Investigate, fix, run tests, and open a PR: {task_description}"
+                )
+                cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions", "--mode", "accept-edits", "--print-timeout", "15m"]
+                proc = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd(), env=os.environ)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    summary = proc.stdout.strip()
+                    notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(summary[-2500:])}</pre>")
+                    return
+
             summary = run_dev_agent_loop(task_description, pr_number)
-            if len(summary) > 3000:
-                summary = summary[-3000:]
-            notify(f"✅ <b>Dev Agent Task Finished</b>\n\n{html.escape(summary)}")
+            notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(summary[-2500:])}</pre>")
         except Exception as e:
             log.error(f"Dev agent error: {e}", exc_info=True)
             notify(f"❌ <b>Dev Agent Error</b>\n{html.escape(str(e))}")

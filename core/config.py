@@ -88,6 +88,8 @@ DYNAMIC_CONFIG_SCHEMA = {
     "MANUAL_MODE_OVERRIDE": (str, "default"),
     "ALLOWED_CHARGE_START_HOUR": (int, "0"),
     "ALLOWED_CHARGE_END_HOUR": (int, "24"),
+    "LLM_PROVIDER": (str, "gemini"),
+    "LLM_MODEL": (str, "gemini-2.5-flash"),
 }
 
 def _apply_config_dict(source_dict: dict):

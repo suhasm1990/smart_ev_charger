@@ -49,6 +49,56 @@ def restart_and_update_application() -> str:
     threading.Thread(target=_delayed_exit, daemon=True).start()
     return "🔄 Restarting container now. It will automatically pull the latest code from GitHub and come back online in ~5-10 seconds."
 
+def switch_llm_model(provider: str, model_name: str = None) -> str:
+    """Dynamically switches the active AI model and provider (e.g. Gemini, NVIDIA, OpenAI, Anthropic).
+    
+    Args:
+        provider: The provider name ('gemini', 'nvidia', 'openai', 'anthropic').
+        model_name: Optional specific model name (e.g. 'gemini-2.5-flash', 'gemini-2.5-pro', 'nvidia/nemotron-3.5-lightning-30b-a3b', 'gpt-4o', 'claude-3-7-sonnet').
+    """
+    provider = (provider or "").lower().strip()
+    provider_defaults = {
+        "gemini": "gemini-2.5-flash",
+        "nvidia": "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "openai": "gpt-4o",
+        "anthropic": "claude-3-7-sonnet"
+    }
+
+    # Auto-resolve aliases if user passed model name directly as provider
+    if "nemotron" in provider or "llama" in provider or "nvidia" in provider:
+        if not model_name:
+            model_name = provider if "/" in provider else "nvidia/nemotron-3.5-lightning-30b-a3b"
+        provider = "nvidia"
+    elif "gemini" in provider or "google" in provider:
+        if not model_name:
+            model_name = provider if "gemini-" in provider else "gemini-2.5-flash"
+        provider = "gemini"
+    elif "gpt" in provider or "openai" in provider or "o1" in provider or "o3" in provider:
+        if not model_name:
+            model_name = provider if ("gpt" in provider or "o1" in provider or "o3" in provider) else "gpt-4o"
+        provider = "openai"
+    elif "claude" in provider or "anthropic" in provider or "sonnet" in provider:
+        if not model_name:
+            model_name = provider if "claude" in provider else "claude-3-7-sonnet"
+        provider = "anthropic"
+
+    if provider not in provider_defaults:
+        return f"Error: Unknown provider '{provider}'. Supported providers: gemini, nvidia, openai, anthropic."
+
+    if not model_name:
+        model_name = provider_defaults[provider]
+
+    # Validate provider credentials
+    key_attr, _, _ = llm_client.PROVIDER_DEFAULTS.get(provider, ("", None, ""))
+    if key_attr and not getattr(config, key_attr, ""):
+        return f"Warning: {key_attr} is not configured in .env."
+
+    config.LLM_PROVIDER = provider
+    config.LLM_MODEL = model_name
+    config.save_dynamic_config()
+    log.info(f"AI Model switched to provider='{provider}', model='{model_name}'")
+    return f"✅ Successfully switched active AI Model to <b>{provider.upper()}</b> (<code>{model_name}</code>)."
+
 def run_antigravity_dev_task(task_description: str, pr_number: int = None) -> str:
     """Dispatches an autonomous developer agent in the background to investigate logs, fix codebase issues, run tests, and create or update a GitHub Pull Request.
     Use this tool whenever the user asks to investigate a bug/issue, fix code, add a feature, create a PR, or update an existing open PR with changes.
@@ -57,69 +107,8 @@ def run_antigravity_dev_task(task_description: str, pr_number: int = None) -> st
         task_description: Detailed description of what to investigate, fix, or update.
         pr_number: Optional integer PR number (e.g. 12) if the user wants to update an existing open PR.
     """
-    import shutil
-    from agent.dev_agent import dispatch_dev_task_background, run_dev_agent_loop
-
-    def worker():
-        notify("⚙️ <b>Autonomous Dev Agent Started</b>\nInvestigating codebase and logs to prepare changes...")
-        try:
-            # If agy binary is available in PATH, use agy CLI
-            if shutil.which("agy"):
-                if pr_number:
-                    prompt = (
-                        f"1. Checkout PR #{pr_number} using 'gh pr checkout {pr_number}'.\n"
-                        f"2. Implement the following requested updates: '{task_description}'.\n"
-                        f"3. Run unit tests to verify the changes.\n"
-                        f"4. Commit with a clear commit message and push updates to the PR using 'git push'.\n"
-                        f"5. Print a concise summary of the updates made."
-                    )
-                else:
-                    prompt = (
-                        f"1. Investigate and resolve the following task: '{task_description}'.\n"
-                        f"2. If relevant, inspect recent log files in logs/ to diagnose root causes.\n"
-                        f"3. Implement the required changes across the codebase.\n"
-                        f"4. Run unit tests to ensure all tests pass.\n"
-                        f"5. Create a descriptive branch, commit the changes, push to origin, and create a Pull Request using 'gh pr create --title \"...\" --body \"...\"'.\n"
-                        f"6. Print the created PR URL and a concise summary."
-                    )
-
-                cmd = [
-                    "agy",
-                    "-p", prompt,
-                    "--dangerously-skip-permissions",
-                    "--mode", "accept-edits",
-                    "--print-timeout", "15m"
-                ]
-
-                log.info(f"AGY AGENT | Launching dev task via agy CLI: {task_description[:80]}...")
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
-                    env=os.environ
-                )
-
-                if proc.returncode == 0:
-                    output_summary = proc.stdout.strip()
-                    if len(output_summary) > 2000:
-                        output_summary = output_summary[-2000:]
-                    notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(output_summary)}</pre>")
-                    return
-                else:
-                    log.warning(f"agy CLI failed, falling back to native dev agent: {proc.stderr}")
-
-            # Native agent loop fallback (works in Docker without agy binary)
-            summary = run_dev_agent_loop(task_description, pr_number)
-            if len(summary) > 2500:
-                summary = summary[-2500:]
-            notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(summary)}</pre>")
-
-        except Exception as ex:
-            log.error(f"Failed to execute dev task: {ex}", exc_info=True)
-            notify(f"❌ <b>Dev Agent Error</b>\nFailed to complete task: {html.escape(str(ex))}")
-
-    threading.Thread(target=worker, daemon=True).start()
+    from agent.dev_agent import dispatch_dev_task_background
+    dispatch_dev_task_background(task_description, pr_number)
     if pr_number:
         return f"Autonomous agent dispatched in background to update PR #{pr_number}. You will receive a Telegram notification when complete."
     return "Autonomous agent dispatched in background to investigate, fix, and create a Pull Request. You will receive a Telegram notification when the PR is ready."
@@ -614,7 +603,8 @@ def handle_message_with_llm(text: str) -> str:
         add_agent_instruction,
         trigger_daily_agent,
         run_antigravity_dev_task,
-        restart_and_update_application
+        restart_and_update_application,
+        switch_llm_model
     ]
 
     system_instruction = (
@@ -625,6 +615,7 @@ def handle_message_with_llm(text: str) -> str:
         "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
         "run the Daily AI Agent on demand to optimize charging strategy for today, "
         "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; and passing stop_battery_pct, stop_at_hour, or duration_hours if the user specifies any stop limits or guardrails) by calling tools. "
+        "When the user asks you to switch or change the AI model or provider (e.g. switch to nvidia, gemini, nemotron, claude, etc.) or check the model, call the 'switch_llm_model' tool. "
         "When the user asks you to investigate an issue, fix a bug in the code, open a Pull Request, or update an existing GitHub PR with changes, call the 'run_antigravity_dev_task' tool to dispatch the autonomous developer agent. "
         "When the user asks you to restart the app, reload, or pull the latest code updates, call the 'restart_and_update_application' tool. "
         "Always run the appropriate tools when requested, and summarize the actions taken "
@@ -668,12 +659,55 @@ def _bot_polling_loop():
             "• <i>'Run daily agent'</i> or <i>'Plan today's charging'</i>\n"
             "• <i>'Why did charging stop last time?'</i>\n"
             "• <i>'What are the peak and partial peak timings?'</i>\n"
+            "• <i>'Switch model to nvidia'</i> or <i>'Use gemini pro'</i>\n"
             "• <i>'Charge with full power'</i>\n"
             "• <i>'Stop charging when battery goes below 40%'</i>\n"
             "• <i>'Turn on manual mode'</i>\n"
             "• <i>'Force start the charger'</i>\n"
+            "• <i>'/model'</i> to view or switch active AI models\n"
             "• <i>'/update'</i> or <i>'/restart'</i> to pull latest code and restart"
         )
+        bot.reply_to(message, help_text, parse_mode="HTML")
+
+    @bot.message_handler(commands=['model', 'models'])
+    def handle_model_command(message):
+        if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
+            bot.reply_to(message, "Unauthorized.")
+            return
+        text = (message.text or "").strip()
+        parts = text.split(maxsplit=2)
+        if len(parts) == 1:
+            current_p = getattr(config, "LLM_PROVIDER", "gemini")
+            current_m = getattr(config, "LLM_MODEL", "gemini-2.5-flash")
+            msg = (
+                f"🧠 <b>Active AI Model Configuration</b>\n\n"
+                f"• <b>Provider</b>: <code>{current_p}</code>\n"
+                f"• <b>Model</b>: <code>{current_m}</code>\n\n"
+                f"<b>Quick Switch Commands:</b>\n"
+                f"• <code>/model gemini</code> (Gemini 2.5 Flash)\n"
+                f"• <code>/model gemini-pro</code> (Gemini 2.5 Pro Deep Reasoning)\n"
+                f"• <code>/model nvidia</code> (Nemotron 30B)\n"
+                f"• <code>/model openai</code> (GPT-4o)\n"
+                f"• <code>/model claude</code> (Claude 3.7 Sonnet)\n\n"
+                f"<i>Or just ask in chat: 'Switch model to nvidia'</i>"
+            )
+            bot.reply_to(message, msg, parse_mode="HTML")
+            return
+
+        target = parts[1].lower().strip()
+        if target in ("gemini", "google"):
+            res = switch_llm_model("gemini", "gemini-2.5-flash")
+        elif target in ("gemini-pro", "gemini_pro", "gemini-2.5-pro", "pro"):
+            res = switch_llm_model("gemini", "gemini-2.5-pro")
+        elif target in ("nvidia", "nemotron"):
+            res = switch_llm_model("nvidia", "nvidia/nemotron-3.5-lightning-30b-a3b")
+        elif target in ("openai", "chatgpt", "gpt"):
+            res = switch_llm_model("openai", "gpt-4o")
+        elif target in ("claude", "anthropic"):
+            res = switch_llm_model("anthropic", "claude-3-7-sonnet")
+        else:
+            res = switch_llm_model(target, parts[2] if len(parts) > 2 else None)
+        bot.reply_to(message, res, parse_mode="HTML")
         bot.reply_to(message, help_text, parse_mode="HTML")
 
     @bot.message_handler(commands=['restart', 'update'])

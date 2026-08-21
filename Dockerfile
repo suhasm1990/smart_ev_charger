@@ -31,11 +31,5 @@ RUN chmod +x /entrypoint.sh
 RUN mkdir -p /root/config
 COPY .env* service_account.json* /root/config/
 
-# Install Google Pro session into /root/.gemini if synced during build
-COPY .gemini_auth* /tmp/gemini_auth/
-RUN if [ -d "/tmp/gemini_auth" ] && [ "$(ls -A /tmp/gemini_auth 2>/dev/null)" ]; then \
-        mkdir -p /root/.gemini && cp -R /tmp/gemini_auth/* /root/.gemini/ && rm -rf /tmp/gemini_auth; \
-    fi
-
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-u", "main.py"]

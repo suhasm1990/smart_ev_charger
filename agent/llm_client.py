@@ -72,55 +72,33 @@ def function_to_openai_tool(fn: typing.Callable) -> dict:
     }
 
 
-# ── Configuration Resolver --------------------------------------------------
-
-def get_gemini_oauth_token() -> str:
-    """Reads Google session token from synced ~/.gemini or /root/.gemini credentials."""
-    for base in ("/root/.gemini", os.path.expanduser("~/.gemini")):
-        creds_path = os.path.join(base, "oauth_creds.json")
-        if os.path.exists(creds_path):
-            try:
-                with open(creds_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    token = data.get("access_token") or data.get("id_token")
-                    if token:
-                        return token
-            except Exception:
-                pass
-    return ""
+PROVIDER_DEFAULTS = {
+    "gemini": ("GEMINI_API_KEY", None, "gemini/"),
+    "nvidia": ("NVIDIA_API_KEY", "https://integrate.api.nvidia.com/v1", "openai/"),
+    "openai": ("OPENAI_API_KEY", None, ""),
+    "anthropic": ("ANTHROPIC_API_KEY", None, ""),
+}
 
 def resolve_llm_config() -> dict:
     """Resolves provider, model, api_key, and base_url directly from environment/config."""
-    provider = config.LLM_PROVIDER
+    provider = (config.LLM_PROVIDER or "").lower().strip()
     model = config.LLM_MODEL
     api_key = config.LLM_API_KEY
     base_url = config.LLM_BASE_URL
 
-    # Auto-detect provider if not explicitly specified
     if not provider:
-        if config.NVIDIA_API_KEY:
-            provider = "nvidia"
-        elif config.GEMINI_API_KEY or get_gemini_oauth_token():
-            provider = "gemini"
-        elif config.OPENAI_API_KEY:
-            provider = "openai"
-        elif config.ANTHROPIC_API_KEY:
-            provider = "anthropic"
+        for p, (key_attr, _, _) in PROVIDER_DEFAULTS.items():
+            if getattr(config, key_attr, ""):
+                provider = p
+                break
+        provider = provider or "gemini"
 
-    # Select provider-specific key if LLM_API_KEY is not set
-    if not api_key:
-        if provider == "nvidia":
-            api_key = config.NVIDIA_API_KEY
-        elif provider == "openai":
-            api_key = config.OPENAI_API_KEY
-        elif provider == "anthropic":
-            api_key = config.ANTHROPIC_API_KEY
-        elif provider == "gemini":
-            api_key = config.GEMINI_API_KEY or get_gemini_oauth_token()
+    key_attr, default_base_url, _ = PROVIDER_DEFAULTS.get(provider, ("", None, ""))
+    if not api_key and key_attr:
+        api_key = getattr(config, key_attr, "")
 
-    # Set default base URL for known providers if not specified
-    if provider == "nvidia" and not base_url:
-        base_url = "https://integrate.api.nvidia.com/v1"
+    if not base_url and default_base_url:
+        base_url = default_base_url
 
     return {
         "provider": provider,
@@ -130,20 +108,20 @@ def resolve_llm_config() -> dict:
     }
 
 
+def format_model_name(provider: str, model_name: str) -> str:
+    """Formats model name with appropriate provider prefix for litellm."""
+    if provider == "nvidia" and not model_name.startswith("openai/"):
+        return f"openai/{model_name}"
+    elif provider == "gemini" and not model_name.startswith("gemini/"):
+        return f"gemini/{model_name}"
+    return model_name
+
+
 def extract_json_from_text(text: str) -> dict:
     """Safely extracts JSON dict from response text even if wrapped in markdown codeblocks or thinking tags."""
-    text = text.strip()
-    # Strip <think>...</think> reasoning blocks if present
-    text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
-    
-    match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
-    if match:
-        text = match.group(1)
-    else:
-        match_raw = re.search(r"(\{[\s\S]*\})", text)
-        if match_raw:
-            text = match_raw.group(1)
-    return json.loads(text)
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text.strip()).strip()
+    match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text) or re.search(r"(\{[\s\S]*\})", text)
+    return json.loads(match.group(1)) if match else json.loads(text)
 
 
 def get_thinking_kwargs(provider: str, model_name: str) -> dict:
@@ -151,7 +129,7 @@ def get_thinking_kwargs(provider: str, model_name: str) -> dict:
     kwargs = {}
     budget = getattr(config, "LLM_THINKING_BUDGET", 8192)
     if budget and budget > 0:
-        if provider in ("gemini", "anthropic") or "gemini" in model_name.lower() or "claude" in model_name.lower():
+        if provider == "anthropic" or "claude" in model_name.lower():
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
         elif provider in ("openai", "nvidia") or "o1" in model_name.lower() or "o3" in model_name.lower():
             kwargs["reasoning_effort"] = "high"
@@ -181,13 +159,22 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
         if cfg["base_url"]:
             extra_kwargs["api_base"] = cfg["base_url"]
 
-        model_name = cfg["model"]
-        if cfg["provider"] == "nvidia" and not model_name.startswith("openai/") and not model_name.startswith("nvidia/"):
-            model_name = f"openai/{model_name}"
-        elif cfg["provider"] == "nvidia" and model_name.startswith("nvidia/"):
-            model_name = f"openai/{model_name}"
-        elif cfg["provider"] == "gemini" and not model_name.startswith("gemini/"):
-            model_name = f"gemini/{model_name}"
+        model_name = format_model_name(cfg["provider"], cfg["model"])
+        extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
+
+        response = litellm.completion(
+            model=model_name,
+            messages=messages,
+            api_key=cfg["api_key"],
+            temperature=0.2,
+            request_timeout=45,
+            **extra_kwargs
+        )
+        content = response.choices[0].message.content
+        return extract_json_from_text(content)
+    except Exception as err:
+        log.error(f"Error generating JSON with LLM provider '{cfg['provider']}': {err}", exc_info=True)
+        raise
 
         extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
 
@@ -232,12 +219,7 @@ def chat_with_tools(history: list, user_text: str, tools: list, system_instructi
         if cfg["base_url"]:
             extra_kwargs["api_base"] = cfg["base_url"]
 
-        model_name = cfg["model"]
-        if cfg["provider"] == "nvidia" and not model_name.startswith("openai/") and not model_name.startswith("nvidia/"):
-            model_name = f"openai/{model_name}"
-        elif cfg["provider"] == "gemini" and not model_name.startswith("gemini/"):
-            model_name = f"gemini/{model_name}"
-
+        model_name = format_model_name(cfg["provider"], cfg["model"])
         extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
 
         for iteration in range(max_iterations):

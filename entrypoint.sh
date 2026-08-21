@@ -43,11 +43,11 @@ else
     git pull origin "${BRANCH}" || true
 fi
 
-# 4. Restore baked private configuration if missing in /app
-if [ -f "/root/config/.env" ] && [ ! -f "/app/.env" ]; then
+# 4. Restore baked private configuration into /app
+if [ -f "/root/config/.env" ]; then
     cp /root/config/.env /app/.env
 fi
-if [ -f "/root/config/service_account.json" ] && [ ! -f "/app/service_account.json" ]; then
+if [ -f "/root/config/service_account.json" ]; then
     cp /root/config/service_account.json /app/service_account.json
 fi
 
