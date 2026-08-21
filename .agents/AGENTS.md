@@ -1,5 +1,5 @@
 # Project-Scoped Rules
 
-## Git Constraints
-- Do NOT perform any git operations (e.g., git add, git commit, git push, etc.).
-- Leave all version control operations completely to the user.
+## Git & Pull Request Guidelines
+- When dispatched to create or update a Pull Request, you ARE authorized to create a dedicated feature branch, commit changes, push to origin, and open a PR with `gh pr create`.
+- Never commit directly to `main` — always create a new branch (e.g. `fix/...` or `docs/...`).
