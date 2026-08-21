@@ -59,21 +59,43 @@ def get_active_ai_model() -> str:
         "model": m,
         "summary": f"Currently configured with {p.upper()} ({m})"
     })
-def read_source_code() -> str:
-    """Reads and returns the source code of the application.
-    Use this tool whenever the user asks to view, inspect, or analyze the application source code.
+def read_source_code(file_path: str = "main.py", start_line: int = 1, end_line: int = 100) -> str:
+    """Reads a concise snippet of source code from a file in the repository with line numbers.
+    Use this tool whenever the user asks how a component works, to inspect logic, or investigate code.
+    
+    Args:
+        file_path: Relative path to the project file (e.g. 'main.py', 'core/decision.py', 'services/chargepoint.py', 'agent/telegram_bot.py', 'reporting/csv_logger.py').
+        start_line: Starting line number (1-indexed, default 1).
+        end_line: Ending line number (default 100).
     """
+    clean_path = os.path.normpath(file_path).lstrip("/\\")
+    if clean_path.startswith("..") or clean_path.startswith(".env") or "service_account" in clean_path:
+        return json.dumps({"error": "Security check: Access to sensitive files or parent directories is restricted."})
+    
+    if not os.path.exists(clean_path):
+        return json.dumps({"error": f"File '{clean_path}' not found in repository."})
+    
     try:
-        with open('agent/telegram_bot.py', 'r', encoding='utf-8') as f:
-            source_code = f.read()
+        with open(clean_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        
+        total_lines = len(lines)
+        s_line = max(1, start_line)
+        e_line = min(total_lines, end_line if end_line and end_line > 0 else s_line + 100)
+        
+        # Format with line numbers for crystal-clear, unambiguous inspection
+        numbered_lines = [f"{i}: {lines[i-1]}" for i in range(s_line, e_line + 1)]
+        snippet = "".join(numbered_lines)
+        
         return json.dumps({
-            "source_code": source_code,
-            "summary": "Application source code retrieved successfully."
+            "file": clean_path,
+            "total_lines": total_lines,
+            "showing_lines": f"{s_line}-{e_line}",
+            "content": snippet
         })
     except Exception as e:
-        return json.dumps({
-            "error": f"Failed to read source code: {str(e)}"
-        })
+        return json.dumps({"error": f"Failed to read source code: {str(e)}"})
+
 def switch_llm_model(provider: str = "", model_name: str = None) -> str:
     """Dynamically switches the active AI model and provider (e.g. Gemini, NVIDIA, OpenAI, Anthropic) or queries the active model.
     

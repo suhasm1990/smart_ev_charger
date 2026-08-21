@@ -194,6 +194,22 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
         raise
 
 
+def _safe_completion_with_retry(litellm_mod, **kwargs):
+    """Executes litellm.completion with automatic retry on RateLimit (HTTP 429)."""
+    import time
+    for attempt in range(3):
+        try:
+            return litellm_mod.completion(**kwargs)
+        except Exception as err:
+            err_str = str(err).lower()
+            if ("429" in err_str or "rate" in err_str or "too many requests" in err_str) and attempt < 2:
+                wait_sec = (attempt + 1) * 3
+                log.warning(f"Rate limit encountered. Retrying in {wait_sec}s (attempt {attempt+1}/3)...")
+                time.sleep(wait_sec)
+            else:
+                raise
+
+
 def chat_with_tools(history: list, user_text: str, tools: list, system_instruction: str = "", max_iterations: int = 12) -> tuple[str, list]:
     """Runs a multi-turn chat interaction with function/tool execution support."""
     cfg = resolve_llm_config()
@@ -224,7 +240,8 @@ def chat_with_tools(history: list, user_text: str, tools: list, system_instructi
         extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
 
         for iteration in range(max_iterations):
-            response = litellm.completion(
+            response = _safe_completion_with_retry(
+                litellm,
                 model=model_name,
                 messages=messages,
                 tools=openai_tools if openai_tools else None,
@@ -278,8 +295,19 @@ def chat_with_tools(history: list, user_text: str, tools: list, system_instructi
                     "content": str(result)
                 })
 
+        # Graceful wrap-up if max iterations reached during multi-turn tool execution
+        messages.append({"role": "user", "content": "Please provide a final summary of all actions taken and the conclusion."})
+        final_resp = _safe_completion_with_retry(
+            litellm,
+            model=model_name,
+            messages=messages,
+            api_key=cfg["api_key"],
+            temperature=0.1,
+            request_timeout=35,
+            **extra_kwargs
+        )
+        return (final_resp.choices[0].message.content or "Completed actions.", messages)
+
     except Exception as err:
         log.error(f"Error in chat interaction with LLM provider '{cfg['provider']}': {err}", exc_info=True)
         return (f"Error interacting with AI model: {err}", messages)
-
-    return ("Unable to process request after max iterations.", messages)

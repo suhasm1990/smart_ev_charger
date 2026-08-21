@@ -193,25 +193,15 @@ def run_dev_agent_loop(task_description: str, pr_number: int = None) -> str:
         )
 
     log.info(f"DEV AGENT | Starting autonomous loop for task: {task_description[:80]}...")
-    history = []
     
-    # Run multi-turn autonomous tool interaction loop with up to 15 iterations
-    for iteration in range(15):
-        response_text, updated_history = llm_client.chat_with_tools(
-            history=history,
-            user_text=user_prompt if iteration == 0 else "",
-            tools=DEV_TOOLS,
-            system_instruction=system_instruction,
-            max_iterations=15
-        )
-        history = updated_history
-
-        # Check if the assistant finalized its response
-        last_msg = history[-1] if history else {}
-        if last_msg.get("role") == "assistant" and not last_msg.get("tool_calls"):
-            log.info("DEV AGENT | Autonomous loop completed successfully.")
-            return response_text
-
+    # Run single multi-turn autonomous tool interaction loop
+    response_text, _ = llm_client.chat_with_tools(
+        history=[],
+        user_text=user_prompt,
+        tools=DEV_TOOLS,
+        system_instruction=system_instruction,
+        max_iterations=15
+    )
     return response_text or "Task completed."
 
 def dispatch_dev_task_background(task_description: str, pr_number: int = None):
