@@ -74,6 +74,21 @@ def function_to_openai_tool(fn: typing.Callable) -> dict:
 
 # ── Configuration Resolver --------------------------------------------------
 
+def get_gemini_oauth_token() -> str:
+    """Reads Google session token from synced ~/.gemini or /root/.gemini credentials."""
+    for base in ("/root/.gemini", os.path.expanduser("~/.gemini")):
+        creds_path = os.path.join(base, "oauth_creds.json")
+        if os.path.exists(creds_path):
+            try:
+                with open(creds_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    token = data.get("access_token") or data.get("id_token")
+                    if token:
+                        return token
+            except Exception:
+                pass
+    return ""
+
 def resolve_llm_config() -> dict:
     """Resolves provider, model, api_key, and base_url directly from environment/config."""
     provider = config.LLM_PROVIDER
@@ -85,12 +100,12 @@ def resolve_llm_config() -> dict:
     if not provider:
         if config.NVIDIA_API_KEY:
             provider = "nvidia"
+        elif config.GEMINI_API_KEY or get_gemini_oauth_token():
+            provider = "gemini"
         elif config.OPENAI_API_KEY:
             provider = "openai"
         elif config.ANTHROPIC_API_KEY:
             provider = "anthropic"
-        elif config.GEMINI_API_KEY:
-            provider = "gemini"
 
     # Select provider-specific key if LLM_API_KEY is not set
     if not api_key:
@@ -101,7 +116,7 @@ def resolve_llm_config() -> dict:
         elif provider == "anthropic":
             api_key = config.ANTHROPIC_API_KEY
         elif provider == "gemini":
-            api_key = config.GEMINI_API_KEY
+            api_key = config.GEMINI_API_KEY or get_gemini_oauth_token()
 
     # Set default base URL for known providers if not specified
     if provider == "nvidia" and not base_url:
@@ -129,6 +144,18 @@ def extract_json_from_text(text: str) -> dict:
         if match_raw:
             text = match_raw.group(1)
     return json.loads(text)
+
+
+def get_thinking_kwargs(provider: str, model_name: str) -> dict:
+    """Returns provider-appropriate extended thinking / reasoning parameters."""
+    kwargs = {}
+    budget = getattr(config, "LLM_THINKING_BUDGET", 8192)
+    if budget and budget > 0:
+        if provider in ("gemini", "anthropic") or "gemini" in model_name.lower() or "claude" in model_name.lower():
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        elif provider in ("openai", "nvidia") or "o1" in model_name.lower() or "o3" in model_name.lower():
+            kwargs["reasoning_effort"] = "high"
+    return kwargs
 
 
 # ── Unified LLM Methods ------------------------------------------------------
@@ -162,6 +189,8 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
         elif cfg["provider"] == "gemini" and not model_name.startswith("gemini/"):
             model_name = f"gemini/{model_name}"
 
+        extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
+
         response = litellm.completion(
             model=model_name,
             messages=messages,
@@ -177,7 +206,7 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
         raise
 
 
-def chat_with_tools(history: list, user_text: str, tools: list, system_instruction: str = "") -> tuple[str, list]:
+def chat_with_tools(history: list, user_text: str, tools: list, system_instruction: str = "", max_iterations: int = 12) -> tuple[str, list]:
     """Runs a multi-turn chat interaction with function/tool execution support."""
     cfg = resolve_llm_config()
     log.info(f"Chat interaction with LLM Provider: '{cfg['provider']}', Model: '{cfg['model']}'")
@@ -209,7 +238,9 @@ def chat_with_tools(history: list, user_text: str, tools: list, system_instructi
         elif cfg["provider"] == "gemini" and not model_name.startswith("gemini/"):
             model_name = f"gemini/{model_name}"
 
-        for iteration in range(5):
+        extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
+
+        for iteration in range(max_iterations):
             response = litellm.completion(
                 model=model_name,
                 messages=messages,

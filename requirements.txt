@@ -10,3 +10,4 @@ pytz>=2026.1
 litellm>=1.60.0
 openai>=2.0.0
 matplotlib>=3.8.0
+google-antigravity>=0.1.0

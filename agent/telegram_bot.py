@@ -1,6 +1,9 @@
 import os
 import json
 import re
+import html
+import time
+import subprocess
 import threading
 import logging
 from datetime import datetime, timedelta
@@ -33,6 +36,93 @@ from agent.alerts import add_alert, remove_alert, list_alerts
 RUN_CYCLE_CALLBACK = None
 
 # ── 1. Helper Tools for LLM Function Calling ─────────────────────────────
+
+def restart_and_update_application() -> str:
+    """Restarts the Docker container to trigger 'git pull origin main' and load the latest updates.
+    Use this tool whenever the user asks to restart the app, pull latest code, update the application, or reload after merging a PR.
+    """
+    def _delayed_exit():
+        time.sleep(2)
+        log.info("RESTART | Exiting process to trigger Docker container restart and git pull.")
+        os._exit(0)
+
+    threading.Thread(target=_delayed_exit, daemon=True).start()
+    return "🔄 Restarting container now. It will automatically pull the latest code from GitHub and come back online in ~5-10 seconds."
+
+def run_antigravity_dev_task(task_description: str, pr_number: int = None) -> str:
+    """Dispatches an autonomous developer agent in the background to investigate logs, fix codebase issues, run tests, and create or update a GitHub Pull Request.
+    Use this tool whenever the user asks to investigate a bug/issue, fix code, add a feature, create a PR, or update an existing open PR with changes.
+    
+    Args:
+        task_description: Detailed description of what to investigate, fix, or update.
+        pr_number: Optional integer PR number (e.g. 12) if the user wants to update an existing open PR.
+    """
+    import shutil
+    from agent.dev_agent import dispatch_dev_task_background, run_dev_agent_loop
+
+    def worker():
+        notify("⚙️ <b>Autonomous Dev Agent Started</b>\nInvestigating codebase and logs to prepare changes...")
+        try:
+            # If agy binary is available in PATH, use agy CLI
+            if shutil.which("agy"):
+                if pr_number:
+                    prompt = (
+                        f"1. Checkout PR #{pr_number} using 'gh pr checkout {pr_number}'.\n"
+                        f"2. Implement the following requested updates: '{task_description}'.\n"
+                        f"3. Run unit tests to verify the changes.\n"
+                        f"4. Commit with a clear commit message and push updates to the PR using 'git push'.\n"
+                        f"5. Print a concise summary of the updates made."
+                    )
+                else:
+                    prompt = (
+                        f"1. Investigate and resolve the following task: '{task_description}'.\n"
+                        f"2. If relevant, inspect recent log files in logs/ to diagnose root causes.\n"
+                        f"3. Implement the required changes across the codebase.\n"
+                        f"4. Run unit tests to ensure all tests pass.\n"
+                        f"5. Create a descriptive branch, commit the changes, push to origin, and create a Pull Request using 'gh pr create --title \"...\" --body \"...\"'.\n"
+                        f"6. Print the created PR URL and a concise summary."
+                    )
+
+                cmd = [
+                    "agy",
+                    "-p", prompt,
+                    "--dangerously-skip-permissions",
+                    "--mode", "accept-edits",
+                    "--print-timeout", "15m"
+                ]
+
+                log.info(f"AGY AGENT | Launching dev task via agy CLI: {task_description[:80]}...")
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+                    env=os.environ
+                )
+
+                if proc.returncode == 0:
+                    output_summary = proc.stdout.strip()
+                    if len(output_summary) > 2000:
+                        output_summary = output_summary[-2000:]
+                    notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(output_summary)}</pre>")
+                    return
+                else:
+                    log.warning(f"agy CLI failed, falling back to native dev agent: {proc.stderr}")
+
+            # Native agent loop fallback (works in Docker without agy binary)
+            summary = run_dev_agent_loop(task_description, pr_number)
+            if len(summary) > 2500:
+                summary = summary[-2500:]
+            notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(summary)}</pre>")
+
+        except Exception as ex:
+            log.error(f"Failed to execute dev task: {ex}", exc_info=True)
+            notify(f"❌ <b>Dev Agent Error</b>\nFailed to complete task: {html.escape(str(ex))}")
+
+    threading.Thread(target=worker, daemon=True).start()
+    if pr_number:
+        return f"Autonomous agent dispatched in background to update PR #{pr_number}. You will receive a Telegram notification when complete."
+    return "Autonomous agent dispatched in background to investigate, fix, and create a Pull Request. You will receive a Telegram notification when the PR is ready."
 
 def get_system_status() -> str:
     """Gets the current EV charger state, battery percentage, solar generation, house usage, current grid import, and active thresholds."""
@@ -522,7 +612,9 @@ def handle_message_with_llm(text: str) -> str:
         clear_custom_alert,
         list_custom_alerts,
         add_agent_instruction,
-        trigger_daily_agent
+        trigger_daily_agent,
+        run_antigravity_dev_task,
+        restart_and_update_application
     ]
 
     system_instruction = (
@@ -533,6 +625,8 @@ def handle_message_with_llm(text: str) -> str:
         "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
         "run the Daily AI Agent on demand to optimize charging strategy for today, "
         "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; and passing stop_battery_pct, stop_at_hour, or duration_hours if the user specifies any stop limits or guardrails) by calling tools. "
+        "When the user asks you to investigate an issue, fix a bug in the code, open a Pull Request, or update an existing GitHub PR with changes, call the 'run_antigravity_dev_task' tool to dispatch the autonomous developer agent. "
+        "When the user asks you to restart the app, reload, or pull the latest code updates, call the 'restart_and_update_application' tool. "
         "Always run the appropriate tools when requested, and summarize the actions taken "
         "in a friendly natural language response. "
         "Format all your responses in the strict HTML subset supported by Telegram. "
@@ -577,9 +671,21 @@ def _bot_polling_loop():
             "• <i>'Charge with full power'</i>\n"
             "• <i>'Stop charging when battery goes below 40%'</i>\n"
             "• <i>'Turn on manual mode'</i>\n"
-            "• <i>'Force start the charger'</i>"
+            "• <i>'Force start the charger'</i>\n"
+            "• <i>'/update'</i> or <i>'/restart'</i> to pull latest code and restart"
         )
         bot.reply_to(message, help_text, parse_mode="HTML")
+
+    @bot.message_handler(commands=['restart', 'update'])
+    def restart_cmd(message):
+        if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
+            bot.reply_to(message, "Unauthorized.")
+            return
+        bot.reply_to(message, "🔄 <b>Restarting container...</b>\nPulling latest code from GitHub and restarting. Will be back online in ~5-10s!", parse_mode="HTML")
+        def _delayed_exit():
+            time.sleep(2)
+            os._exit(0)
+        threading.Thread(target=_delayed_exit, daemon=True).start()
 
     @bot.message_handler(commands=['daily_agent', 'plan', 'daily_plan'])
     def run_daily_agent_cmd(message):

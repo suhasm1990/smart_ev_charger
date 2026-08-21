@@ -32,6 +32,7 @@ log_csv         = logging.getLogger("CSV")
 # Silence verbose third-party connection and debug logs
 for logger_name in (
     "urllib3", "litellm", "LiteLLM", "httpcore", "httpx", 
-    "asyncio", "telebot", "TeleBot", "google", "gspread"
+    "asyncio", "telebot", "TeleBot", "google", "gspread",
+    "openai", "openai._base_client", "matplotlib", "matplotlib.font_manager"
 ):
     logging.getLogger(logger_name).setLevel(logging.WARNING)

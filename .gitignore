@@ -29,3 +29,6 @@ logs/
 *.zip
 .env
 service_account.json
+.gemini/
+.gemini_auth/
+
