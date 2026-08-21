@@ -556,16 +556,15 @@ def clean_telegram_html(text: str) -> str:
     if not text:
         return ""
     
-    # Convert Markdown bold (**text** or __text__) -> <b>text</b>
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
-    
-    # Convert Markdown italic (*text* or _text_) -> <i>text</i>
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
+    # Convert Markdown bold (**text**) -> <b>text</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     
     # Convert Markdown inline code (`code`) -> <code>code</code>
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    
+    # Convert Markdown italic only when surrounded by whitespace or string boundaries
+    text = re.sub(r'(?<!\w)\*([^\*]+?)\*(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_([^_]+?)_(?!\w)', r'<i>\1</i>', text)
     
     # Convert bullet markers at line starts (* or - ) to unicode bullet •
     text = re.sub(r'^[ \t]*[\*\-][ \t]+', '• ', text, flags=re.MULTILINE)

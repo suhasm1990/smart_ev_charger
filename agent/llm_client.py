@@ -11,6 +11,7 @@ try:
     import litellm
     litellm.suppress_debug_info = True
     litellm.set_verbose = False
+    litellm.drop_params = True
 except Exception:
     pass
 
@@ -131,7 +132,7 @@ def get_thinking_kwargs(provider: str, model_name: str) -> dict:
     if budget and budget > 0:
         if provider == "anthropic" or "claude" in model_name.lower():
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        elif provider in ("openai", "nvidia") or "o1" in model_name.lower() or "o3" in model_name.lower():
+        elif "o1" in model_name.lower() or "o3" in model_name.lower() or "o4" in model_name.lower():
             kwargs["reasoning_effort"] = "high"
     return kwargs
 
