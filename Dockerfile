@@ -27,6 +27,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Bake private credentials and config into persistent /root/config/
+RUN mkdir -p /root/config
+COPY .env* service_account.json* /root/config/
+
 # Install Google Pro session into /root/.gemini if synced during build
 COPY .gemini_auth* /tmp/gemini_auth/
 RUN if [ -d "/tmp/gemini_auth" ] && [ "$(ls -A /tmp/gemini_auth 2>/dev/null)" ]; then \

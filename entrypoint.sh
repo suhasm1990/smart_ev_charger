@@ -4,7 +4,14 @@ set -e
 REPO_URL="${REPO_URL:-https://github.com/suhasm1990/smart_ev_charger.git}"
 BRANCH="${GIT_BRANCH:-main}"
 
-# 0. Dynamically configure OS timezone from TZ environment variable (e.g. America/New_York)
+# 0. Load baked .env into environment if present
+if [ -f "/root/config/.env" ]; then
+    set -a
+    source /root/config/.env 2>/dev/null || true
+    set +a
+fi
+
+# 1. Dynamically configure OS timezone from TZ environment variable (e.g. America/New_York)
 TARGET_TZ="${TZ:-America/Los_Angeles}"
 if [ -f "/usr/share/zoneinfo/${TARGET_TZ}" ]; then
     ln -snf "/usr/share/zoneinfo/${TARGET_TZ}" /etc/localtime
@@ -12,7 +19,7 @@ if [ -f "/usr/share/zoneinfo/${TARGET_TZ}" ]; then
     export TZ="${TARGET_TZ}"
 fi
 
-# 1. Configure Git identity and GitHub CLI
+# 2. Configure Git identity and GitHub CLI
 git config --global --add safe.directory '*' || true
 
 if [ -n "$GITHUB_TOKEN" ]; then
@@ -22,7 +29,7 @@ if [ -n "$GITHUB_TOKEN" ]; then
     git config --global user.email "${GIT_AUTHOR_EMAIL:-suhasm1990@users.noreply.github.com}"
 fi
 
-# 2. Clone or pull latest codebase into /app
+# 3. Clone or pull latest codebase into /app
 cd /app
 
 if [ ! -d "/app/.git" ]; then
@@ -36,13 +43,21 @@ else
     git pull origin "${BRANCH}" || true
 fi
 
-# 3. Ensure any updated requirements are installed
+# 4. Restore baked private configuration if missing in /app
+if [ -f "/root/config/.env" ] && [ ! -f "/app/.env" ]; then
+    cp /root/config/.env /app/.env
+fi
+if [ -f "/root/config/service_account.json" ] && [ ! -f "/app/service_account.json" ]; then
+    cp /root/config/service_account.json /app/service_account.json
+fi
+
+# 5. Ensure any updated requirements are installed
 if [ -f "/app/requirements.txt" ]; then
     pip install --no-cache-dir -r /app/requirements.txt || true
 fi
 
 mkdir -p /app/logs
 
-# 4. Start the application
+# 6. Start the application
 echo "🚀 Starting application..."
 exec "$@"
