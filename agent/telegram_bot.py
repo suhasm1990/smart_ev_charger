@@ -59,7 +59,21 @@ def get_active_ai_model() -> str:
         "model": m,
         "summary": f"Currently configured with {p.upper()} ({m})"
     })
-
+def read_source_code() -> str:
+    """Reads and returns the source code of the application.
+    Use this tool whenever the user asks to view, inspect, or analyze the application source code.
+    """
+    try:
+        with open('agent/telegram_bot.py', 'r', encoding='utf-8') as f:
+            source_code = f.read()
+        return json.dumps({
+            "source_code": source_code,
+            "summary": "Application source code retrieved successfully."
+        })
+    except Exception as e:
+        return json.dumps({
+            "error": f"Failed to read source code: {str(e)}"
+        })
 def switch_llm_model(provider: str = "", model_name: str = None) -> str:
     """Dynamically switches the active AI model and provider (e.g. Gemini, NVIDIA, OpenAI, Anthropic) or queries the active model.
     
@@ -620,7 +634,8 @@ def handle_message_with_llm(text: str) -> str:
         run_antigravity_dev_task,
         restart_and_update_application,
         switch_llm_model,
-        get_active_ai_model
+        get_active_ai_model,
+        read_source_code
     ]
 
     system_instruction = (
@@ -633,6 +648,7 @@ def handle_message_with_llm(text: str) -> str:
         "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; and passing stop_battery_pct, stop_at_hour, or duration_hours if the user specifies any stop limits or guardrails) by calling tools. "
         "When the user asks you to switch or change the AI model or provider (e.g. switch to nvidia, gemini, nemotron, claude, etc.) or check the model, call the 'switch_llm_model' tool. "
         "When the user asks you to investigate an issue, fix a bug in the code, open a Pull Request, or update an existing GitHub PR with changes, call the 'run_antigravity_dev_task' tool to dispatch the autonomous developer agent. "
+        "When the user asks you to view or read the application source code, call the 'read_source_code' tool. \n"
         "When the user asks you to restart the app, reload, or pull the latest code updates, call the 'restart_and_update_application' tool. "
         "Always run the appropriate tools when requested, and summarize the actions taken "
         "in a friendly natural language response. "
