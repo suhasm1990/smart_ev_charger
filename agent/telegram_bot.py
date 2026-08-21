@@ -42,6 +42,7 @@ def restart_and_update_application() -> str:
     Use this tool whenever the user asks to restart the app, pull latest code, update the application, or reload after merging a PR.
     """
     def _delayed_exit():
+        import time
         time.sleep(2)
         log.info("RESTART | Exiting process to trigger Docker container restart and git pull.")
         os._exit(0)
@@ -723,7 +724,6 @@ def _bot_polling_loop():
         else:
             res = switch_llm_model(target, parts[2] if len(parts) > 2 else None)
         bot.reply_to(message, res, parse_mode="HTML")
-        bot.reply_to(message, help_text, parse_mode="HTML")
 
     @bot.message_handler(commands=['restart', 'update'])
     def restart_cmd(message):
@@ -732,6 +732,7 @@ def _bot_polling_loop():
             return
         bot.reply_to(message, "🔄 <b>Restarting container...</b>\nPulling latest code from GitHub and restarting. Will be back online in ~5-10s!", parse_mode="HTML")
         def _delayed_exit():
+            import time
             time.sleep(2)
             os._exit(0)
         threading.Thread(target=_delayed_exit, daemon=True).start()
