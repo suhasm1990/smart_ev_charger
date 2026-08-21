@@ -49,14 +49,29 @@ def restart_and_update_application() -> str:
     threading.Thread(target=_delayed_exit, daemon=True).start()
     return "🔄 Restarting container now. It will automatically pull the latest code from GitHub and come back online in ~5-10 seconds."
 
-def switch_llm_model(provider: str, model_name: str = None) -> str:
-    """Dynamically switches the active AI model and provider (e.g. Gemini, NVIDIA, OpenAI, Anthropic).
+def get_active_ai_model() -> str:
+    """Gets the currently active AI provider and model name (e.g. Gemini 2.5 Flash, NVIDIA Nemotron)."""
+    p = getattr(config, "LLM_PROVIDER", "gemini")
+    m = getattr(config, "LLM_MODEL", "gemini-2.5-flash")
+    return json.dumps({
+        "provider": p,
+        "model": m,
+        "summary": f"Currently configured with {p.upper()} ({m})"
+    })
+
+def switch_llm_model(provider: str = "", model_name: str = None) -> str:
+    """Dynamically switches the active AI model and provider (e.g. Gemini, NVIDIA, OpenAI, Anthropic) or queries the active model.
     
     Args:
-        provider: The provider name ('gemini', 'nvidia', 'openai', 'anthropic').
+        provider: The provider name ('gemini', 'nvidia', 'openai', 'anthropic', 'status').
         model_name: Optional specific model name (e.g. 'gemini-2.5-flash', 'gemini-2.5-pro', 'nvidia/nemotron-3.5-lightning-30b-a3b', 'gpt-4o', 'claude-3-7-sonnet').
     """
     provider = (provider or "").lower().strip()
+    if not provider or provider in ("status", "current", "what", "check", "get", "info"):
+        current_p = getattr(config, "LLM_PROVIDER", "gemini")
+        current_m = getattr(config, "LLM_MODEL", "gemini-2.5-flash")
+        return f"Currently using <b>{current_p.upper()}</b> with model <code>{current_m}</code>."
+
     provider_defaults = {
         "gemini": "gemini-2.5-flash",
         "nvidia": "nvidia/nemotron-3.5-lightning-30b-a3b",
@@ -604,7 +619,8 @@ def handle_message_with_llm(text: str) -> str:
         trigger_daily_agent,
         run_antigravity_dev_task,
         restart_and_update_application,
-        switch_llm_model
+        switch_llm_model,
+        get_active_ai_model
     ]
 
     system_instruction = (
