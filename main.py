@@ -145,16 +145,16 @@ def run_cycle():
                         )
                         return
 
-                    # 1. Battery Stop Guard (User-specified stop_pct or config.BATTERY_STOP_PCT)
-                    stop_battery_pct = state.manual_guard_stop_battery_pct if state.manual_guard_stop_battery_pct is not None else config.BATTERY_STOP_PCT
-                    if stats["battery_pct"] < stop_battery_pct:
-                        log_decision.info(f"MANUAL GUARD | Battery {stats['battery_pct']}% < {stop_battery_pct}% limit — stopping charger")
-                        _stop_manual_charge(
-                            f"Manual stop guard triggered (Battery {stats['battery_pct']}% < {stop_battery_pct}%)",
-                            f"🔴 <b>Manual Charging Stopped (Guardrail Triggered)</b>\nPowerwall battery dropped to <b>{stats['battery_pct']}%</b> (below your <b>{stop_battery_pct}%</b> stop limit).\nManual charge ended and returned to <b>Auto mode</b>.",
-                            stats, now
-                        )
-                        return
+                    # 1. Battery Stop Guard (ONLY if user explicitly configured a manual stop guardrail)
+                    if state.manual_guard_stop_battery_pct is not None:
+                        if stats["battery_pct"] < state.manual_guard_stop_battery_pct:
+                            log_decision.info(f"MANUAL GUARD | Battery {stats['battery_pct']}% < {state.manual_guard_stop_battery_pct}% limit — stopping charger")
+                            _stop_manual_charge(
+                                f"Manual stop guard triggered (Battery {stats['battery_pct']}% < {state.manual_guard_stop_battery_pct}%)",
+                                f"🔴 <b>Manual Charging Stopped (Guardrail Triggered)</b>\nPowerwall battery dropped to <b>{stats['battery_pct']}%</b> (below your <b>{state.manual_guard_stop_battery_pct}%</b> stop limit).\nManual charge ended and returned to <b>Auto mode</b>.",
+                                stats, now
+                            )
+                            return
 
                     # 2. Time Duration Cutoff Guard
                     if state.manual_guard_stop_time and now >= state.manual_guard_stop_time:

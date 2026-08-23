@@ -121,6 +121,27 @@ def test_cycle_guardrails():
     finally:
         main.datetime = old_datetime
 
+    # 4C: Test Manual Charging with Low Battery (12.7%) when NO guardrail is specified
+    print("\n--- Testing manual charging with low battery (12.7%) when no guardrail is set ---")
+    telegram_bot.start_charging(amperage=32)
+    assert config.MANUAL_MODE_OVERRIDE == "manual"
+    assert state.manual_guard_stop_battery_pct is None
+    
+    main.get_powerwall_stats = lambda: {
+        "battery_pct": 12.7,
+        "solar_kw": 2.45,
+        "solar_surplus_kw": 2.26,
+        "home_kw": 0.19,
+        "grid_kw": 0.0,
+        "grid_export_kw": 0.0,
+        "island_mode": "on_grid",
+        "storm_mode": False
+    }
+    main.run_cycle()
+    assert state.charger_state == state.State.CHARGING
+    assert config.MANUAL_MODE_OVERRIDE == "manual"
+    print("✅ Manual charging with low battery (12.7%) continued charging successfully without false stop!")
+
 def test_ai_schema():
     print("\n--- 5. Testing LLM tool schema conversion ---")
     schema = llm_client.function_to_openai_tool(telegram_bot.start_charging)

@@ -380,9 +380,9 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None, stop_at_h
     
     Args:
         amperage: The current limit in Amps (default is 20A for normal power, set to 32A for full/max power, range 8-32).
-        stop_battery_pct: Optional battery percentage (e.g. 30.0) below which charging will automatically stop to protect home power.
-        stop_at_hour: Optional hour in 24-hour format (0-23, e.g. 16 for 4 PM / 16:00) when charging will automatically stop before peak rates.
-        duration_hours: Optional max duration in hours (e.g. 2.0 or 1.5) to run manual charge before automatically stopping.
+        stop_battery_pct: Optional battery percentage below which charging will automatically stop. Only pass if the user explicitly requested a stop limit.
+        stop_at_hour: Optional hour in 24-hour format (0-23, e.g. 16 for 4 PM / 16:00) when charging will automatically stop. Only pass if explicitly requested.
+        duration_hours: Optional max duration in hours (e.g. 2.0) to run manual charge before automatically stopping. Only pass if explicitly requested.
     """
     try:
         if amperage is not None:
@@ -667,7 +667,7 @@ def handle_message_with_llm(text: str) -> str:
         "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
         "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
         "run the Daily AI Agent on demand to optimize charging strategy for today, "
-        "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; and passing stop_battery_pct, stop_at_hour, or duration_hours if the user specifies any stop limits or guardrails) by calling tools. "
+        "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; only pass stop_battery_pct, stop_at_hour, or duration_hours if the user EXPLICITLY requested them in their prompt) by calling tools. "
         "When the user asks you to switch or change the AI model or provider (e.g. switch to nvidia, gemini, nemotron, claude, etc.) or check the model, call the 'switch_llm_model' tool. "
         "When the user asks you to investigate an issue, fix a bug in the code, open a Pull Request, or update an existing GitHub PR with changes, call the 'run_antigravity_dev_task' tool to dispatch the autonomous developer agent. "
         "When the user asks you to view or read the application source code, call the 'read_source_code' tool. \n"
