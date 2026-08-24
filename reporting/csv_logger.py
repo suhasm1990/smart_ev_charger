@@ -236,8 +236,10 @@ def get_daily_charging_cost(period: str = "today") -> dict:
     if not rows:
         return {"error": "No log data found yet."}
 
+    total_ev_kwh = 0.0
     total_grid_kwh = 0.0
     total_solar_kwh = 0.0
+    total_battery_kwh = 0.0
     total_grid_cost = 0.0
     total_charging_mins = 0
     charging_intervals_count = 0
@@ -264,25 +266,29 @@ def get_daily_charging_cost(period: str = "today") -> dict:
                     rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
                 
                 interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-                ev_power_kw = 4.8
+                ev_power_kw = (config.DEFAULT_CHARGER_AMPERAGE * 240.0) / 1000.0  # 4.8 kW at 20A, 7.68 kW at 32A
+                interval_ev_kwh = ev_power_kw * interval_h
                 
                 ev_grid_kw = min(grid_kw, ev_power_kw)
                 grid_kwh = ev_grid_kw * interval_h
                 solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - ev_power_kw))
                 solar_kwh = min(max(0.0, solar_surplus_kw), ev_power_kw) * interval_h
+                battery_kwh = max(0.0, interval_ev_kwh - grid_kwh - solar_kwh)
 
+                total_ev_kwh += interval_ev_kwh
                 total_grid_kwh += grid_kwh
                 total_solar_kwh += solar_kwh
+                total_battery_kwh += battery_kwh
                 total_grid_cost += grid_kwh * rate
                 total_charging_mins += config.CHECK_INTERVAL_MINUTES
 
-        total_kwh = total_grid_kwh + total_solar_kwh
-        grid_pct = (total_grid_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
-        solar_pct = (total_solar_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
+        total_self_powered_kwh = total_solar_kwh + total_battery_kwh
+        grid_pct = (total_grid_kwh / total_ev_kwh * 100.0) if total_ev_kwh > 0 else 0.0
+        self_powered_pct = (total_self_powered_kwh / total_ev_kwh * 100.0) if total_ev_kwh > 0 else 100.0
         current_rate = get_tou_rate(now)
 
         # Calculate driving range added using configured EV efficiency (miles / kWh)
-        estimated_miles = round(total_kwh * config.EV_MILES_PER_KWH, 1)
+        estimated_miles = round(total_ev_kwh * config.EV_MILES_PER_KWH, 1)
 
         return {
             "period": period_label,
@@ -290,13 +296,15 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             "charging_intervals_count": charging_intervals_count,
             "ev_grid_kwh_pulled": round(total_grid_kwh, 2),
             "solar_kwh_used": round(total_solar_kwh, 2),
-            "total_kwh_added": round(total_kwh, 2),
+            "powerwall_battery_kwh_used": round(total_battery_kwh, 2),
+            "total_self_powered_kwh": round(total_self_powered_kwh, 2),
+            "total_kwh_added": round(total_ev_kwh, 2),
             "estimated_miles_added": estimated_miles,
             "ev_grid_cost_dollars": round(total_grid_cost, 2),
             "grid_percentage": round(grid_pct, 1),
-            "solar_percentage": round(solar_pct, 1),
-            "estimated_solar_savings_dollars": round(total_solar_kwh * current_rate, 2),
-            "calculation_note": "EV grid draw is isolated from home appliances (AC/washing machine) by capping grid draw at charger max power rate."
+            "solar_percentage": round(self_powered_pct, 1),
+            "estimated_solar_savings_dollars": round(total_self_powered_kwh * current_rate, 2),
+            "calculation_note": "Includes direct solar, Tesla Powerwall battery reserves, and grid energy delivered to vehicle."
         }
     except Exception as e:
         log_csv.error(f"Error calculating charging cost summary: {e}")
@@ -320,6 +328,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
     solar_export_credit = 0.0
     ev_grid_kwh = 0.0
     ev_solar_kwh = 0.0
+    ev_total_kwh = 0.0
     ev_grid_cost = 0.0
 
     try:
@@ -347,7 +356,10 @@ def get_home_energy_summary(period: str = "today") -> dict:
                     rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
 
                 if _is_ev_charging_row(row):
-                    ev_power_kw = 4.8
+                    ev_power_kw = (config.DEFAULT_CHARGER_AMPERAGE * 240.0) / 1000.0
+                    interval_ev_kwh = ev_power_kw * interval_h
+                    ev_total_kwh += interval_ev_kwh
+
                     if grid_kw > 0:
                         ev_grid_kw_interval = min(grid_kw, ev_power_kw)
                         ev_kwh = ev_grid_kw_interval * interval_h
@@ -371,11 +383,10 @@ def get_home_energy_summary(period: str = "today") -> dict:
         non_ev_home_cost = max(0.0, delivered_grid_cost - ev_grid_cost)
         self_powered_pct = round(max(0.0, min(100.0, (1 - total_grid_import_kwh / max(total_home_kwh, 0.01)) * 100.0)), 1) if total_home_kwh > 0 else 100.0
 
-        ev_total_kwh = ev_grid_kwh + ev_solar_kwh
         if ev_total_kwh > 0 and ev_grid_cost == 0.0:
             ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (100% solar/battery self-powered, $0.00 grid cost)"
         elif ev_total_kwh > 0:
-            ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (${round(ev_grid_cost, 2):.2f} grid cost, {round(ev_solar_kwh, 1)} kWh solar)"
+            ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (${round(ev_grid_cost, 2):.2f} grid cost, {round(ev_solar_kwh, 1)} kWh direct solar)"
         else:
             ev_summary_msg = "No EV charging recorded in this period"
 
