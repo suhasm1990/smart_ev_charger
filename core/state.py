@@ -24,12 +24,14 @@ last_api_failure_alert_time = None
 manual_guard_stop_battery_pct = None  # e.g. 30.0
 manual_guard_stop_at_hour = None      # e.g. 16
 manual_guard_stop_time = None         # datetime when charge must stop
+active_amperage = 20                  # Active charging amperage (e.g. 20A or 32A)
 
 def clear_manual_guards():
-    global manual_guard_stop_battery_pct, manual_guard_stop_at_hour, manual_guard_stop_time
+    global manual_guard_stop_battery_pct, manual_guard_stop_at_hour, manual_guard_stop_time, active_amperage
     manual_guard_stop_battery_pct = None
     manual_guard_stop_at_hour = None
     manual_guard_stop_time = None
+    active_amperage = 20
 
 def get_session_minutes() -> float:
     if charge_session_start is None:

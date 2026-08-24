@@ -434,6 +434,7 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None, stop_at_h
         # Sync in-memory state
         state.charger_state = state.State.CHARGING
         state.charge_session_start = datetime.now(config.TZ)
+        state.active_amperage = amperage
         state.session_count_today += 1
         state.session_stop_reason = None
         
@@ -504,6 +505,7 @@ def set_charger_amperage(amperage: int) -> str:
         return "Error: Amperage limit must be between 8 and 32 Amps."
     try:
         set_charger_amperage_limit(amperage)
+        state.active_amperage = amperage
         return f"Success: Charger amperage limit set to {amperage}A."
     except Exception as e:
         return f"Error setting amperage: {e}"

@@ -151,6 +151,9 @@ def get_recent_sessions(limit: int = 5) -> list[dict]:
             else:
                 if current_session is not None:
                     # Session just ended
+                    dur = float(row.get("session_active_minutes", 0) or 0)
+                    if dur > current_session["max_duration_minutes"]:
+                        current_session["max_duration_minutes"] = dur
                     if action_str == "stop" or row.get("session_stop_reason") or row.get("reason"):
                         current_session["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current_session["stop_reason"]
                     sessions.append(current_session)
@@ -236,13 +239,15 @@ def get_daily_charging_cost(period: str = "today") -> dict:
     if not rows:
         return {"error": "No log data found yet."}
 
-    total_ev_kwh = 0.0
-    total_grid_kwh = 0.0
-    total_solar_kwh = 0.0
-    total_battery_kwh = 0.0
-    total_grid_cost = 0.0
-    total_charging_mins = 0
+    sessions = []
+    curr_session = None
+    grid_energy_by_interval = 0.0
+    grid_cost_by_interval = 0.0
+    solar_energy_by_interval = 0.0
     charging_intervals_count = 0
+    
+    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+    ev_power_kw = (config.DEFAULT_CHARGER_AMPERAGE * 240.0) / 1000.0  # 4.8 kW at 20A, 7.68 kW at 32A
 
     try:
         for row in rows:
@@ -252,39 +257,69 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             except Exception:
                 continue
 
-            if start_date <= row_date <= end_date and _is_ev_charging_row(row):
+            if not (start_date <= row_date <= end_date):
+                continue
+
+            state_str = str(row.get("charger_state", "")).upper()
+            action_str = str(row.get("action", "")).lower()
+            is_chg = ("CHARGING" in state_str) or (action_str == "start")
+            dur = float(row.get("session_active_minutes", 0) or 0)
+            grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
+            solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+            home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+            
+            ts_str = row.get("timestamp")
+            try:
+                rate = get_tou_rate(datetime.fromisoformat(ts_str))
+            except Exception:
+                rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
+
+            if is_chg:
                 charging_intervals_count += 1
-                grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
-                solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+                reason_combined = (str(row.get("reason", "")) + " " + str(row.get("session_stop_reason", ""))).lower()
+                row_amp = 32 if ("32a" in reason_combined or "32 a" in reason_combined) else getattr(state, "active_amperage", config.DEFAULT_CHARGER_AMPERAGE)
+                row_power_kw = (row_amp * 240.0) / 1000.0
                 
-                ts_str = row.get("timestamp")
-                try:
-                    dt = datetime.fromisoformat(ts_str)
-                    rate = get_tou_rate(dt)
-                except Exception:
-                    rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
-                
-                interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-                ev_power_kw = (config.DEFAULT_CHARGER_AMPERAGE * 240.0) / 1000.0  # 4.8 kW at 20A, 7.68 kW at 32A
-                interval_ev_kwh = ev_power_kw * interval_h
-                
-                ev_grid_kw = min(grid_kw, ev_power_kw)
-                grid_kwh = ev_grid_kw * interval_h
-                solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - ev_power_kw))
-                solar_kwh = min(max(0.0, solar_surplus_kw), ev_power_kw) * interval_h
-                battery_kwh = max(0.0, interval_ev_kwh - grid_kwh - solar_kwh)
+                if curr_session is None:
+                    curr_session = {"max_dur": dur, "amperage": row_amp, "power_kw": row_power_kw}
+                else:
+                    if dur > curr_session["max_dur"]:
+                        curr_session["max_dur"] = dur
+                    if row_amp > curr_session.get("amperage", 20):
+                        curr_session["amperage"] = row_amp
+                        curr_session["power_kw"] = row_power_kw
+                    
+                ev_grid_kw = min(grid_kw, row_power_kw)
+                grid_energy_by_interval += ev_grid_kw * interval_h
+                grid_cost_by_interval += ev_grid_kw * interval_h * rate
+                solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - row_power_kw))
+                solar_energy_by_interval += min(solar_surplus_kw, row_power_kw) * interval_h
+            else:
+                if curr_session is not None:
+                    if dur > curr_session["max_dur"]:
+                        curr_session["max_dur"] = dur
+                    sessions.append(curr_session)
+                    curr_session = None
 
-                total_ev_kwh += interval_ev_kwh
-                total_grid_kwh += grid_kwh
-                total_solar_kwh += solar_kwh
-                total_battery_kwh += battery_kwh
-                total_grid_cost += grid_kwh * rate
-                total_charging_mins += config.CHECK_INTERVAL_MINUTES
+        if curr_session is not None:
+            sessions.append(curr_session)
 
-        total_self_powered_kwh = total_solar_kwh + total_battery_kwh
-        grid_pct = (total_grid_kwh / total_ev_kwh * 100.0) if total_ev_kwh > 0 else 0.0
-        self_powered_pct = (total_self_powered_kwh / total_ev_kwh * 100.0) if total_ev_kwh > 0 else 100.0
+        # Exact duration and energy calculation across all sessions in the period
+        total_charging_mins = round(sum(s["max_dur"] for s in sessions), 1)
+        if total_charging_mins == 0.0 and charging_intervals_count > 0:
+            total_charging_mins = round(charging_intervals_count * config.CHECK_INTERVAL_MINUTES, 1)
+
+        total_ev_kwh = round(sum((s["max_dur"] / 60.0) * s.get("power_kw", ev_power_kw) for s in sessions), 2)
+        if total_ev_kwh == 0.0 and total_charging_mins > 0:
+            total_ev_kwh = round((total_charging_mins / 60.0) * ev_power_kw, 2)
+        total_grid_kwh = round(min(grid_energy_by_interval, total_ev_kwh), 2)
+        total_self_powered_kwh = round(max(0.0, total_ev_kwh - total_grid_kwh), 2)
+        total_solar_kwh = round(min(solar_energy_by_interval, total_self_powered_kwh), 2)
+        total_battery_kwh = round(max(0.0, total_self_powered_kwh - total_solar_kwh), 2)
+        total_grid_cost = round(grid_cost_by_interval, 2)
+
+        grid_pct = round((total_grid_kwh / total_ev_kwh * 100.0), 1) if total_ev_kwh > 0 else 0.0
+        self_powered_pct = round((total_self_powered_kwh / total_ev_kwh * 100.0), 1) if total_ev_kwh > 0 else 100.0
         current_rate = get_tou_rate(now)
 
         # Calculate driving range added using configured EV efficiency (miles / kWh)
@@ -293,16 +328,17 @@ def get_daily_charging_cost(period: str = "today") -> dict:
         return {
             "period": period_label,
             "total_charging_hours": round(total_charging_mins / 60.0, 1),
+            "total_charging_minutes": total_charging_mins,
             "charging_intervals_count": charging_intervals_count,
-            "ev_grid_kwh_pulled": round(total_grid_kwh, 2),
-            "solar_kwh_used": round(total_solar_kwh, 2),
-            "powerwall_battery_kwh_used": round(total_battery_kwh, 2),
-            "total_self_powered_kwh": round(total_self_powered_kwh, 2),
-            "total_kwh_added": round(total_ev_kwh, 2),
+            "ev_grid_kwh_pulled": total_grid_kwh,
+            "solar_kwh_used": total_solar_kwh,
+            "powerwall_battery_kwh_used": total_battery_kwh,
+            "total_self_powered_kwh": total_self_powered_kwh,
+            "total_kwh_added": total_ev_kwh,
             "estimated_miles_added": estimated_miles,
-            "ev_grid_cost_dollars": round(total_grid_cost, 2),
-            "grid_percentage": round(grid_pct, 1),
-            "solar_percentage": round(self_powered_pct, 1),
+            "ev_grid_cost_dollars": total_grid_cost,
+            "grid_percentage": grid_pct,
+            "solar_percentage": self_powered_pct,
             "estimated_solar_savings_dollars": round(total_self_powered_kwh * current_rate, 2),
             "calculation_note": "Includes direct solar, Tesla Powerwall battery reserves, and grid energy delivered to vehicle."
         }
@@ -468,6 +504,44 @@ def get_energy_saving_advice() -> dict:
                     ev_grid_kw_val = min(grid_kw, 4.8)
                     ev_grid_draw_cost += ev_grid_kw_val * interval_h * rate
 
+        # Calculate historical evening peak household load & evening solar (16:00 - 22:00 / 4 PM - 10 PM)
+        evening_appliance_by_day = {}
+        evening_solar_by_day = {}
+        evening_net_deficit_by_day = {}
+        for row in rows:
+            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
+            try:
+                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if row_date >= seven_days_ago:
+                try:
+                    hour = int(row.get("time", "12:00").split(":")[0])
+                except Exception:
+                    continue
+                if 16 <= hour < 22:
+                    home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
+                    solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
+                    state_str = str(row.get("charger_state", "")).upper()
+                    action_str = str(row.get("action", "")).lower()
+                    if ("CHARGING" in state_str) or (action_str == "start"):
+                        home_appliance_kw = max(0.0, home_kw - 4.8)
+                    else:
+                        home_appliance_kw = home_kw
+                    
+                    net_deficit_kw = max(0.0, home_appliance_kw - solar_kw)
+                    evening_appliance_by_day[row_date] = evening_appliance_by_day.get(row_date, 0.0) + (home_appliance_kw * interval_h)
+                    evening_solar_by_day[row_date] = evening_solar_by_day.get(row_date, 0.0) + (solar_kw * interval_h)
+                    evening_net_deficit_by_day[row_date] = evening_net_deficit_by_day.get(row_date, 0.0) + (net_deficit_kw * interval_h)
+
+        avg_evening_appliance_kwh = sum(evening_appliance_by_day.values()) / max(len(evening_appliance_by_day), 1) if evening_appliance_by_day else 5.0
+        avg_evening_solar_kwh = sum(evening_solar_by_day.values()) / max(len(evening_solar_by_day), 1) if evening_solar_by_day else 2.0
+        avg_evening_net_deficit_kwh = sum(evening_net_deficit_by_day.values()) / max(len(evening_net_deficit_by_day), 1) if evening_net_deficit_by_day else 3.5
+        
+        # Tesla Powerwall usable capacity is ~13.5 kWh. Add 10% safety buffer over net deficit.
+        recommended_battery_reserve = min(60.0, max(25.0, (avg_evening_net_deficit_kwh / 13.5) * 100.0 + 10.0))
+        rec_reserve_pct = round(recommended_battery_reserve, 1)
+
         avg_surplus = {h: (sum(vals)/len(vals) if vals else 0.0) for h, vals in hourly_solar_surplus.items()}
         best_hours = [h for h, avg in avg_surplus.items() if avg >= 1.0]
 
@@ -477,14 +551,19 @@ def get_energy_saving_advice() -> dict:
         rec2 = "Avoid running heavy appliances between 5:00 PM and 8:00 PM (On-Peak hours when MID grid rates are $0.35/kWh)."
         rec3 = "Consuming your solar power directly saves 4.5x more money than exporting it back to MID ($0.35/kWh avoided vs $0.076/kWh solar export credit)."
         rec4 = "Charge EV during daytime solar surplus hours (10:00 AM - 3:00 PM) to avoid pulling grid power at night."
+        rec5 = f"Evening appliance load averages {round(avg_evening_appliance_kwh, 1)} kWh (offset by {round(avg_evening_solar_kwh, 1)} kWh late solar). Maintain at least {rec_reserve_pct}% Powerwall reserve at 4:00 PM for net {round(avg_evening_net_deficit_kwh, 1)} kWh battery deficit."
 
         return {
             "optimal_solar_appliance_window": solar_window_str,
             "cheapest_ev_charging_window": f"{solar_window_str} (Off-Peak solar surplus)",
             "hours_to_avoid_heavy_loads": "5:00 PM - 8:00 PM (On-Peak $0.35/kWh rate)",
+            "avg_evening_appliance_load_kwh": round(avg_evening_appliance_kwh, 2),
+            "avg_evening_solar_generation_kwh": round(avg_evening_solar_kwh, 2),
+            "avg_evening_net_battery_deficit_kwh": round(avg_evening_net_deficit_kwh, 2),
+            "recommended_evening_battery_reserve_pct": rec_reserve_pct,
             "on_peak_grid_cost_last_7_days": round(on_peak_grid_cost, 2),
             "ev_grid_charging_cost_last_7_days": round(ev_grid_draw_cost, 2),
-            "actionable_recommendations": [rec1, rec2, rec3, rec4]
+            "actionable_recommendations": [rec1, rec2, rec3, rec4, rec5]
         }
     except Exception as e:
         log_csv.error(f"Error calculating energy saving advice: {e}")

@@ -29,30 +29,39 @@ def run_daily_agent():
     yest_ev_kwh = yest.get("ev_charging_total_kwh", 0.0) if isinstance(yest, dict) else 0.0
     yest_ev_miles = yest.get("ev_estimated_miles_added", 0.0) if isinstance(yest, dict) else 0.0
 
-    prompt = f"""You are the AI Planner for a Smart EV Charger.
-Goal: Maximize solar self-consumption, ensure home battery does not drop below 20% by end of day, and minimize grid draw.
+    evening_load_kwh = advice.get("avg_evening_appliance_load_kwh", 5.0)
+    evening_solar_kwh = advice.get("avg_evening_solar_generation_kwh", 2.0)
+    evening_net_deficit_kwh = advice.get("avg_evening_net_battery_deficit_kwh", 3.5)
+    target_evening_reserve_pct = advice.get("recommended_evening_battery_reserve_pct", 38.5)
 
-Home Energy Profile:
-• Optimal Solar Window: {advice.get('optimal_solar_appliance_window', '10:00 - 15:00')}
+    prompt = f"""You are the AI Planner for a Smart EV Charger.
+Goal: Minimize electricity costs. Maximize solar self-consumption, protect the home battery reserve so heavy evening household loads (AC, induction stove, dishwasher from 16:00 to 22:00) run 100% on battery without pulling on-peak grid power ($0.35/kWh), and utilize cheap off-peak hours ($0.17/kWh) when necessary.
+
+Home Energy & Load Profile:
+• Optimal Daytime Solar Window: {advice.get('optimal_solar_appliance_window', '10:00 - 15:00')}
 • Recommended EV Charge Window: {advice.get('cheapest_ev_charging_window', '10:00 - 15:00')}
-• Peak Avoid Hours: {advice.get('hours_to_avoid_heavy_loads', '17:00 - 20:00')}
-• Yesterday Solar Generated: {yest_solar} kWh
-• Yesterday Grid Imported: {yest_grid} kWh
-• Yesterday Self-Powered: {yest_self_powered}%
+• On-Peak Avoid Hours: {advice.get('hours_to_avoid_heavy_loads', '17:00 - 20:00')}
+• Avg Evening Household Load (16:00-22:00 AC/Cooking/Dishwasher): {evening_load_kwh} kWh
+• Expected Late-Afternoon/Evening Solar: {evening_solar_kwh} kWh
+• Net Evening Battery Deficit to Cover: {evening_net_deficit_kwh} kWh
+• Required Minimum Battery Reserve at 16:00: {target_evening_reserve_pct}%
+• Yesterday Solar Generated: {yest_solar} kWh | Grid Imported: {yest_grid} kWh (Self-Powered: {yest_self_powered}%)
 • Yesterday EV Charged: {yest_ev_kwh} kWh ({yest_ev_miles} miles added)
 
 {f"USER INSTRUCTION OVERRIDE: {user_instruction}" if user_instruction else "No special user instructions today."}
 
-If there is a USER INSTRUCTION OVERRIDE, prioritize fulfilling it (e.g. widening charge window or adjusting battery thresholds) over solar savings.
+Strategy Guidelines:
+1. Ensure 'battery_stop_pct' is set high enough (e.g. {target_evening_reserve_pct}%) so EV charging stops with sufficient battery remaining for evening AC, cooking, and appliances.
+2. If EV needs charging beyond daytime solar, it is safe to charge during cheap Off-Peak hours (night/morning at $0.17/kWh) rather than depleting the battery before evening peak.
 
-Recommend the optimal configuration for today.
+Recommend today's optimal configuration.
 Respond ONLY with a valid JSON object matching this schema:
 {{
-  "battery_start_pct": <float 40.0-60.0>,
-  "battery_stop_pct": <float 20.0-35.0>,
+  "battery_start_pct": <float 40.0-65.0>,
+  "battery_stop_pct": <float 20.0-55.0>,
   "charge_window_start_hour": <int 0-24>,
   "charge_window_end_hour": <int 0-24>,
-  "daily_suggestion": "<concise 1-2 sentence advice for heavy appliance scheduling>",
+  "daily_suggestion": "<concise 1-2 sentence advice for heavy appliance scheduling and peak cost avoidance>",
   "reasoning": "<brief explanation of chosen settings>"
 }}"""
 
