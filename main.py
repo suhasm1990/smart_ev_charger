@@ -9,7 +9,7 @@ from datetime import datetime
 
 from core import config, state, check_manual_mode, evaluate, get_tou_period, get_tou_rate, is_in_night_blackout, is_weekend
 from reporting import log, log_mode, log_netzero, log_chargepoint, log_decision, log_to_csv, get_session_minutes, notify
-from services import get_powerwall_stats, start_charger, stop_charger, get_charger_status, ChargePointStartError
+from services import get_powerwall_stats, start_charger, stop_charger, get_charger_status, set_charger_amperage_limit, ChargePointStartError
 from agent import check_alerts, check_recent_log_errors, run_daily_agent, start_telegram_bot
 from agent.telegram_bot import send_monthly_telegram_report
 
@@ -26,6 +26,10 @@ _cycle_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_na
 
 def _stop_manual_charge(reason: str, notify_msg: str, stats: dict, now: datetime):
     stop_charger()
+    try:
+        set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
+    except Exception as err:
+        log_chargepoint.warning(f"Could not reset amperage to default {config.DEFAULT_CHARGER_AMPERAGE}A: {err}")
     state.charger_state = state.State.IDLE
     state.charge_session_start = None
     state.session_stop_reason = reason

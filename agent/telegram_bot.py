@@ -369,6 +369,10 @@ def set_override_mode(mode: str) -> str:
     config.save_dynamic_config()
     if mode.lower() == "auto":
         state.clear_manual_guards()
+        try:
+            set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
+        except Exception:
+            pass
     
     if RUN_CYCLE_CALLBACK:
         threading.Thread(target=RUN_CYCLE_CALLBACK, daemon=True).start()
@@ -458,6 +462,10 @@ def stop_charging() -> str:
     try:
         # Stop physically
         stop_charger()
+        try:
+            set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
+        except Exception:
+            pass
         
         # Sync in-memory state and clear guards
         state.charger_state = state.State.IDLE
