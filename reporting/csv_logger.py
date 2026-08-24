@@ -281,6 +281,9 @@ def get_daily_charging_cost(period: str = "today") -> dict:
         solar_pct = (total_solar_kwh / total_kwh * 100.0) if total_kwh > 0 else 0.0
         current_rate = get_tou_rate(now)
 
+        # Calculate driving range added using configured EV efficiency (miles / kWh)
+        estimated_miles = round(total_kwh * config.EV_MILES_PER_KWH, 1)
+
         return {
             "period": period_label,
             "total_charging_hours": round(total_charging_mins / 60.0, 1),
@@ -288,6 +291,7 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             "ev_grid_kwh_pulled": round(total_grid_kwh, 2),
             "solar_kwh_used": round(total_solar_kwh, 2),
             "total_kwh_added": round(total_kwh, 2),
+            "estimated_miles_added": estimated_miles,
             "ev_grid_cost_dollars": round(total_grid_cost, 2),
             "grid_percentage": round(grid_pct, 1),
             "solar_percentage": round(solar_pct, 1),
@@ -391,6 +395,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
             "estimated_total_mid_utility_bill_dollars": round(estimated_bill_total, 2),
             "ev_charging_share_of_bill_dollars": round(ev_grid_cost, 2),
             "ev_charging_total_kwh": round(ev_total_kwh, 2),
+            "ev_estimated_miles_added": round(ev_total_kwh * config.EV_MILES_PER_KWH, 1),
             "ev_solar_kwh_used": round(ev_solar_kwh, 2),
             "ev_grid_kwh_used": round(ev_grid_kwh, 2),
             "ev_charging_summary": ev_summary_msg,

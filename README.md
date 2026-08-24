@@ -1,12 +1,25 @@
 # Smart EV Charger Automation ⚡☀️
 
-An intelligent Python daemon that automatically charges your EV using free solar power and Powerwall reserves, avoiding peak utility rates.
+An intelligent, model-agnostic Python daemon that automatically charges your Electric Vehicle using free solar power and Tesla Powerwall battery reserves, avoiding expensive peak utility rates.
 
 ---
 
-## Installation
+## 🌟 Key Features
 
-**Local:**
+- ☀️ **Solar & Powerwall Synchronization**: Continuously monitors Tesla Powerwall battery levels and solar surplus via NetZero API. Automatically starts charging when house battery is healthy (e.g. `> 40%`) and stops when reserves drop (e.g. `< 25%`).
+- ⚡ **ChargePoint Flex Control**: Controls ChargePoint Home Flex amperage (8A–32A) and tracks delivered energy (`kWh`), charging power (`kW`), and driving range added (`miles`).
+- 🛡️ **Guarded Manual / Boost Mode**: Force charge at 32A (full power) with smart auto-stop guardrails (e.g. *"Charge at 32A until 16:00 or stop if battery drops below 20%"*). Automatically restores default 20A amperage when returning to Auto mode.
+- 🧠 **Model-Agnostic AI Assistant**: Conversational Telegram interface powered by your choice of AI model (**Gemini**, **NVIDIA Nemotron**, **OpenAI**, or **Claude**).
+- 📊 **Monthly PNG Bill Infographic**: Automatically generates and sends high-resolution energy & utility bill cards on the 1st of every month (or on-demand).
+- 🚗 **Miles & Range Tracking**: Calculates driving range added per session, day, week, or month using configurable vehicle efficiency (`EV_MILES_PER_KWH`).
+- 🛠️ **Autonomous Dev Agent & Instant Updates**: Instruct the bot to investigate logs, inspect source code, or open GitHub Pull Requests. Deploy updates instantly with `/update`.
+- 💰 **EV vs. Home Load Isolation**: Intelligently separates EV charger consumption from heavy household appliances (AC, laundry) for exact utility cost tracking.
+
+---
+
+## 🚀 Quick Setup & Deployment
+
+### Local Setup
 ```bash
 git clone https://github.com/suhasm1990/smart_ev_charger.git
 cd smart_ev_charger
@@ -16,71 +29,81 @@ cp .env.example .env
 python main.py
 ```
 
-**Docker:**
+### Docker Deployment
 ```bash
 docker-compose up -d
 ```
 
 ---
 
-## Basic Operation
+## 🤖 Telegram Commands & Natural Language Prompts
 
-The daemon runs as a scheduler, charging your EV when solar production exceeds household demand and Powerwall reserves are sufficient. Key behaviors:
-
-- Charges when battery >40%, stops at <25%
-- Respects custom amperage settings (8A–32A)
-- Enforces safety blackout windows (4 PM – 9 AM weekdays)
-- Isolates EV charger energy from home appliance usage
-
----
-
-## Key Features
-
-- **Solar & Powerwall Sync**: Auto-start charging when battery >40%, stop at <25%
-- **ChargePoint Flex Control**: Adjust amperage (8A–32A), track kWh, kW, and range added
-- **Guarded Manual/Boost Mode**: Force charge at custom amperage with smart guardrails
-- **Monthly PNG Reports**: Infographic on the 1st of each month at 07:00 AM
-- **7:00 AM AI Briefing**: Daily Telegram summary with bill breakdown and scheduling advice
-- **Model-Agnostic AI Assistant**: Natural language control and status queries via Telegram
-- **EV vs. Home Cost Isolation**: Separates EV charger energy from heavy appliances
-- **Safety Night Blackouts**: Customizable weekday blackout window (4 PM – 9 AM) and emergency shutoffs
+| User Prompt / Command | Description |
+| :--- | :--- |
+| `/model` or *"Switch model to nvidia"* | View or switch active AI model (Gemini, NVIDIA Nemotron, GPT-4o, Claude) |
+| `/update` or `/restart` | Restarts container, pulls latest GitHub code, and comes online in ~5s |
+| `/daily_agent` or *"Run daily agent"* | Runs morning AI planner to optimize charging strategy & thresholds |
+| `/monthly_report` or *"Report for July"* | Generates & sends high-resolution PNG utility bill infographic |
+| *"How many miles were added today?"* | Calculates total driving range (miles) and energy (kWh) added |
+| *"Charge with full power"* | Forces 32A charging (reverts to 20A on completion/auto-return) |
+| *"Charge at 32A until 16:00"* | Forces 32A charging with auto-stop cutoff at 4:00 PM |
+| *"What's today's usage and cost?"* | Shows home consumption, solar generated, EV share, and current bill |
+| *"Set battery start to 50% and stop at 30%"* | Dynamically updates Powerwall start/stop thresholds |
+| *"Why did charging stop last time?"* | Queries recent session log history and stop reasons |
+| *"Create a PR to fix XYZ"* | Dispatches autonomous background developer agent to open a GitHub PR |
 
 ---
 
-## Telegram Commands
-
-| Command | Description |
-|---|---|
-| `/daily_agent` / *"Run daily agent"* | Trigger morning optimization briefing |
-| `/monthly_report` / *"Generate report for July"* | Generate PNG bill report for any past month |
-| *"Charge with full power now"* | Start 32A charging with guardrails |
-| *"Charge at 32A until 16:00"* | Force 32A with auto-stop at 4 PM |
-| *"What's today's usage?"* | Compute home consumption, solar, EV share, and current bill |
-| *"Set battery start to 50% and stop at 30%"* | Update Powerwall thresholds dynamically |
-
----
-
-## Repository Structure
+## 📁 Repository Structure
 
 ```
 smart_ev_charger/
-├── Dockerfile          # Production Docker image
-├── docker-compose.yml  # Compose services
-├── requirements.txt    # Dependencies
-├── main.py             # Main entry point (scheduler & daemon)
-├── core/               # Config, state, decision models
-├── services/           # API integrations (ChargePoint, NetZero, Sheets)
-├── agent/              # AI intelligence & Telegram bot
-├── reporting/          # Telemetry, reports, notifications
-├── tests/              # Unit & integration tests
-└── docs/               # Documentation assets
+├── Dockerfile              # Production container build
+├── docker-compose.yml      # Compose service configuration
+├── entrypoint.sh           # Auto-pulls latest Git updates on boot
+├── requirements.txt        # Python dependencies
+├── main.py                 # Core scheduler daemon & decision cycle
+│
+├── core/                   # Configuration & state machines
+│   ├── config.py           # Environment schema & dynamic settings
+│   ├── state.py            # Runtime state & guardrails
+│   ├── decision.py         # Solar/battery evaluation rules
+│   ├── manual_override.py  # Manual mode manager & auto-reset
+│   └── tou.py              # Time-Of-Use rate schedule calculations
+│
+├── services/               # Hardware & Cloud IoT APIs
+│   ├── chargepoint.py      # ChargePoint Flex API wrapper
+│   ├── netzero.py          # Tesla Powerwall NetZero API client
+│   └── sheets_db.py        # Google Sheets cloud database sync
+│
+├── agent/                  # AI Intelligence & Telegram Interface
+│   ├── telegram_bot.py     # Telegram Bot & function calling tools
+│   ├── llm_client.py       # Multi-model LLM client with retry & thinking
+│   ├── dev_agent.py        # Autonomous GitHub PR developer loop
+│   ├── daily_agent.py      # 7:00 AM morning energy briefing
+│   └── alerts.py           # Custom dynamic metric alerts
+│
+├── reporting/              # Telemetry, Reports & Notifications
+│   ├── csv_logger.py       # Telemetry logging & energy analytics engine
+│   ├── report_generator.py # PNG monthly billing card infographic builder
+│   ├── notifications.py    # Telegram & Pushover notifier
+│   └── logger.py           # Rotating system logger
+│
+└── tests/                  # Automated unit test suite
 ```
 
 ---
 
-## Troubleshooting
+## ⚙️ Configuration Reference (`.env`)
 
-- Ensure `.env` file is configured with API credentials
-- Verify Telegram bot token and AI model key are set
-- Check that charging guardrails respect safety blackout windows and Powerwall state
-- Reports exclude fixed daily connection fees for accurate cost tracking
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `NETZERO_SITE_ID` / `NETZERO_API_TOKEN` | Tesla Powerwall NetZero API credentials | Required |
+| `CHARGEPOINT_USERNAME` / `CHARGEPOINT_COULOMB_TOKEN` | ChargePoint account credentials | Required |
+| `CHARGEPOINT_DEVICE_ID` | ChargePoint Home Flex charger device ID | Required |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_USER_ID` | Telegram bot token and authorized chat ID | Required |
+| `LLM_PROVIDER` / `LLM_MODEL` | Active AI provider (`gemini`, `nvidia`, `openai`, `anthropic`) | `gemini` / `gemini-2.5-flash` |
+| `EV_MILES_PER_KWH` | Vehicle efficiency in miles per kWh | `3.53` |
+| `UTILITY_PROVIDER` | Rate schedule plan (`MID`, `PGE`, or `CUSTOM`) | `MID` |
+| `BATTERY_START_PCT` / `BATTERY_STOP_PCT` | Solar charging battery start/stop thresholds | `40` / `25` |
+| `NIGHT_BLACKOUT_START_HOUR` / `END_HOUR` | Weekday peak rate blackout window | `16` / `9` |

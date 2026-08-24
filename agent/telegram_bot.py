@@ -200,10 +200,13 @@ def get_system_status() -> str:
         "session_duration_minutes": round(get_session_minutes(), 1),
         "previous_session_stop_reason": getattr(state, "session_stop_reason", "N/A"),
         "battery_pct": pw.get("battery_pct"),
+        "battery_kw": pw.get("battery_kw", 0.0),
         "solar_kw": pw.get("solar_kw"),
         "home_kw": pw.get("home_kw"),
         "surplus_kw": pw.get("solar_surplus_kw"),
         "grid_kw": pw.get("grid_kw"),
+        "grid_export_kw": pw.get("grid_export_kw", 0.0),
+        "self_powered_pct": pw.get("self_powered_pct", 100.0),
         "island_mode": pw.get("island_mode"),
         "storm_mode": pw.get("storm_mode"),
         "charging_status": cp.get("charging_status", "UNKNOWN"),
@@ -505,6 +508,25 @@ def set_charger_amperage(amperage: int) -> str:
     except Exception as e:
         return f"Error setting amperage: {e}"
 
+def manage_custom_alert(action: str = "list", field: str = "battery_pct", operator: str = "gte", value: float = 80.0, message: str = "", alert_id: str = "") -> str:
+    """Manages custom dynamic notification alerts (add new alert, list active alerts, or remove existing alert).
+    
+    Args:
+        action: One of 'add' (create alert), 'list' (view all active alerts), or 'remove' (delete an alert).
+        field: Metric to monitor when adding ('battery_pct', 'solar_kw', 'home_kw', 'grid_kw', 'charging_status', 'is_plugged_in', 'log_errors').
+        operator: Comparison operator when adding ('gte', 'gt', 'lte', 'lt', 'eq', 'contains').
+        value: Numeric threshold value for comparison when adding (e.g. 80.0).
+        message: Custom alert message to send when condition triggers.
+        alert_id: 8-character ID of alert to remove (when action is 'remove').
+    """
+    act = (action or "list").lower().strip()
+    if act in ("add", "create", "set"):
+        return add_alert(field=field, operator=operator, value=value, message=message, once=True)
+    elif act in ("remove", "delete", "clear"):
+        return remove_alert(alert_id)
+    else:
+        return list_alerts()
+
 def set_custom_alert(field: str, operator: str, value: float, message: str, once: bool = True) -> str:
     """Sets a dynamic notification alert when a metric condition is met."""
     return add_alert(field, operator, value, message, once)
@@ -518,8 +540,8 @@ def list_custom_alerts() -> str:
     return list_alerts()
 
 def get_daily_charging_cost(date_or_period: str = "today") -> str:
-    """Calculates total energy drawn from grid (kWh), solar energy used (kWh), and total cost ($) for EV charging for a period or date.
-    Use this tool whenever the user asks how much it cost to charge the car today, yesterday, this week, this month, or on a specific date, or how many grid units were pulled.
+    """Calculates total energy drawn from grid (kWh), solar energy used (kWh), total energy added (kWh), estimated miles added (driving range), and total cost ($) for EV charging for a period or date.
+    Use this tool whenever the user asks how many miles were added, how much range was added today, yesterday, this week, this month, or on a specific date, how much it cost to charge the car, or how many grid units were pulled.
     
     Args:
         date_or_period: Time period or date, e.g. 'today', 'yesterday', 'this_week', 'this_month', or 'YYYY-MM-DD' (defaults to 'today').
@@ -648,35 +670,33 @@ def handle_message_with_llm(text: str) -> str:
         get_energy_saving_advice,
         generate_monthly_report,
         get_tou_schedule,
-        get_tesla_powerwall_status,
         read_application_logs,
+        read_source_code,
         set_battery_thresholds,
         set_blackout_hours,
         set_override_mode,
         start_charging,
         stop_charging,
         set_charger_amperage,
-        set_custom_alert,
-        clear_custom_alert,
-        list_custom_alerts,
-        add_agent_instruction,
-        trigger_daily_agent,
-        run_antigravity_dev_task,
-        restart_and_update_application,
+        manage_custom_alert,
         switch_llm_model,
-        get_active_ai_model,
-        read_source_code
+        trigger_daily_agent,
+        add_agent_instruction,
+        run_antigravity_dev_task,
+        restart_and_update_application
     ]
 
     system_instruction = (
         "You are an AI assistant for a Smart EV Charger. "
-        "You can query status, check recent charging session history (when charging stopped and why), "
-        "calculate daily/weekly/monthly EV charging cost and total home energy consumption/cost, "
+        "You can query real-time system status (Powerwall battery SoC, solar, house load, grid, charger state), "
+        "check recent charging session history (when charging stopped and why), "
+        "calculate daily/weekly/monthly EV charging cost, energy (kWh), miles added (range), and total home energy consumption/cost, "
         "provide personalized energy-saving advice and appliance scheduling recommendations based on solar logs, "
         "check TOU rate schedules, modify thresholds (battery levels, blackout hours), "
+        "manage custom notification alerts (add, list, remove), "
         "run the Daily AI Agent on demand to optimize charging strategy for today, "
         "or force start/stop charging (setting 32A when user asks for full/max power, or 20A for default; only pass stop_battery_pct, stop_at_hour, or duration_hours if the user EXPLICITLY requested them in their prompt) by calling tools. "
-        "When the user asks you to switch or change the AI model or provider (e.g. switch to nvidia, gemini, nemotron, claude, etc.) or check the model, call the 'switch_llm_model' tool. "
+        "When the user asks you to inspect or check the AI model or switch provider (e.g. switch to nvidia, gemini, nemotron, claude, etc.), call the 'switch_llm_model' tool. "
         "When the user asks you to investigate an issue, fix a bug in the code, open a Pull Request, or update an existing GitHub PR with changes, call the 'run_antigravity_dev_task' tool to dispatch the autonomous developer agent. "
         "When the user asks you to view or read the application source code, call the 'read_source_code' tool. \n"
         "When the user asks you to restart the app, reload, or pull the latest code updates, call the 'restart_and_update_application' tool. "

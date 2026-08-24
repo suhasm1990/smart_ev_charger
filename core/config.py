@@ -77,6 +77,7 @@ ALLOWED_CHARGE_START_HOUR = int(os.getenv("ALLOWED_CHARGE_START_HOUR", "0"))
 ALLOWED_CHARGE_END_HOUR = int(os.getenv("ALLOWED_CHARGE_END_HOUR", "24"))
 DEFAULT_CHARGER_AMPERAGE = int(os.getenv("DEFAULT_CHARGER_AMPERAGE", "20"))
 MAX_CHARGER_AMPERAGE = int(os.getenv("MAX_CHARGER_AMPERAGE", "32"))
+EV_MILES_PER_KWH = float(os.getenv("EV_MILES_PER_KWH", "3.53"))
 
 
 DYNAMIC_CONFIG_SCHEMA = {
@@ -88,6 +89,7 @@ DYNAMIC_CONFIG_SCHEMA = {
     "MANUAL_MODE_OVERRIDE": (str, "default"),
     "ALLOWED_CHARGE_START_HOUR": (int, "0"),
     "ALLOWED_CHARGE_END_HOUR": (int, "24"),
+    "EV_MILES_PER_KWH": (float, "3.53"),
     "LLM_PROVIDER": (str, "gemini"),
     "LLM_MODEL": (str, "gemini-2.5-flash"),
 }

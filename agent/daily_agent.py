@@ -15,41 +15,46 @@ def run_daily_agent():
         log.warning(f"No API key configured for LLM provider '{llm_cfg.get('provider')}'. Daily Agent cannot run.")
         return
 
-    # 1. Fetch concise 7-day energy advice and recent summary
+    # 1. Fetch concise 7-day energy advice and yesterday's summary
     advice = get_energy_saving_advice()
-    recent_summary = get_home_energy_summary("yesterday")
+    yest = get_home_energy_summary("yesterday")
 
     # 2. Check for User Instructions
     settings = get_settings()
     user_instruction = settings.get("USER_INSTRUCTION", "")
 
-    prompt = f"""
-You are the AI Planner for a Smart EV Charger.
-Goal: Maximize solar self-consumption, ensure the home battery does not drop below 20% by the end of the day, and minimize utility grid draw.
+    yest_solar = yest.get("total_solar_generated_kwh", 0.0) if isinstance(yest, dict) else 0.0
+    yest_grid = yest.get("total_grid_imported_kwh", 0.0) if isinstance(yest, dict) else 0.0
+    yest_self_powered = yest.get("home_self_powered_percentage", 100.0) if isinstance(yest, dict) else 100.0
+    yest_ev_kwh = yest.get("ev_charging_total_kwh", 0.0) if isinstance(yest, dict) else 0.0
+    yest_ev_miles = yest.get("ev_estimated_miles_added", 0.0) if isinstance(yest, dict) else 0.0
 
-Home Energy Profile (Last 7 Days):
-• Optimal Solar Surplus Window: {advice.get('optimal_solar_appliance_window', '10:00 - 15:00')}
-• Recommended EV Charging Window: {advice.get('cheapest_ev_charging_window', '10:00 - 15:00')}
-• On-Peak Avoid Hours: {advice.get('hours_to_avoid_heavy_loads', '17:00 - 20:00')}
-• Yesterday Solar Generated: {recent_summary.get('total_solar_generated_kwh', 'N/A')} kWh
-• Yesterday Grid Imported: {recent_summary.get('total_grid_imported_kwh', 'N/A')} kWh
-• Yesterday Self-Powered: {recent_summary.get('home_self_powered_percentage', 'N/A')}%
+    prompt = f"""You are the AI Planner for a Smart EV Charger.
+Goal: Maximize solar self-consumption, ensure home battery does not drop below 20% by end of day, and minimize grid draw.
 
-{"USER INSTRUCTION OVERRIDE: " + user_instruction if user_instruction else "No special user instructions today."}
+Home Energy Profile:
+• Optimal Solar Window: {advice.get('optimal_solar_appliance_window', '10:00 - 15:00')}
+• Recommended EV Charge Window: {advice.get('cheapest_ev_charging_window', '10:00 - 15:00')}
+• Peak Avoid Hours: {advice.get('hours_to_avoid_heavy_loads', '17:00 - 20:00')}
+• Yesterday Solar Generated: {yest_solar} kWh
+• Yesterday Grid Imported: {yest_grid} kWh
+• Yesterday Self-Powered: {yest_self_powered}%
+• Yesterday EV Charged: {yest_ev_kwh} kWh ({yest_ev_miles} miles added)
 
-If there is a USER INSTRUCTION OVERRIDE, prioritize fulfilling it (e.g. widening charge window or dropping battery thresholds) over solar savings.
+{f"USER INSTRUCTION OVERRIDE: {user_instruction}" if user_instruction else "No special user instructions today."}
+
+If there is a USER INSTRUCTION OVERRIDE, prioritize fulfilling it (e.g. widening charge window or adjusting battery thresholds) over solar savings.
 
 Recommend the optimal configuration for today.
-Respond ONLY with a valid JSON object matching this schema exactly:
+Respond ONLY with a valid JSON object matching this schema:
 {{
-  "battery_start_pct": <float between 40 and 60>,
-  "battery_stop_pct": <float between 20 and 35>,
+  "battery_start_pct": <float 40.0-60.0>,
+  "battery_stop_pct": <float 20.0-35.0>,
   "charge_window_start_hour": <int 0-24>,
   "charge_window_end_hour": <int 0-24>,
-  "daily_suggestion": "<concise advice on when to run heavy appliances based on solar peaks>",
+  "daily_suggestion": "<concise 1-2 sentence advice for heavy appliance scheduling>",
   "reasoning": "<brief explanation of chosen settings>"
-}}
-"""
+}}"""
 
     try:
         result = llm_client.generate_json(prompt=prompt)
@@ -69,13 +74,7 @@ Respond ONLY with a valid JSON object matching this schema exactly:
         if user_instruction:
             clear_user_instruction()
             
-        # 4. Fetch Yesterday's Energy & Cost Summary
-        try:
-            yest = get_home_energy_summary("yesterday")
-        except Exception as yest_err:
-            log.warning(f"Daily Agent could not fetch yesterday summary: {yest_err}")
-            yest = {}
-
+        # 4. Construct Yesterday's Summary Message
         yest_msg = ""
         if yest and "error" not in yest:
             yest_msg = (
@@ -83,9 +82,9 @@ Respond ONLY with a valid JSON object matching this schema exactly:
                 f"• <b>Estimated Total Bill</b>: ${yest.get('estimated_total_mid_utility_bill_dollars', 0.0):.2f}\n"
                 f"  - 🚗 <b>EV Charging Share</b>: ${yest.get('ev_charging_share_of_bill_dollars', 0.0):.2f}\n"
                 f"  - 🏠 <b>Home Appliances Share</b>: ${yest.get('home_appliances_share_of_bill_dollars', 0.0):.2f}\n"
-                f"• <b>Home Self-Powered</b>: {yest.get('home_self_powered_percentage', 100.0)}%\n"
-                f"• <b>Solar Generated</b>: {yest.get('total_solar_generated_kwh', 0.0)} kWh\n"
-                f"• <b>Grid Imported</b>: {yest.get('total_grid_imported_kwh', 0.0)} kWh\n\n"
+                f"• <b>Home Self-Powered</b>: {yest_self_powered}%\n"
+                f"• <b>Solar Generated</b>: {yest_solar} kWh\n"
+                f"• <b>Grid Imported</b>: {yest_grid} kWh\n\n"
             )
 
         # 5. Notify User via Telegram & Pushover
