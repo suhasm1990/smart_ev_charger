@@ -380,8 +380,11 @@ def main():
             except Exception as e:
                 log.error(f"Failed to execute monthly report schedule: {e}")
 
+    def run_daily_agent_async():
+        threading.Thread(target=run_daily_agent, daemon=True, name="DailyAgentThread").start()
+
     schedule.every().day.at(config.DAILY_RESET_TIME, tz_str).do(daily_reset)
-    schedule.every().day.at(config.DAILY_AGENT_TIME, tz_str).do(run_daily_agent)
+    schedule.every().day.at(config.DAILY_AGENT_TIME, tz_str).do(run_daily_agent_async)
     schedule.every().day.at("07:00", tz_str).do(check_monthly_schedule)
 
     # Start Telegram Bot if configured

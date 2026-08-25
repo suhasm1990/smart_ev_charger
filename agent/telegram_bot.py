@@ -299,22 +299,38 @@ def get_tesla_powerwall_status() -> str:
         log.warning(f"Bot failed to get Powerwall stats: {e}")
         return json.dumps({"error": f"Failed to get Powerwall stats: {e}"})
 
-def read_application_logs(num_lines: int = 50) -> str:
-    """Reads the last N lines of the application log file (logs/charger.log) to check for warnings, errors, or execution history.
+def read_application_logs(num_lines: int = 50, level: str = None) -> str:
+    """Reads recent system event, decision, and error logs (queries local log file or Google Sheets 'System Logs' tab).
     
     Args:
         num_lines: Number of trailing lines to read (default 50).
+        level: Optional log level filter ('INFO', 'WARNING', or 'ERROR').
     """
+    # 1. Try local file if available on filesystem
     log_file = config.TEXT_LOG_FILE
-    if not os.path.exists(log_file):
-        return f"Log file {log_file} does not exist yet."
+    if os.path.exists(log_file):
+        try:
+            with open(log_file, "r") as f:
+                lines = f.readlines()
+                if level:
+                    lines = [l for l in lines if f"| {level.upper()}" in l]
+                last_lines = lines[-num_lines:]
+                if last_lines:
+                    return "".join(last_lines)
+        except Exception as e:
+            log.warning(f"Failed to read local log file: {e}")
+
+    # 2. Query Google Sheets 'System Logs' tab (cloud persistence)
+    from services.sheets_db import get_system_logs
     try:
-        with open(log_file, "r") as f:
-            lines = f.readlines()
-            last_lines = lines[-num_lines:]
-            return "".join(last_lines)
+        logs = get_system_logs(limit=num_lines, level_filter=level)
+        if logs:
+            formatted = [f"[{l['timestamp']}] {l['level']} ({l['module']}): {l['message']}" for l in logs]
+            return "\n".join(formatted)
     except Exception as e:
-        return f"Failed to read logs: {e}"
+        log.warning(f"Failed to read logs from Google Sheets: {e}")
+
+    return "No system logs found."
 
 def set_battery_thresholds(start_pct: float, stop_pct: float) -> str:
     """Updates the battery start and stop percentage thresholds.
@@ -832,6 +848,18 @@ def _bot_polling_loop():
                 bot.send_photo(message.chat.id, photo=f, caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>", parse_mode="HTML")
         else:
             bot.reply_to(message, f"Error: Could not generate monthly report image for '{period}'.")
+
+    @bot.message_handler(commands=['logs', 'log', 'syslog'])
+    def send_logs_cmd(message):
+        if config.TELEGRAM_ALLOWED_USER_ID and message.from_user.id != config.TELEGRAM_ALLOWED_USER_ID:
+            bot.reply_to(message, "Unauthorized.")
+            return
+        bot.send_chat_action(message.chat.id, 'typing')
+        parts = (message.text or "").strip().split()
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 25
+        level_filter = parts[2].upper() if len(parts) > 2 and parts[2].upper() in ("INFO", "WARNING", "ERROR") else None
+        logs_text = read_application_logs(num_lines=count, level=level_filter)
+        bot.reply_to(message, f"📋 <b>Recent System Logs</b>\n\n<pre>{html.escape(logs_text[-3800:])}</pre>", parse_mode="HTML")
 
     @bot.message_handler(func=lambda message: True)
     def handle_incoming_message(message):

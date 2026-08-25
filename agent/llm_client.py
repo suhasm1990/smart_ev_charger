@@ -168,23 +168,7 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
             messages=messages,
             api_key=cfg["api_key"],
             temperature=0.2,
-            request_timeout=45,
-            **extra_kwargs
-        )
-        content = response.choices[0].message.content
-        return extract_json_from_text(content)
-    except Exception as err:
-        log.error(f"Error generating JSON with LLM provider '{cfg['provider']}': {err}", exc_info=True)
-        raise
-
-        extra_kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
-
-        response = litellm.completion(
-            model=model_name,
-            messages=messages,
-            api_key=cfg["api_key"],
-            temperature=0.2,
-            request_timeout=45,
+            request_timeout=90,
             **extra_kwargs
         )
         content = response.choices[0].message.content

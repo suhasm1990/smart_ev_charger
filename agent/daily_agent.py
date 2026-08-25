@@ -109,7 +109,8 @@ Respond ONLY with a valid JSON object matching this schema:
         notify(msg)
         
     except Exception as e:
-        log.error(f"Daily Agent failed: {e}")
+        log.error(f"Daily Agent failed: {e}", exc_info=True)
+        notify(f"⚠️ <b>Daily AI Agent Notice (7:00 AM)</b>\nDaily planner execution failed: {e}")
 
 if __name__ == "__main__":
     run_daily_agent()

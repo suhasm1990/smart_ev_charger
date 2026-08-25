@@ -1,6 +1,7 @@
 import csv
 import os
 import requests
+import time
 from datetime import datetime, timedelta, date
 
 from core import state, config
@@ -87,17 +88,30 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
             f"Grid draw logged | grid={grid}kW | rate=${rate}/kWh | "
             f"est_cost_this_min=${est_cost:.5f} | tou={tou}"
         )
+    global _log_rows_cache
+    _log_rows_cache = None
 
-def get_all_log_rows(days: int = 7) -> list[dict]:
+_log_rows_cache = None
+_log_rows_cache_time = 0.0
+
+def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
     """
     Fetches recent log rows directly from Google Sheets (primary source of truth across container restarts).
+    Utilizes a 60-second in-memory TTL cache to eliminate redundant network roundtrips.
     Falls back to local CSV file if Google Sheets API is unconfigured or temporarily unavailable.
     """
+    global _log_rows_cache, _log_rows_cache_time
+    now_ts = time.time()
+    if not force_refresh and _log_rows_cache is not None and (now_ts - _log_rows_cache_time) < 60.0:
+        return _log_rows_cache
+
     # 1. Try Google Sheets first (primary single source of truth)
     try:
         from services.sheets_db import get_recent_logs
         sheets_logs = get_recent_logs(days=days)
         if sheets_logs:
+            _log_rows_cache = sheets_logs
+            _log_rows_cache_time = now_ts
             return sheets_logs
     except Exception as e:
         log_csv.warning(f"Failed to fetch logs from Google Sheets, falling back to local CSV: {e}")
@@ -109,6 +123,8 @@ def get_all_log_rows(days: int = 7) -> list[dict]:
         try:
             with open(csv_file, "r", newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
+                _log_rows_cache = rows
+                _log_rows_cache_time = now_ts
         except Exception as e:
             log_csv.warning(f"Error reading local CSV fallback: {e}")
 
