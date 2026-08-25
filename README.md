@@ -7,10 +7,17 @@ An intelligent, model-agnostic Python daemon that automatically charges your Ele
 ## 🌟 Key Features
 
 - ☀️ **Solar & Powerwall Synchronization**: Continuously monitors Tesla Powerwall battery levels and solar surplus via NetZero API. Automatically starts charging when house battery is healthy (e.g. `> 40%`) and stops when reserves drop (e.g. `< 25%`).
-- ⚡ **ChargePoint Flex Control**: Controls ChargePoint Home Flex amperage (8A–32A) and tracks delivered energy (`kWh`), charging power (`kW`), and driving range added (`miles`).
+- ⚡ **ChargePoint Flex Control & Dynamic Amperage**: Controls ChargePoint Home Flex amperage (8A–32A) and tracks exact session duration (`minutes`), delivered energy (`kWh`), and driving range added (`miles`) scaled dynamically to active amperage.
 - 🛡️ **Guarded Manual / Boost Mode**: Force charge at 32A (full power) with smart auto-stop guardrails (e.g. *"Charge at 32A until 16:00 or stop if battery drops below 20%"*). Automatically restores default 20A amperage when returning to Auto mode.
 - 🧠 **Model-Agnostic AI Assistant**: Conversational Telegram interface powered by your choice of AI model (**Gemini**, **NVIDIA Nemotron**, **OpenAI**, or **Claude**).
+- 🌅 **7:00 AM Morning AI Planner**: Automatically evaluates yesterday's energy bills and optimizes today's charging window & battery reserve thresholds based on evening appliance loads.
 - 📊 **Monthly PNG Bill Infographic**: Automatically generates and sends high-resolution energy & utility bill cards on the 1st of every month (or on-demand).
+- 📈 **Optimized Google Sheets Cloud Database**:
+  - **`Telemetry` Tab**: 6,000-row rolling ring buffer (~62 days of 15-minute resolution metrics).
+  - **`System Logs` Tab**: 500-row rolling ring buffer of events, AI daily plans, warnings, and errors.
+  - **`Settings` Tab**: Real-time cloud sync for user instructions and dynamic configurations.
+  - **Zero-Bloat Caching**: 15-minute worksheet handle caching, chunked auto-trimming, and 60-second read TTL cache to stay well below Google API rate limits.
+- 📋 **Remote Log Inspection (`/logs`)**: Inspect live system events, AI plans, and errors directly on your phone via Telegram (`/logs 30`) without needing to fetch NAS log files.
 - 🚗 **Miles & Range Tracking**: Calculates driving range added per session, day, week, or month using configurable vehicle efficiency (`EV_MILES_PER_KWH`).
 - 🛠️ **Autonomous Dev Agent & Instant Updates**: Instruct the bot to investigate logs, inspect source code, or open GitHub Pull Requests. Deploy updates instantly with `/update`.
 - 💰 **EV vs. Home Load Isolation**: Intelligently separates EV charger consumption from heavy household appliances (AC, laundry) for exact utility cost tracking.
@@ -40,6 +47,7 @@ docker-compose up -d
 
 | User Prompt / Command | Description |
 | :--- | :--- |
+| `/logs` or `/logs 30 ERROR` | View recent system events, AI daily plans, or errors directly in Telegram |
 | `/model` or *"Switch model to nvidia"* | View or switch active AI model (Gemini, NVIDIA Nemotron, GPT-4o, Claude) |
 | `/update` or `/restart` | Restarts container, pulls latest GitHub code, and comes online in ~5s |
 | `/daily_agent` or *"Run daily agent"* | Runs morning AI planner to optimize charging strategy & thresholds |
