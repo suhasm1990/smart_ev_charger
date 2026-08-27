@@ -38,12 +38,15 @@ class MockedCycle:
         setattr(module, name, replacement)
 
     def install(self, pw: dict, cp: dict):
+        import core.decision as decision
         self._patch(main, "get_powerwall_stats", lambda: pw)
         self._patch(main, "get_charger_status", lambda: cp)
         self._patch(main, "start_charger", lambda amperage=None: self.calls.append(("start", amperage)))
         self._patch(main, "stop_charger", lambda: self.calls.append(("stop", None)))
         self._patch(main, "set_charger_amperage_limit", lambda amperage: self.calls.append(("amperage", amperage)))
         self._patch(main, "notify", lambda message: None)
+        self._patch(main, "is_in_night_blackout", lambda dt=None: False)
+        self._patch(decision, "is_in_night_blackout", lambda dt=None: False)
         self._patch(main, "check_recent_log_errors", lambda interval_minutes=20: False)
         self._patch(main.config, "load_dynamic_config", lambda remote=True: None)
         self._patch(services.sheets_db, "append_log_row", lambda row: True)
@@ -66,7 +69,7 @@ class MockedCycle:
         config.MANUAL_MODE_OVERRIDE = override
         config.BATTERY_START_PCT, config.BATTERY_STOP_PCT = 40.0, 25.0
         config.BATTERY_LOW_RESERVE_PCT = 15.0
-        config.NIGHT_BLACKOUT_START_HOUR, config.NIGHT_BLACKOUT_END_HOUR = 16, 9
+        config.NIGHT_BLACKOUT_START_HOUR, config.NIGHT_BLACKOUT_END_HOUR = 0, 0
         config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR = 0, 24
 
     def enter_manual(self):
