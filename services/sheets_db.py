@@ -1,65 +1,94 @@
+"""Google Sheets cloud database: telemetry ring buffer, system logs, settings.
+
+All writes are queued onto background workers so the control loop never blocks
+on a network round-trip. Reads are TTL-cached to stay far below API quotas.
+"""
 import os
-import socket
 import queue
 import threading
 import time
-
-# Set 20-second socket timeout so network/DNS drops never hang Google Sheets calls indefinitely
-socket.setdefaulttimeout(20.0)
 
 try:
     import gspread
     from google.oauth2.service_account import Credentials
 except ImportError:
-    gspread = None
-    Credentials = None
+    gspread = Credentials = None
 
 from reporting.logger import log
 
-# We default to the URL provided by the user
-SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA")
-CREDS_FILE = "service_account.json"
+SHEET_URL = os.getenv(
+    "GOOGLE_SHEET_URL",
+    "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA",
+)
+CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "service_account.json")
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets"
-]
+SHEET_TTL = 900.0     # Reuse the spreadsheet handle for 15 minutes.
+SETTINGS_TTL = 60.0   # Serve settings from memory for 60 seconds.
 
+TELEMETRY_TAB = "Telemetry"
+SYSLOG_TAB = "System Logs"
+SETTINGS_TAB = "Settings"
+SYSLOG_HEADERS = ["Timestamp", "Level", "Module", "Message"]
+
+_lock = threading.Lock()
+# Set on the Sheets worker threads. The Google Sheets log handler checks this to
+# avoid a feedback loop: a warning raised while writing to Sheets would other-
+# wise be queued for Sheets, drained by this same worker, and warn again.
+_worker_local = threading.local()
+_credentials_warned = False
 _client = None
+
+
+def in_worker() -> bool:
+    """True when the calling thread is a Sheets background worker."""
+    return getattr(_worker_local, "active", False)
+
+
+def is_disabled() -> bool:
+    """True when the integration cannot work, so callers can skip queueing."""
+    return gspread is None or Credentials is None or not os.path.exists(CREDS_FILE)
 _sheet = None
-_worksheets = {}
-_last_sheet_open_time = 0.0
+_sheet_opened_at = 0.0
+_worksheets: dict = {}
+
+
+def _reset_connection():
+    global _client, _sheet, _worksheets
+    with _lock:
+        _client = _sheet = None
+        _worksheets = {}
+
 
 def get_client():
-    global _client, _sheet, _worksheets
+    global _client, _credentials_warned
     if gspread is None or Credentials is None:
-        log.warning("gspread or google-auth not installed. Google Sheets integration disabled.")
         return None
     if _client is None:
         if not os.path.exists(CREDS_FILE):
-            log.warning(f"{CREDS_FILE} not found. Google Sheets integration disabled.")
+            if not _credentials_warned:
+                _credentials_warned = True
+                log.warning(f"{CREDS_FILE} not found. Google Sheets integration disabled.")
             return None
         try:
-            creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
-            _client = gspread.authorize(creds)
-            _sheet = None
-            _worksheets = {}
+            _client = gspread.authorize(Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES))
         except Exception as e:
             log.error(f"Failed to authenticate with Google Sheets: {e}")
             return None
     return _client
 
+
 def get_sheet():
-    global _sheet, _last_sheet_open_time, _worksheets
+    global _sheet, _sheet_opened_at, _worksheets
     client = get_client()
     if not client:
         return None
-    now_ts = time.time()
-    # Cache spreadsheet object for up to 15 minutes to eliminate redundant metadata calls
-    if _sheet is not None and (now_ts - _last_sheet_open_time) < 900.0:
+    now = time.time()
+    if _sheet is not None and (now - _sheet_opened_at) < SHEET_TTL:
         return _sheet
     try:
         _sheet = client.open_by_url(SHEET_URL)
-        _last_sheet_open_time = now_ts
+        _sheet_opened_at = now
         _worksheets = {}
         return _sheet
     except Exception as e:
@@ -67,9 +96,9 @@ def get_sheet():
         _sheet = None
         return None
 
-def get_or_create_worksheet(title: str, default_headers: list = None, default_rows: str = "505", default_cols: str = "10"):
-    """Unified worksheet fetcher and creator with in-memory handle caching."""
-    global _worksheets
+
+def get_or_create_worksheet(title: str, headers: list = None, rows: int = 1000, cols: int = 32):
+    """Returns a cached worksheet handle, creating the tab on first use."""
     sheet = get_sheet()
     if not sheet:
         return None
@@ -77,217 +106,276 @@ def get_or_create_worksheet(title: str, default_headers: list = None, default_ro
         return _worksheets[title]
     try:
         ws = sheet.worksheet(title)
-        _worksheets[title] = ws
-        return ws
     except Exception:
-        # If looking for Telemetry, check legacy Sheet1 and auto-rename
-        if title == "Telemetry":
+        # Adopt the legacy default tab name rather than orphaning its history.
+        ws = None
+        if title == TELEMETRY_TAB:
             try:
                 ws = sheet.worksheet("Sheet1")
-                try:
-                    ws.update_title("Telemetry")
-                except Exception:
-                    pass
-                _worksheets["Telemetry"] = ws
-                return ws
+                ws.update_title(TELEMETRY_TAB)
             except Exception:
-                pass
-        # Auto-create worksheet if not found
-        try:
-            ws = sheet.add_worksheet(title=title, rows=default_rows, cols=default_cols)
-            if default_headers:
-                ws.update(range_name='A1', values=[default_headers])
-            _worksheets[title] = ws
-            return ws
-        except Exception as e:
-            log.error(f"Failed to create worksheet '{title}': {e}")
-            return None
+                ws = None
+        if ws is None:
+            try:
+                ws = sheet.add_worksheet(title=title, rows=rows, cols=cols)
+                if headers:
+                    ws.update(range_name="A1", values=[headers])
+            except Exception as e:
+                log.error(f"Failed to create worksheet '{title}': {e}")
+                return None
+    _worksheets[title] = ws
+    return ws
 
-# Background asynchronous worker queues
-_append_queue = queue.Queue(maxsize=2000)
-_system_log_queue = queue.Queue(maxsize=2000)
 
-def _flush_queue_to_worksheet(target_queue: queue.Queue, worksheet_name: str, max_rows: int, chunk_size: int, default_headers: list = None):
-    """Generic worker loop for asynchronously batching, writing, and rolling over worksheet rows."""
-    global _client, _sheet, _worksheets
-    approx_count = None
-    
-    while True:
-        batch = []
+# ── Asynchronous write workers ──────────────────────────────────────────────
+
+_telemetry_queue: queue.Queue = queue.Queue(maxsize=2000)
+_syslog_queue: queue.Queue = queue.Queue(maxsize=2000)
+_settings_queue: queue.Queue = queue.Queue(maxsize=200)
+
+
+def _col_letter(index: int) -> str:
+    """Converts a 1-based column index into its A1 letter (1 -> A, 27 -> AA)."""
+    letters = ""
+    while index > 0:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _data_row_count(ws) -> int:
+    """Counts populated rows (column A), which `row_count` does not report."""
+    try:
+        return len(ws.col_values(1))
+    except Exception:
+        return 0
+
+
+def _drain(target: queue.Queue, limit: int = 25) -> list:
+    """Blocks for one item, then greedily batches whatever else is pending."""
+    try:
+        batch = [target.get(timeout=5.0)]
+    except queue.Empty:
+        return []
+    while len(batch) < limit:
         try:
-            item = target_queue.get(timeout=5.0)
-            batch.append(item)
-            while len(batch) < 25:
-                try:
-                    batch.append(target_queue.get_nowait())
-                except queue.Empty:
-                    break
+            batch.append(target.get_nowait())
         except queue.Empty:
-            continue
+            break
+    return batch
 
+
+def _append_worker(target: queue.Queue, tab: str, max_rows: int, trim_chunk: int, headers: list = None):
+    """Batches queued rows into a worksheet and enforces a rolling ring buffer."""
+    _worker_local.active = True
+    row_count = None
+    while True:
+        batch = _drain(target)
         if not batch:
             continue
-
-        for attempt in range(3):
-            try:
-                ws = get_or_create_worksheet(worksheet_name, default_headers=default_headers)
-                if ws:
-                    if len(batch) == 1:
-                        ws.append_row(batch[0])
+        try:
+            for attempt in range(3):
+                try:
+                    ws = get_or_create_worksheet(tab, headers=headers)
+                    if ws is None:
+                        break
+                    ws.append_rows(batch)
+                    if row_count is None:
+                        row_count = _data_row_count(ws)
                     else:
-                        ws.append_rows(batch)
-
-                    if approx_count is not None:
-                        approx_count += len(batch)
-                    else:
-                        approx_count = ws.row_count
-
-                    # Enforce rolling ring buffer in chunks (minimizes API calls)
-                    if approx_count > (max_rows + chunk_size):
-                        excess = approx_count - (max_rows + 1)
-                        if excess > 0:
-                            ws.delete_rows(2, 2 + excess - 1)
-                            approx_count = max_rows + 1
+                        row_count += len(batch)
+                    # Trim in chunks so a delete_rows call is amortised over
+                    # many appends instead of firing on every single write.
+                    if row_count > max_rows + trim_chunk:
+                        excess = row_count - max_rows
+                        ws.delete_rows(2, 1 + excess)
+                        row_count -= excess
                     break
-            except Exception as e:
-                _client = None
-                _sheet = None
-                _worksheets = {}
-                log.warning(f"Google Sheets async append attempt {attempt+1} on '{worksheet_name}' failed: {e}")
-                time.sleep(2 ** attempt)
+                except Exception as e:
+                    row_count = None
+                    _reset_connection()
+                    log.warning(f"Sheets append to '{tab}' failed (attempt {attempt + 1}/3): {e}")
+                    if attempt == 2:
+                        log.error(f"Dropped {len(batch)} row(s) destined for '{tab}' after 3 failed attempts.")
+                    else:
+                        time.sleep(2 ** attempt)
+        finally:
+            for _ in batch:
+                target.task_done()
 
-        for _ in range(len(batch)):
-            target_queue.task_done()
 
-_worker_thread = threading.Thread(
-    target=_flush_queue_to_worksheet,
-    args=(_append_queue, "Telemetry", 6000, 100),
-    daemon=True,
-    name="SheetsTelemetryWorker"
-)
-_worker_thread.start()
+def _settings_worker():
+    """Applies queued settings patches, coalescing bursts into one write."""
+    _worker_local.active = True
+    while True:
+        patches = _drain(_settings_queue, limit=50)
+        if not patches:
+            continue
+        try:
+            merged = {}
+            for p in patches:
+                merged.update(p)
+            _write_settings(merged)
+        except Exception as e:
+            log.warning(f"Failed to persist settings to Sheets: {e}")
+        finally:
+            for _ in patches:
+                _settings_queue.task_done()
 
-_syslog_thread = threading.Thread(
-    target=_flush_queue_to_worksheet,
-    args=(_system_log_queue, "System Logs", 500, 50, ['Timestamp', 'Level', 'Module', 'Message']),
-    daemon=True,
-    name="SheetsSyslogWorker"
-)
-_syslog_thread.start()
 
-def append_log_row(row_data):
-    """Asynchronously enqueues a log row to be written to Google Sheets Telemetry tab without blocking."""
+for _target, _args in (
+    (_append_worker, (_telemetry_queue, TELEMETRY_TAB, 6000, 100, None)),
+    (_append_worker, (_syslog_queue, SYSLOG_TAB, 500, 50, SYSLOG_HEADERS)),
+    (_settings_worker, ()),
+):
+    threading.Thread(target=_target, args=_args, daemon=True, name=f"Sheets-{_target.__name__}").start()
+
+
+def append_log_row(row_data) -> bool:
+    """Queues a telemetry row for the Telemetry tab without blocking."""
+    if is_disabled():
+        return False
     try:
-        _append_queue.put_nowait(row_data)
+        _telemetry_queue.put_nowait(row_data)
         return True
     except queue.Full:
-        log.warning("Google Sheets append queue is full. Dropping row.")
+        log.warning("Google Sheets telemetry queue is full. Dropping row.")
         return False
 
-def append_system_log(timestamp: str, level: str, module: str, message: str):
-    """Asynchronously enqueues a system event/error log to be written to Google Sheets 'System Logs' tab."""
+
+def append_system_log(timestamp: str, level: str, module: str, message: str) -> bool:
+    """Queues a system event for the System Logs tab without blocking."""
+    if is_disabled() or in_worker():
+        return False
     try:
-        _system_log_queue.put_nowait([str(timestamp), str(level), str(module), str(message)])
+        _syslog_queue.put_nowait([str(timestamp), str(level), str(module), str(message)])
         return True
     except queue.Full:
         return False
 
-def get_recent_logs(days=7):
-    """Fetches recent power telemetry log rows from Google Sheets 'Telemetry' tab."""
+
+def flush(timeout: float = 10.0):
+    """Waits for pending writes to land, for use during graceful shutdown."""
+    deadline = time.time() + timeout
+    for q in (_settings_queue, _telemetry_queue, _syslog_queue):
+        while not q.empty() and time.time() < deadline:
+            time.sleep(0.1)
+
+
+# ── Reads ───────────────────────────────────────────────────────────────────
+
+def get_recent_logs(days: int = 7) -> list[dict]:
+    """Fetches recent telemetry rows, reading only the tail of the sheet."""
     try:
-        worksheet = get_or_create_worksheet("Telemetry")
-        if not worksheet:
+        ws = get_or_create_worksheet(TELEMETRY_TAB)
+        if not ws:
             return []
-        all_values = worksheet.get_all_values()
-        if not all_values or len(all_values) <= 1:
+        # 96 rows/day at 15-minute resolution, plus headroom for denser intervals.
+        wanted = max(100, days * 96 + 100)
+        total = _data_row_count(ws)
+        if total <= 1:
             return []
-        headers = all_values[0]
-        rows = all_values[1:]
-        
-        # 96 rows a day * 7 days = 672 rows. Fetch last 700 to be safe.
-        recent_rows = rows[-700:] 
-        return [dict(zip(headers, row)) for row in recent_rows]
+        headers = ws.row_values(1)
+        first = max(2, total - wanted + 1)
+        rows = ws.get(f"A{first}:{_col_letter(len(headers))}{total}")
+        return [dict(zip(headers, r)) for r in rows if r]
     except Exception as e:
         log.error(f"Failed to fetch telemetry logs from Sheets: {e}")
         return []
 
+
 def get_system_logs(limit: int = 100, level_filter: str = None) -> list[dict]:
-    """Fetches recent system event and error logs from Google Sheets 'System Logs' tab."""
+    """Fetches recent rows from the System Logs tab."""
     try:
-        worksheet = get_or_create_worksheet("System Logs")
-        if not worksheet:
+        ws = get_or_create_worksheet(SYSLOG_TAB, headers=SYSLOG_HEADERS)
+        if not ws:
             return []
-            
-        all_values = worksheet.get_all_values()
-        if not all_values or len(all_values) <= 1:
+        total = _data_row_count(ws)
+        if total <= 1:
             return []
-        raw_rows = all_values[1:]
-        
-        parsed = []
-        for r in raw_rows:
-            if len(r) >= 4:
-                item = {
-                    "timestamp": r[0],
-                    "level": r[1],
-                    "module": r[2],
-                    "message": r[3]
-                }
-                if level_filter and item["level"].upper() != level_filter.upper():
-                    continue
-                parsed.append(item)
-                
+        # Over-fetch when filtering so the filtered result still fills `limit`.
+        span = limit * 10 if level_filter else limit
+        rows = ws.get(f"A{max(2, total - span + 1)}:D{total}")
+        parsed = [
+            dict(zip(("timestamp", "level", "module", "message"), r))
+            for r in rows
+            if len(r) >= 4 and (not level_filter or r[1].upper() == level_filter.upper())
+        ]
         return parsed[-limit:]
     except Exception as e:
         log.error(f"Failed to fetch system logs from Sheets: {e}")
         return []
 
-def update_settings(settings: dict):
-    """Updates key-value settings in the 'Settings' worksheet tab."""
+
+_settings_cache: dict | None = None
+_settings_cache_time = 0.0
+
+
+def get_settings(force_refresh: bool = False) -> dict:
+    """Returns the cloud key/value settings, cached for `SETTINGS_TTL` seconds.
+
+    The control loop reads settings every cycle, so an uncached read here meant
+    a Google Sheets round-trip on the hot path.
+    """
+    global _settings_cache, _settings_cache_time
+    if not force_refresh and _settings_cache is not None and (time.time() - _settings_cache_time) < SETTINGS_TTL:
+        return _settings_cache
     try:
-        worksheet = get_or_create_worksheet("Settings", default_headers=["Key", "Value"], default_rows="100", default_cols="2")
-        if not worksheet:
+        ws = get_or_create_worksheet(SETTINGS_TAB, headers=["Key", "Value"], rows=100, cols=2)
+        values = ws.get_all_values() if ws else []
+        settings = {r[0]: r[1] for r in values[1:] if len(r) >= 2 and r[0]}
+    except Exception as e:
+        log.error(f"Failed to fetch settings from Sheets: {e}")
+        # Serve the last good snapshot rather than reporting "no settings".
+        return _settings_cache if _settings_cache is not None else {}
+    _settings_cache, _settings_cache_time = settings, time.time()
+    return settings
+
+
+def _write_settings(patch: dict, remove: set = frozenset()) -> bool:
+    """Merges `patch` into the Settings tab, preserving unrelated keys."""
+    global _settings_cache, _settings_cache_time
+    try:
+        ws = get_or_create_worksheet(SETTINGS_TAB, headers=["Key", "Value"], rows=100, cols=2)
+        if not ws:
             return False
-            
-        cells = [["Key", "Value"]]
-        for k, v in settings.items():
-            cells.append([str(k), str(v)])
-        
-        worksheet.clear()
-        worksheet.update(range_name='A1', values=cells)
+        merged = {k: v for k, v in get_settings(force_refresh=True).items() if k not in remove}
+        merged.update({k: v for k, v in patch.items() if k not in remove})
+        ws.clear()
+        ws.update(range_name="A1", values=[["Key", "Value"]] + [[str(k), str(v)] for k, v in merged.items()])
+        _settings_cache, _settings_cache_time = {k: str(v) for k, v in merged.items()}, time.time()
         return True
     except Exception as e:
         log.error(f"Failed to update settings in Sheets: {e}")
         return False
 
-def get_settings():
-    """Fetches key-value configuration dictionary from the 'Settings' worksheet tab."""
+
+def update_settings(settings: dict, blocking: bool = False) -> bool:
+    """Merges settings into the cloud tab; queued asynchronously by default.
+
+    Merging matters: a full overwrite would erase keys this caller does not own,
+    such as a pending USER_INSTRUCTION awaiting the morning planner.
+    """
+    global _settings_cache, _settings_cache_time
+    if blocking:
+        return _write_settings(settings)
+    # Reflect the change locally at once so readers never see a stale value.
+    if _settings_cache is not None:
+        _settings_cache = {**_settings_cache, **{k: str(v) for k, v in settings.items()}}
+        _settings_cache_time = time.time()
     try:
-        worksheet = get_or_create_worksheet("Settings", default_headers=["Key", "Value"])
-        if not worksheet:
-            return {}
-        all_values = worksheet.get_all_values()
-        if len(all_values) <= 1:
-            return {}
-        
-        settings = {}
-        for row in all_values[1:]:
-            if len(row) >= 2:
-                settings[row[0]] = row[1]
-        return settings
-    except Exception as e:
-        log.error(f"Failed to fetch settings from Sheets: {e}")
-        return {}
+        _settings_queue.put_nowait(dict(settings))
+        return True
+    except queue.Full:
+        log.warning("Settings queue is full. Writing synchronously.")
+        return _write_settings(settings)
 
-def add_user_instruction(instruction: str):
-    """Saves a user instruction for the Daily AI Agent into the Settings tab."""
-    settings = get_settings()
-    settings["USER_INSTRUCTION"] = instruction
-    return update_settings(settings)
 
-def clear_user_instruction():
-    """Clears processed user instruction from the Settings tab."""
-    settings = get_settings()
-    if "USER_INSTRUCTION" in settings:
-        del settings["USER_INSTRUCTION"]
-        return update_settings(settings)
-    return True
+def add_user_instruction(instruction: str) -> bool:
+    """Stores an instruction for the daily AI planner to consume."""
+    return _write_settings({"USER_INSTRUCTION": instruction})
+
+
+def clear_user_instruction() -> bool:
+    """Clears a processed instruction from the Settings tab."""
+    return _write_settings({}, remove={"USER_INSTRUCTION"})

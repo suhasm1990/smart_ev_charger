@@ -1,189 +1,178 @@
-import os
+"""User-defined threshold alerts plus the built-in grid-export notification."""
 import json
-import uuid
+import os
 import time
-import datetime
+import uuid
+from datetime import datetime, timedelta
+
 from core import config, state
-from reporting.logger import log
+from reporting.logger import log, tail_lines
 from reporting.notifications import notify
 
-ALERTS_FILE = "logs/alerts.json"
+ALERTS_FILE = os.getenv("ALERTS_FILE", "logs/alerts.json")
 MAX_ALERTS = 20
+VALID_OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte")
+
+_NUMERIC_OPS = {
+    "eq": lambda a, b: a == b, "ne": lambda a, b: a != b,
+    "gt": lambda a, b: a > b,  "gte": lambda a, b: a >= b,
+    "lt": lambda a, b: a < b,  "lte": lambda a, b: a <= b,
+}
+
+_cache: list | None = None
+_cache_mtime = -1.0
+
 
 def load_alerts() -> list:
-    if not os.path.exists(ALERTS_FILE):
-        return []
+    """Reads the alert rules, re-parsing only when the file changes on disk."""
+    global _cache, _cache_mtime
     try:
-        with open(ALERTS_FILE, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        log.error(f"Failed to load alerts: {e}")
+        mtime = os.path.getmtime(ALERTS_FILE)
+    except OSError:
+        _cache, _cache_mtime = [], -1.0
         return []
+    if _cache is not None and mtime == _cache_mtime:
+        return _cache
+    try:
+        with open(ALERTS_FILE) as f:
+            _cache = json.load(f)
+        _cache_mtime = mtime
+    except (OSError, ValueError) as e:
+        log.error(f"Failed to load alerts: {e}")
+        _cache = []
+    return _cache
+
 
 def save_alerts(alerts: list):
-    os.makedirs(os.path.dirname(ALERTS_FILE), exist_ok=True)
+    global _cache, _cache_mtime
     try:
+        os.makedirs(os.path.dirname(ALERTS_FILE) or ".", exist_ok=True)
         with open(ALERTS_FILE, "w") as f:
             json.dump(alerts, f, indent=4)
-    except Exception as e:
+        _cache, _cache_mtime = alerts, os.path.getmtime(ALERTS_FILE)
+    except OSError as e:
         log.error(f"Failed to save alerts: {e}")
 
+
 def add_alert(field: str, operator: str, value, message: str, once: bool = True) -> str:
-    alerts = load_alerts()
-    if len(alerts) >= MAX_ALERTS:
-        return f"Error: Maximum limit of {MAX_ALERTS} active alerts reached. Please clear some alerts first."
-        
-    # Standardize operators
-    valid_operators = ["eq", "ne", "gt", "gte", "lt", "lte"]
-    if operator not in valid_operators:
-        return f"Error: Invalid operator '{operator}'. Must be one of {valid_operators}."
-        
-    # De-duplicate: if alert for same field and operator exists, update it to save space and prevent duplicate rules
+    if operator not in VALID_OPERATORS:
+        return f"Error: Invalid operator '{operator}'. Must be one of {list(VALID_OPERATORS)}."
+
+    alerts = list(load_alerts())
+    # Replace rather than duplicate a rule on the same field and comparison.
     for alert in alerts:
         if alert["field"] == field and alert["operator"] == operator:
-            alert["value"] = value
-            alert["message"] = message
-            alert["once"] = once
-            alert["created_at"] = time.time()
+            alert.update(value=value, message=message, once=once, created_at=time.time())
             save_alerts(alerts)
             return f"Success: Updated existing alert for {field} {operator} {value}."
-            
-    # Add new alert
-    new_alert = {
-        "id": str(uuid.uuid4())[:8],
-        "field": field,
-        "operator": operator,
-        "value": value,
-        "message": message,
-        "once": once,
-        "created_at": time.time()
+
+    if len(alerts) >= MAX_ALERTS:
+        return f"Error: Maximum of {MAX_ALERTS} active alerts reached. Please clear some first."
+
+    alert = {
+        "id": str(uuid.uuid4())[:8], "field": field, "operator": operator,
+        "value": value, "message": message, "once": once, "created_at": time.time(),
     }
-    alerts.append(new_alert)
+    alerts.append(alert)
     save_alerts(alerts)
-    return f"Success: Created alert '{message}' with ID {new_alert['id']}."
+    return f"Success: Created alert '{message}' with ID {alert['id']}."
+
 
 def remove_alert(alert_id: str) -> str:
     alerts = load_alerts()
-    filtered = [a for a in alerts if a["id"] != alert_id]
-    if len(filtered) == len(alerts):
+    remaining = [a for a in alerts if a["id"] != alert_id]
+    if len(remaining) == len(alerts):
         return f"Error: Alert with ID {alert_id} not found."
-    save_alerts(filtered)
+    save_alerts(remaining)
     return f"Success: Removed alert with ID {alert_id}."
+
 
 def list_alerts() -> str:
     alerts = load_alerts()
     if not alerts:
         return "No active custom alerts."
-    lines = []
-    for a in alerts:
-        once_str = "once" if a["once"] else "persistent"
-        lines.append(f"• ID: <code>{a['id']}</code> | <code>{a['field']}</code> {a['operator']} <code>{a['value']}</code> -> <i>'{a['message']}'</i> ({once_str})")
-    return "\n".join(lines)
+    return "\n".join(
+        f"• ID: <code>{a['id']}</code> | <code>{a['field']}</code> {a['operator']} "
+        f"<code>{a['value']}</code> -> <i>'{a['message']}'</i> "
+        f"({'once' if a['once'] else 'persistent'})"
+        for a in alerts
+    )
+
+
+def _matches(value, operator: str, target) -> bool:
+    """Compares a live reading against a rule, coercing target to value's type."""
+    compare = _NUMERIC_OPS.get(operator)
+    if compare is None:
+        return False
+    if isinstance(value, bool):
+        if operator not in ("eq", "ne"):
+            return False
+        return compare(value, str(target).lower() in ("true", "1", "yes", "on"))
+    if isinstance(value, (int, float)):
+        return compare(value, float(target))
+    if operator not in ("eq", "ne"):
+        return False
+    return compare(str(value).strip().lower(), str(target).strip().lower())
+
 
 def check_alerts(current_state: dict):
-    alerts = load_alerts()
-    if alerts:
-        triggered_ids = []
-        for alert in alerts:
-            field = alert["field"]
-            operator = alert["operator"]
-            target = alert["value"]
-            
-            if field not in current_state:
-                continue
-                
-            val = current_state[field]
-            if val is None:
-                continue
-                
-            matched = False
-            
-            try:
-                # Handle boolean comparison
-                if isinstance(val, bool):
-                    target_bool = str(target).lower() in ["true", "1", "yes", "on"]
-                    if operator == "eq": matched = (val == target_bool)
-                    elif operator == "ne": matched = (val != target_bool)
-                # Handle numeric comparison
-                elif isinstance(val, (int, float)):
-                    target_num = float(target)
-                    if operator == "eq": matched = (val == target_num)
-                    elif operator == "ne": matched = (val != target_num)
-                    elif operator == "gt": matched = (val > target_num)
-                    elif operator == "gte": matched = (val >= target_num)
-                    elif operator == "lt": matched = (val < target_num)
-                    elif operator == "lte": matched = (val <= target_num)
-                # Handle string comparison
-                else:
-                    target_str = str(target).strip()
-                    val_str = str(val).strip()
-                    if operator == "eq": matched = (val_str.lower() == target_str.lower())
-                    elif operator == "ne": matched = (val_str.lower() != target_str.lower())
-            except Exception as e:
-                log.warning(f"Failed to evaluate alert rule {alert['id']} for state value '{val}': {e}")
-                continue
-                
-            if matched:
-                log.info(f"ALERT TRIGGERED | id={alert['id']} | field={field} {operator} {target} | current={val}")
-                notify(f"🔔 <b>Alert Triggered</b>\n{alert['message']}")
-                if alert["once"]:
-                    triggered_ids.append(alert["id"])
-                    
-        if triggered_ids:
-            remaining = [a for a in alerts if a["id"] not in triggered_ids]
-            save_alerts(remaining)
+    """Evaluates every rule against the current reading and notifies on matches."""
+    triggered = []
+    for alert in load_alerts():
+        value = current_state.get(alert["field"])
+        if value is None:
+            continue
+        try:
+            matched = _matches(value, alert["operator"], alert["value"])
+        except (TypeError, ValueError) as e:
+            log.warning(f"Failed to evaluate alert {alert['id']} against '{value}': {e}")
+            continue
+        if matched:
+            log.info(f"ALERT TRIGGERED | id={alert['id']} | "
+                     f"{alert['field']} {alert['operator']} {alert['value']} | current={value}")
+            notify(f"🔔 <b>Alert Triggered</b>\n{alert['message']}")
+            if alert["once"]:
+                triggered.append(alert["id"])
 
-    # Built-in Real-Time Grid Export Alert (Configurable threshold)
-    grid_export_kw = current_state.get("grid_export_kw")
-    if grid_export_kw is None:
+    if triggered:
+        save_alerts([a for a in load_alerts() if a["id"] not in triggered])
+
+    _check_grid_export(current_state)
+
+
+def _check_grid_export(current_state: dict):
+    """Notifies once per day when the site is exporting significant surplus."""
+    export_kw = current_state.get("grid_export_kw")
+    if export_kw is None:
         grid_kw = current_state.get("grid_kw")
-        if grid_kw is not None and grid_kw < 0:
-            grid_export_kw = abs(grid_kw)
-        else:
-            grid_export_kw = current_state.get("surplus_kw", 0)
+        export_kw = abs(grid_kw) if grid_kw is not None and grid_kw < 0 else current_state.get("surplus_kw", 0)
 
-    threshold = getattr(config, "GRID_EXPORT_ALERT_THRESHOLD_KW", 1.0)
-    if threshold > 0 and grid_export_kw and grid_export_kw >= threshold:
-        today_str = datetime.datetime.now(config.TZ).strftime("%Y-%m-%d")
-        if getattr(state, "last_grid_export_alert_date", None) != today_str:
-            is_plugged = current_state.get("is_plugged_in")
-            status_str = "Plugged in" if is_plugged else "Unplugged"
-            notify(
-                f"☀️ <b>Real-Time Grid Export Alert</b>\n"
-                f"You are currently exporting <b>{grid_export_kw:.1f} kW</b> to the grid!\n"
-                f"EV Status: {status_str}.\n"
-                f"This is a great time to plug in the EV or run heavy appliances (AC, washing machine)."
-            )
-            state.last_grid_export_alert_date = today_str
-            state.last_surplus_alert_date = today_str
+    threshold = config.GRID_EXPORT_ALERT_THRESHOLD_KW
+    if not (threshold > 0 and export_kw and export_kw >= threshold):
+        return
+
+    today = datetime.now(config.TZ).strftime("%Y-%m-%d")
+    if state.last_grid_export_alert_date == today:
+        return
+    state.last_grid_export_alert_date = today
+    notify(
+        f"☀️ <b>Real-Time Grid Export Alert</b>\n"
+        f"You are exporting <b>{export_kw:.1f} kW</b> to the grid.\n"
+        f"EV Status: {'Plugged in' if current_state.get('is_plugged_in') else 'Unplugged'}.\n"
+        f"A good moment to plug in the EV or run heavy appliances."
+    )
+
 
 def check_recent_log_errors(interval_minutes: int = 20) -> bool:
-    log_file = getattr(config, "TEXT_LOG_FILE", "logs/charger.log")
-    if not os.path.exists(log_file):
-        return False
-        
-    now = datetime.datetime.now(config.TZ).replace(tzinfo=None)
-    threshold = now - datetime.timedelta(minutes=interval_minutes)
-    
-    try:
-        with open(log_file, "r") as f:
-            lines = f.readlines()
-            last_lines = lines[-100:]
-            for line in last_lines:
-                parts = line.split(" | ")
-                if len(parts) >= 3:
-                    ts_str = parts[0].strip()
-                    level = parts[1].strip()
-                    
-                    if level in ["ERROR", "CRITICAL"]:
-                        try:
-                            ts_clean = ts_str.split(",")[0]
-                            dt = datetime.datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S")
-                            if dt >= threshold:
-                                return True
-                        except Exception:
-                            pass
-    except Exception as e:
-        log.warning(f"Error reading log file for errors: {e}")
-        
+    """Whether any ERROR/CRITICAL was logged within the last `interval_minutes`."""
+    threshold = datetime.now(config.TZ).replace(tzinfo=None) - timedelta(minutes=interval_minutes)
+    for line in tail_lines(config.TEXT_LOG_FILE, 100):
+        parts = line.split(" | ")
+        if len(parts) < 3 or parts[1].strip() not in ("ERROR", "CRITICAL"):
+            continue
+        try:
+            if datetime.strptime(parts[0].strip().split(",")[0], "%Y-%m-%d %H:%M:%S") >= threshold:
+                return True
+        except ValueError:
+            continue
     return False

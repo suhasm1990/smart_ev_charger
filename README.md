@@ -16,7 +16,8 @@ An intelligent, model-agnostic Python daemon that automatically charges your Ele
   - **`Telemetry` Tab**: 6,000-row rolling ring buffer (~62 days of 15-minute resolution metrics).
   - **`System Logs` Tab**: 500-row rolling ring buffer of events, AI daily plans, warnings, and errors.
   - **`Settings` Tab**: Real-time cloud sync for user instructions and dynamic configurations.
-  - **Zero-Bloat Caching**: 15-minute worksheet handle caching, chunked auto-trimming, and 60-second read TTL cache to stay well below Google API rate limits.
+  - **Non-Blocking Writes**: telemetry, system logs, and settings are queued onto background workers, so a slow Google API call never stalls the charging control loop.
+  - **Zero-Bloat Caching**: 15-minute worksheet handle cache, 60-second settings and telemetry read caches, tail-only range reads, and chunked auto-trimming keep the app far below Google API rate limits.
 - 📋 **Remote Log Inspection (`/logs`)**: Inspect live system events, AI plans, and errors directly on your phone via Telegram (`/logs 30`) without needing to fetch NAS log files.
 - 🚗 **Miles & Range Tracking**: Calculates driving range added per session, day, week, or month using configurable vehicle efficiency (`EV_MILES_PER_KWH`).
 - 🛠️ **Autonomous Dev Agent & Instant Updates**: Instruct the bot to investigate logs, inspect source code, or open GitHub Pull Requests. Deploy updates instantly with `/update`.
@@ -115,3 +116,42 @@ smart_ev_charger/
 | `UTILITY_PROVIDER` | Rate schedule plan (`MID`, `PGE`, or `CUSTOM`) | `MID` |
 | `BATTERY_START_PCT` / `BATTERY_STOP_PCT` | Solar charging battery start/stop thresholds | `40` / `25` |
 | `NIGHT_BLACKOUT_START_HOUR` / `END_HOUR` | Weekday peak rate blackout window | `16` / `9` |
+| `DEFAULT_CHARGER_AMPERAGE` / `MAX_CHARGER_AMPERAGE` | Amperage used by auto mode, and the boost ceiling | `20` / `32` |
+| `MIN_CHARGER_AMPERAGE` | Lowest amperage the charger accepts | `8` |
+| `CHARGER_VOLTAGE` | Supply voltage used to convert amperage to kW | `240` |
+| `CHECK_INTERVAL_MINUTES` | Control loop evaluation interval | `15` |
+| `MIN_CHARGE_MINUTES` | Minimum session length, to prevent short-cycling | `15` |
+| `POWERWALL_USABLE_KWH` | Usable Powerwall capacity, for evening reserve planning | `13.5` |
+| `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`) | `INFO` |
+| `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | Rotating log file size and retained backups | `8388608` / `3` |
+| `GOOGLE_CREDENTIALS_FILE` | Path to the Google service account JSON | `service_account.json` |
+
+---
+
+## 🧪 Testing
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+The suite runs fully offline: `tests/__init__.py` redirects logs, telemetry, and
+dynamic config into a temporary directory and disables the Google Sheets
+integration, so running tests never touches the live spreadsheet. Tests that
+need real hardware credentials skip themselves automatically.
+
+---
+
+## 🔐 Security Notes
+
+- `.env` and `service_account.json` are git-ignored, and are **baked into the
+  image** (`/root/config/`) so a `docker save` tarball is self-contained and runs
+  on a NAS with no extra files. The trade-off: credentials are recoverable from
+  the image, so never push it to a registry or share the tarball. Build with
+  `--build-arg EMBED_SECRETS=0` to leave them out and bind-mount them at runtime
+  into `/root/config/` instead.
+- The application code is **not** in the image: `entrypoint.sh` clones or pulls
+  `origin/main` on every boot, so changes must be pushed to GitHub before a
+  deployed container will run them.
+- The Telegram bot only accepts commands from `TELEGRAM_ALLOWED_USER_ID`.
+- The assistant's `read_source_code` tool refuses paths that escape the
+  repository or point at `.env` / `service_account.json`.

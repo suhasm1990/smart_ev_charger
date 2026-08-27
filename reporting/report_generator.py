@@ -1,5 +1,5 @@
 import os
-import datetime
+
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive background renderer for Docker/headless environments
 import matplotlib.pyplot as plt
@@ -8,13 +8,15 @@ import matplotlib.patches as mpatches
 from reporting.csv_logger import get_monthly_billing_data
 from reporting.logger import log
 
-def generate_monthly_report_image(period: str = "last_month") -> str:
+def generate_monthly_report_image(period: str = "last_month", data: dict = None) -> str:
+    """Renders the monthly bill infographic and returns the saved PNG path.
+
+    Plots daily variable grid cost (excluding the fixed service fee) against
+    solar generation. Pass `data` to reuse an already-computed billing summary
+    instead of recomputing it.
     """
-    Generates a modern high-resolution PNG infographic report for the specified month.
-    Plots daily usage date vs variable grid energy cost (EXCLUDING fixed daily fees) and solar generation.
-    Returns the absolute filepath to the saved PNG image.
-    """
-    data = get_monthly_billing_data(period=period)
+    if data is None:
+        data = get_monthly_billing_data(period=period)
     if "error" in data:
         log.error(f"Failed to generate report data: {data['error']}")
         return ""
@@ -34,7 +36,8 @@ def generate_monthly_report_image(period: str = "last_month") -> str:
     fig = plt.figure(figsize=(12, 10), dpi=150)
     fig.patch.set_facecolor('#0F172A')  # Slate dark background
 
-    gs = gridspec.GridSpec(3, 1, height_ratios=[1.2, 3.5, 1.3], hspace=0.35)
+    gs = gridspec.GridSpec(3, 1, height_ratios=[1.2, 3.5, 1.3], hspace=0.35,
+                           left=0.07, right=0.93, top=0.95, bottom=0.08)
 
     # ──────────────────────────────────────────────────────────────────────────
     # SECTION 1: Header & Executive Metric Cards
@@ -140,7 +143,6 @@ def generate_monthly_report_image(period: str = "last_month") -> str:
     ax_footer.text(0.38, 0.5, col2_text, transform=ax_footer.transAxes, color='#CBD5E1', fontsize=9.5, va='center', multialignment='left')
     ax_footer.text(0.70, 0.5, col3_text, transform=ax_footer.transAxes, color='#F8FAFC', fontsize=9.5, fontweight='bold', va='center', multialignment='left')
 
-    plt.tight_layout()
     fig.savefig(output_path, facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
     plt.close(fig)
 

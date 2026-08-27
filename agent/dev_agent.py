@@ -1,7 +1,6 @@
+import html
 import os
 import re
-import json
-import html
 import subprocess
 import threading
 from reporting.logger import log

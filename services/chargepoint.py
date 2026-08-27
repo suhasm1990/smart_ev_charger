@@ -1,226 +1,239 @@
+"""ChargePoint Home Flex control.
+
+The vendor library is async-only, so all coroutines run on one long-lived
+background event loop and are exposed to the daemon as blocking calls.
+"""
 import asyncio
 import re
 import threading
+
 from core import config
 from reporting.logger import log_chargepoint
 
-_cp_client = None
+_client = None
+_client_lock = threading.Lock()
 
-async def get_cp_client():
-    global _cp_client
-    if _cp_client is None:
+
+class ChargePointStartError(Exception):
+    """Raised when ChargePoint refuses to start a charging session."""
+
+
+async def _get_client():
+    global _client
+    if _client is None:
         if not config.CHARGEPOINT_USERNAME or not config.CHARGEPOINT_COULOMB_TOKEN:
-            raise RuntimeError("CHARGEPOINT_USERNAME or CHARGEPOINT_COULOMB_TOKEN is not configured in environment variables.")
+            raise RuntimeError("CHARGEPOINT_USERNAME and CHARGEPOINT_COULOMB_TOKEN must be configured.")
         from python_chargepoint import ChargePoint
         log_chargepoint.info("Initializing new ChargePoint client session")
-        _cp_client = await ChargePoint.create(
+        _client = await ChargePoint.create(
             username=config.CHARGEPOINT_USERNAME,
             coulomb_token=config.CHARGEPOINT_COULOMB_TOKEN,
         )
-    return _cp_client
+    return _client
 
-class ChargePointStartError(Exception):
-    """Raised when ChargePoint API fails to start a charging session."""
-    pass
 
-def _clean_error_str(e: Exception) -> str:
-    raw = str(e)
-    if "<!DOCTYPE" in raw or "<html" in raw or "cf-error-details" in raw or "<div" in raw:
-        if "502" in raw:
-            return "ChargePoint API Bad Gateway (Cloudflare 502)"
-        if "503" in raw:
-            return "ChargePoint API Service Unavailable (Cloudflare 503)"
-        return "ChargePoint API Server Error (Cloudflare Response)"
-    # Strip any residual HTML tags
-    clean = re.sub(r'<[^>]+>', '', raw)
-    lines = [line.strip() for line in clean.splitlines() if line.strip()]
-    return lines[0][:150] if lines else clean[:150]
-
-async def start_charger_async(amperage_limit: int = 20):
-    global _cp_client
-    try:
-        # Pre-check status before calling start_charging_session
+async def _drop_client():
+    """Discards the cached client so the next call re-authenticates."""
+    global _client
+    stale, _client = _client, None
+    if stale is not None:
         try:
-            status = await get_charger_status_async()
+            await stale.close()
+        except Exception:
+            pass
+
+
+def _clean_error(e: Exception) -> str:
+    """Reduces Cloudflare/HTML error bodies to a single readable line."""
+    raw = str(e)
+    if any(marker in raw for marker in ("<!DOCTYPE", "<html", "cf-error-details", "<div")):
+        for code, label in (("502", "Bad Gateway"), ("503", "Service Unavailable")):
+            if code in raw:
+                return f"ChargePoint API {label} (Cloudflare {code})"
+        return "ChargePoint API Server Error (Cloudflare Response)"
+    lines = [ln.strip() for ln in re.sub(r"<[^>]+>", "", raw).splitlines() if ln.strip()]
+    return (lines[0] if lines else raw)[:150]
+
+
+# ── Coroutines ──────────────────────────────────────────────────────────────
+
+async def _start_charger(amperage_limit: int):
+    try:
+        try:
+            status = await _get_charger_status()
             if not status.get("is_plugged_in", True):
-                log_chargepoint.warning("Vehicle is NOT plugged in. Aborting start request.")
                 raise ChargePointStartError("Vehicle is not plugged in. Please plug in the connector.")
             if status.get("charging_status") == "CHARGING":
-                log_chargepoint.info("Charger is already actively charging. Skipping redundant start request.")
+                log_chargepoint.info("Charger is already charging. Skipping redundant start request.")
                 return
         except ChargePointStartError:
             raise
-        except Exception as check_err:
-            log_chargepoint.warning(f"Charger pre-check warning (proceeding with start attempt): {check_err}")
+        except Exception as e:
+            log_chargepoint.warning(f"Charger pre-check failed, attempting start anyway: {_clean_error(e)}")
 
-        client = await get_cp_client()
+        client = await _get_client()
         try:
             await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage_limit)
-            log_chargepoint.info(f"Amperage limit set to {amperage_limit}A")
-        except Exception as err:
-            log_chargepoint.warning(f"Failed to set initial amperage limit: {err}")
-            
+        except Exception as e:
+            log_chargepoint.warning(f"Failed to set initial amperage limit: {_clean_error(e)}")
+
         session = await client.start_charging_session(device_id=config.CHARGEPOINT_DEVICE_ID)
-        log_chargepoint.info(f"Session STARTED | session_id={session.session_id} | amperage_limit={amperage_limit}A")
+        log_chargepoint.info(f"Session STARTED | session_id={session.session_id} | amperage={amperage_limit}A")
     except ChargePointStartError:
         raise
     except Exception as e:
-        err_msg = str(e)
-        if "ValidationError" in str(type(e)):
-            log_chargepoint.warning("Session started, but ChargePoint returned empty status right away (eventual consistency bug in library). Ignoring.")
-        else:
-            # Reset client on general errors to force re-auth
-            if _cp_client:
-                try: await _cp_client.close()
-                except Exception: pass
-                _cp_client = None
-            if "Failed to start charging" in err_msg or "422" in err_msg or "CommunicationError" in str(type(e)):
-                raise ChargePointStartError(f"ChargePoint start rejected (422/CommunicationError): {err_msg}")
-            raise
+        # The vendor library raises ValidationError when the session started but
+        # the status endpoint has not caught up yet — that is a success, not a failure.
+        if "ValidationError" in type(e).__name__:
+            log_chargepoint.info("Session started; ChargePoint status not yet consistent. Ignoring.")
+            return
+        await _drop_client()
+        message = str(e)
+        if "Failed to start charging" in message or "422" in message or "CommunicationError" in type(e).__name__:
+            raise ChargePointStartError(f"ChargePoint start rejected: {_clean_error(e)}") from e
+        raise
 
-async def stop_charger_async():
-    global _cp_client
+
+async def _stop_charger():
     try:
-        client = await get_cp_client()
+        client = await _get_client()
         status = await client.get_user_charging_status()
-        if not status or not getattr(status, "session_id", None):
-            log_chargepoint.info("No active charging session found to stop (already idle).")
+        session_id = getattr(status, "session_id", None) if status else None
+        if not session_id:
+            log_chargepoint.info("No active charging session to stop (already idle).")
             return
 
-        session_id = status.session_id
-        # Send stop command directly
-        req = {
-            "deviceId": config.CHARGEPOINT_DEVICE_ID,
-            "portNumber": 1,
-            "sessionId": session_id
-        }
-        stop_url = client.global_config.endpoints.accounts_endpoint / "v1/driver/station/stopSession"
-        resp = await client._request("POST", stop_url, json=req)
-        
-        if resp.status == 200:
-            data = await resp.json()
-            ack_id = data.get("ackId")
-            if ack_id:
-                ack_url = client.global_config.endpoints.accounts_endpoint / "v1/driver/station/session/ack"
-                ack_resp = await client._request("POST", ack_url, json={"ackId": ack_id, "action": "stop_session"})
-                if ack_resp.status == 200:
-                    log_chargepoint.info(f"Session STOPPED and confirmed | session_id={session_id}")
-                    return
-                else:
-                    try:
-                        ack_data = await ack_resp.json(content_type=None) or {}
-                    except Exception:
-                        ack_data = {}
-                    err_msg = ack_data.get("errorMessage", "")
-                    log_chargepoint.info(f"Session stop acknowledged (session already stopped/finalized by vehicle): status={ack_resp.status} msg={err_msg}")
-                    return
+        endpoints = client.global_config.endpoints.accounts_endpoint
+        response = await client._request(
+            "POST", endpoints / "v1/driver/station/stopSession",
+            json={"deviceId": config.CHARGEPOINT_DEVICE_ID, "portNumber": 1, "sessionId": session_id},
+        )
+        if response.status != 200:
+            body = await response.text()
+            log_chargepoint.warning(f"Stop command returned status={response.status}: {body[:100]}")
+            return
+
+        ack_id = (await response.json()).get("ackId")
+        if not ack_id:
             log_chargepoint.info(f"Stop command accepted for session_id={session_id}")
             return
-        else:
-            txt = await resp.text()
-            log_chargepoint.warning(f"Stop command returned status={resp.status}: {txt[:100]}")
-    except Exception as e:
-        err_clean = _clean_error_str(e)
-        if "422" in err_clean or "Failed to stop session" in err_clean:
-            log_chargepoint.info(f"Charger session already stopped or finalized: {err_clean}")
-            return
-        log_chargepoint.warning(f"Error executing stop command: {err_clean}")
-        if _cp_client:
-            try: await _cp_client.close()
-            except Exception: pass
-            _cp_client = None
 
-async def get_charger_status_async() -> dict:
-    global _cp_client
+        ack = await client._request(
+            "POST", endpoints / "v1/driver/station/session/ack",
+            json={"ackId": ack_id, "action": "stop_session"},
+        )
+        if ack.status == 200:
+            log_chargepoint.info(f"Session STOPPED and confirmed | session_id={session_id}")
+        else:
+            log_chargepoint.info(f"Session already stopped or finalized by the vehicle (status={ack.status}).")
+    except Exception as e:
+        message = _clean_error(e)
+        if "422" in message or "Failed to stop session" in message:
+            log_chargepoint.info(f"Charger session already stopped or finalized: {message}")
+            return
+        log_chargepoint.warning(f"Error executing stop command: {message}")
+        await _drop_client()
+
+
+async def _get_charger_status() -> dict:
     try:
-        client = await get_cp_client()
-        s = await client.get_home_charger_status(config.CHARGEPOINT_DEVICE_ID)
-        
-        # Fallback check: query active session status to bypass ChargePoint API synchronization lag
+        client = await _get_client()
+        home = await client.get_home_charger_status(config.CHARGEPOINT_DEVICE_ID)
+        # The home-charger endpoint lags behind reality, so an active user
+        # session is treated as authoritative evidence that charging is live.
         user_status = await client.get_user_charging_status()
-        is_charging = (s.charging_status == "CHARGING") or (user_status is not None)
-        
-        energy_kwh = 0.0
-        power_kw = 0.0
-        miles_added = 0.0
-        charging_time_seconds = 0
-        session_start_time = None
-        
-        if user_status and getattr(user_status, "session_id", None):
+
+        session_data = {"energy_kwh": 0.0, "power_kw": 0.0, "miles_added": 0.0,
+                        "charging_time_seconds": 0, "session_start_time": None}
+        session_id = getattr(user_status, "session_id", None) if user_status else None
+        if session_id:
             try:
-                session = await client.get_charging_session(user_status.session_id)
+                session = await client.get_charging_session(session_id)
                 if session:
-                    energy_kwh = float(getattr(session, "energy_kwh", 0.0) or 0.0)
-                    power_kw = float(getattr(session, "power_kw", 0.0) or 0.0)
-                    miles_added = float(getattr(session, "miles_added", 0.0) or 0.0)
                     raw_time = int(getattr(session, "charging_time", 0) or 0)
-                    charging_time_seconds = raw_time // 1000 if raw_time > 1000 else raw_time
-                    if getattr(session, "start_time", None):
-                        session_start_time = session.start_time.astimezone(config.TZ)
-            except Exception as sess_err:
-                log_chargepoint.warning(f"Error fetching active charging session details: {sess_err}")
+                    start = getattr(session, "start_time", None)
+                    session_data = {
+                        "energy_kwh": float(getattr(session, "energy_kwh", 0.0) or 0.0),
+                        "power_kw": float(getattr(session, "power_kw", 0.0) or 0.0),
+                        "miles_added": float(getattr(session, "miles_added", 0.0) or 0.0),
+                        # The API reports milliseconds for long sessions and seconds for short ones.
+                        "charging_time_seconds": raw_time // 1000 if raw_time > 1000 else raw_time,
+                        "session_start_time": start.astimezone(config.TZ) if start else None,
+                    }
+            except Exception as e:
+                log_chargepoint.warning(f"Error fetching active session details: {_clean_error(e)}")
 
         return {
-            "charging_status": "CHARGING" if is_charging else s.charging_status,
-            "is_plugged_in":   s.is_plugged_in,
-            "is_connected":    s.is_connected,
-            "amperage_limit":  s.amperage_limit,
-            "energy_kwh":      energy_kwh,
-            "power_kw":        power_kw,
-            "miles_added":     miles_added,
-            "charging_time_seconds": charging_time_seconds,
-            "session_start_time": session_start_time,
+            "charging_status": "CHARGING" if (home.charging_status == "CHARGING" or user_status) else home.charging_status,
+            "is_plugged_in": home.is_plugged_in,
+            "is_connected": home.is_connected,
+            "amperage_limit": home.amperage_limit,
+            **session_data,
         }
     except Exception as e:
-        err_clean = _clean_error_str(e)
-        log_chargepoint.warning(f"Error getting charger status, resetting client session: {err_clean}")
-        if _cp_client:
-            try: await _cp_client.close()
-            except Exception: pass
-            _cp_client = None
+        log_chargepoint.warning(f"Error getting charger status, resetting session: {_clean_error(e)}")
+        await _drop_client()
         raise
 
-async def set_charger_amperage_limit_async(amperage: int):
-    global _cp_client
+
+async def _set_amperage_limit(amperage: int):
     try:
-        client = await get_cp_client()
+        client = await _get_client()
         await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage)
         log_chargepoint.info(f"Amperage limit set to {amperage}A")
-    except Exception as e:
-        if _cp_client:
-            try: await _cp_client.close()
-            except Exception: pass
-            _cp_client = None
+    except Exception:
+        await _drop_client()
         raise
 
-_loop = None
-_thread = None
 
-def _start_background_loop():
-    global _loop
-    _loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_loop)
-    _loop.run_forever()
+# ── Background event loop bridge ────────────────────────────────────────────
 
-def _run_sync(coro, timeout: float = 60.0):
-    global _loop, _thread
-    if _thread is None or not _thread.is_alive():
-        _loop = None
-        _thread = threading.Thread(target=_start_background_loop, daemon=True)
-        _thread.start()
-        while _loop is None or not _loop.is_running():
-            import time
-            time.sleep(0.01)
-    
-    future = asyncio.run_coroutine_threadsafe(coro, _loop)
+_loop: asyncio.AbstractEventLoop | None = None
+_loop_thread: threading.Thread | None = None
+
+
+def _ensure_loop() -> asyncio.AbstractEventLoop:
+    """Starts (or restarts) the dedicated event loop thread on first use."""
+    global _loop, _loop_thread
+    with _client_lock:
+        if _loop_thread is not None and _loop_thread.is_alive() and _loop is not None:
+            return _loop
+        ready = threading.Event()
+
+        def run():
+            global _loop
+            _loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_loop)
+            _loop.call_soon(ready.set)
+            _loop.run_forever()
+
+        _loop_thread = threading.Thread(target=run, daemon=True, name="ChargePointLoop")
+        _loop_thread.start()
+        ready.wait(timeout=10.0)
+        return _loop
+
+
+def _run(coro, timeout: float = 60.0):
+    future = asyncio.run_coroutine_threadsafe(coro, _ensure_loop())
     try:
         return future.result(timeout=timeout)
-    except Exception as err:
-        if "TimeoutError" in type(err).__name__:
-            log_chargepoint.warning(f"ChargePoint API call timed out after {timeout}s")
+    except TimeoutError:
+        future.cancel()
+        log_chargepoint.warning(f"ChargePoint API call timed out after {timeout}s")
         raise
 
-def start_charger(amperage_limit: int = 20):  _run_sync(start_charger_async(amperage_limit))
-def stop_charger():   _run_sync(stop_charger_async())
-def get_charger_status() -> dict: return _run_sync(get_charger_status_async())
-def set_charger_amperage_limit(amperage: int): _run_sync(set_charger_amperage_limit_async(amperage))
+
+def start_charger(amperage_limit: int = None):
+    _run(_start_charger(amperage_limit if amperage_limit is not None else config.DEFAULT_CHARGER_AMPERAGE))
+
+
+def stop_charger():
+    _run(_stop_charger())
+
+
+def get_charger_status() -> dict:
+    return _run(_get_charger_status())
+
+
+def set_charger_amperage_limit(amperage: int):
+    _run(_set_amperage_limit(amperage))

@@ -1,6 +1,6 @@
-import requests
 import re
-import html
+
+import requests
 from reporting.logger import log
 
 def notify(message: str):

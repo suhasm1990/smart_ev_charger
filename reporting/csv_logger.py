@@ -1,787 +1,641 @@
+"""Telemetry persistence and energy/billing analytics over the logged history."""
 import csv
 import os
-import requests
 import time
-from datetime import datetime, timedelta, date
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
-from core import state, config
-from core.tou import get_tou_period, get_tou_rate, is_expensive_period, is_in_night_blackout, is_weekend
+from core import config, state
+from core.state import get_session_minutes
+from core.tou import (
+    get_tou_period, get_tou_rate, is_expensive_period,
+    is_in_night_blackout, is_weekend, provider_label,
+)
 from reporting.logger import log_csv
 
 CSV_HEADERS = [
     "timestamp", "date", "time", "day_of_week", "is_weekend",
     "tou_period", "tou_rate_per_kwh", "is_expensive",
     "solar_kw", "home_kw", "solar_surplus_kw", "battery_kw", "grid_kw", "battery_pct", "self_powered_pct",
-    "threshold_battery_start", "threshold_battery_stop", "threshold_solar_start", "threshold_solar_stop",
+    "threshold_battery_start", "threshold_battery_stop", "charger_amperage", "charger_power_kw",
     "charger_state", "action", "reason",
     "session_active_minutes", "session_count_today", "session_stop_reason",
     "is_night_blackout", "manual_mode", "island_mode", "storm_mode",
-    "est_grid_cost_this_minute", "charge_window_start_hour", "charge_window_end_hour"
+    "est_grid_cost_this_minute", "charge_window_start_hour", "charge_window_end_hour",
 ]
 
-def get_session_minutes() -> float:
-    if state.charge_session_start is None:
-        return 0.0
-    return max(0.0, round((datetime.now(config.TZ) - state.charge_session_start).total_seconds() / 60, 1))
+# `charger_amperage` and `charger_power_kw` replaced two always-zero columns.
+# Rows written before that change surface under the legacy header names, so
+# amperage lookup accepts either key.
+_LEGACY_AMPERAGE_KEYS = ("charger_amperage", "threshold_solar_start")
+
+DEFAULT_RATE = 0.1706  # Fallback when a row carries no parseable timestamp.
+
+
+# ── Row helpers ─────────────────────────────────────────────────────────────
+
+def _num(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_ev_charging_row(row: dict) -> bool:
+    """True when the row represents an interval with the EV actively charging."""
+    return "CHARGING" in str(row.get("charger_state", "")).upper() or \
+           str(row.get("action", "")).lower() in ("start", "stop")
+
+
+def _row_amperage(row: dict) -> int:
+    """Charger amperage in effect for a row, with fallbacks for older rows."""
+    for key in _LEGACY_AMPERAGE_KEYS:
+        amp = int(_num(row.get(key)))
+        if config.MIN_CHARGER_AMPERAGE <= amp <= config.MAX_CHARGER_AMPERAGE:
+            return amp
+    reason = f"{row.get('reason', '')} {row.get('session_stop_reason', '')}".lower()
+    if "32a" in reason or "32 a" in reason:
+        return config.MAX_CHARGER_AMPERAGE
+    return config.DEFAULT_CHARGER_AMPERAGE
+
+
+@dataclass(slots=True)
+class Reading:
+    """One parsed telemetry interval, normalised for analytics."""
+    day: date
+    hour: int
+    rate: float
+    solar_kw: float
+    home_kw: float
+    grid_kw: float
+    charging: bool
+    ev_power_kw: float
+    session_minutes: float
+    tou_period: str
+    row: dict
+
+    @property
+    def interval_h(self) -> float:
+        return config.CHECK_INTERVAL_MINUTES / 60.0
+
+    @property
+    def grid_import_kw(self) -> float:
+        return max(0.0, self.grid_kw)
+
+    @property
+    def grid_export_kw(self) -> float:
+        return max(0.0, -self.grid_kw)
+
+    @property
+    def ev_grid_kw(self) -> float:
+        """Share of the grid import attributable to the charger."""
+        return min(self.grid_import_kw, self.ev_power_kw) if self.charging else 0.0
+
+    @property
+    def ev_solar_kw(self) -> float:
+        """Solar power flowing into the charger after the rest of the house."""
+        if not self.charging:
+            return 0.0
+        return min(max(0.0, self.solar_kw - max(0.0, self.home_kw - self.ev_power_kw)), self.ev_power_kw)
+
+
+def _readings(rows: list[dict], start: date = None, end: date = None):
+    """Parses raw log rows into `Reading`s, optionally filtered to a date range.
+
+    Every analytic below shares this parser; previously each re-implemented the
+    same date/rate/kW coercion inline.
+    """
+    for row in rows:
+        raw_date = row.get("date") or str(row.get("timestamp", ""))[:10]
+        try:
+            day = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if (start and day < start) or (end and day > end):
+            continue
+
+        try:
+            dt = datetime.fromisoformat(row["timestamp"])
+            hour, rate, period = dt.hour, get_tou_rate(dt), get_tou_period(dt)
+        except (KeyError, TypeError, ValueError):
+            hour = int(_num(str(row.get("time", "12:00")).split(":")[0], 12))
+            rate = _num(row.get("tou_rate_per_kwh"), DEFAULT_RATE) or DEFAULT_RATE
+            period = str(row.get("tou_period", ""))
+
+        charging = _is_ev_charging_row(row)
+        yield Reading(
+            day=day,
+            hour=hour,
+            rate=rate,
+            solar_kw=max(0.0, _num(row.get("solar_kw"))),
+            home_kw=max(0.0, _num(row.get("home_kw"))),
+            grid_kw=_num(row.get("grid_kw")),
+            charging=charging,
+            ev_power_kw=state.charger_power_kw(_row_amperage(row)) if charging else 0.0,
+            session_minutes=_num(row.get("session_active_minutes")),
+            tou_period=period,
+            row=row,
+        )
+
+
+# ── Writing ─────────────────────────────────────────────────────────────────
 
 def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
-    tou    = get_tou_period(now)
-    rate   = get_tou_rate(now)
-    grid   = float(stats.get("grid_kw", 0.0) or 0.0)
-    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-    est_cost = round(max(0.0, grid) * rate * interval_h, 4)
-
-    # Only record active session minutes if charging or at the moment of stop
-    session_mins = get_session_minutes() if (state.charger_state == state.State.CHARGING or action == "stop") else 0.0
+    """Appends one telemetry row to the local CSV and queues it for the cloud."""
+    global _log_rows_cache
+    rate = get_tou_rate(now)
+    est_cost = round(max(0.0, _num(stats.get("grid_kw"))) * rate * (config.CHECK_INTERVAL_MINUTES / 60.0), 4)
+    charging = state.charger_state == state.State.CHARGING
+    session_mins = get_session_minutes() if (charging or action == "stop") else 0.0
 
     row = [
-        now.isoformat(),
-        now.strftime("%Y-%m-%d"),
-        now.strftime("%H:%M"),
-        now.strftime("%A"),
-        is_weekend(now),
-        tou,
-        rate,
-        is_expensive_period(now),
-        stats.get("solar_kw", 0.0),
-        stats.get("home_kw", 0.0),
-        stats.get("solar_surplus_kw", 0.0),
-        stats.get("battery_kw", 0.0),
-        stats.get("grid_kw", 0.0),
-        stats.get("battery_pct", 0.0),
+        now.isoformat(), now.strftime("%Y-%m-%d"), now.strftime("%H:%M"), now.strftime("%A"), is_weekend(now),
+        get_tou_period(now), rate, is_expensive_period(now),
+        stats.get("solar_kw", 0.0), stats.get("home_kw", 0.0), stats.get("solar_surplus_kw", 0.0),
+        stats.get("battery_kw", 0.0), stats.get("grid_kw", 0.0), stats.get("battery_pct", 0.0),
         stats.get("self_powered_pct", 100.0),
-        config.BATTERY_START_PCT,
-        config.BATTERY_STOP_PCT,
-        0.0,
-        0.0,
-        state.charger_state,
-        action,
-        reason,
-        session_mins,
-        state.session_count_today,
-        state.session_stop_reason or "",
-        is_in_night_blackout(now),
-        state.manual_mode,
-        stats.get("island_mode", "on_grid"),
-        stats.get("storm_mode", False),
-        est_cost,
-        config.ALLOWED_CHARGE_START_HOUR,
-        config.ALLOWED_CHARGE_END_HOUR,
+        config.BATTERY_START_PCT, config.BATTERY_STOP_PCT,
+        state.active_amperage, state.charger_power_kw(),
+        state.charger_state, action, reason,
+        session_mins, state.session_count_today, state.session_stop_reason or "",
+        is_in_night_blackout(now), state.manual_mode,
+        stats.get("island_mode", "on_grid"), stats.get("storm_mode", False),
+        est_cost, config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR,
     ]
 
-    file_exists = os.path.exists(config.CSV_LOG_FILE)
-    os.makedirs(os.path.dirname(config.CSV_LOG_FILE) or ".", exist_ok=True)
-    with open(config.CSV_LOG_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(CSV_HEADERS)
-        writer.writerow(row)
+    try:
+        os.makedirs(os.path.dirname(config.CSV_LOG_FILE) or ".", exist_ok=True)
+        write_header = not os.path.exists(config.CSV_LOG_FILE)
+        with open(config.CSV_LOG_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(CSV_HEADERS)
+            writer.writerow(row)
+    except OSError as e:
+        log_csv.error(f"Failed to write local CSV row: {e}")
 
     try:
         from services.sheets_db import append_log_row
         append_log_row(row)
     except Exception as e:
-        log_csv.error(f"Failed to push row to Google Sheets: {e}")
+        log_csv.error(f"Failed to queue row for Google Sheets: {e}")
 
-    if est_cost > 0:
-        log_csv.debug(
-            f"Grid draw logged | grid={grid}kW | rate=${rate}/kWh | "
-            f"est_cost_this_min=${est_cost:.5f} | tou={tou}"
-        )
-    global _log_rows_cache
     _log_rows_cache = None
 
-_log_rows_cache = None
+
+# ── Reading ─────────────────────────────────────────────────────────────────
+
+_log_rows_cache: list[dict] | None = None
 _log_rows_cache_time = 0.0
+LOG_CACHE_TTL = 60.0
+
 
 def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
-    """
-    Fetches recent log rows directly from Google Sheets (primary source of truth across container restarts).
-    Utilizes a 60-second in-memory TTL cache to eliminate redundant network roundtrips.
-    Falls back to local CSV file if Google Sheets API is unconfigured or temporarily unavailable.
+    """Returns recent telemetry rows from Google Sheets, falling back to CSV.
+
+    Sheets is the source of truth because it survives container restarts; a
+    60-second in-memory cache keeps repeated analytics off the network.
     """
     global _log_rows_cache, _log_rows_cache_time
-    now_ts = time.time()
-    if not force_refresh and _log_rows_cache is not None and (now_ts - _log_rows_cache_time) < 60.0:
+    if not force_refresh and _log_rows_cache is not None and (time.time() - _log_rows_cache_time) < LOG_CACHE_TTL:
         return _log_rows_cache
 
-    # 1. Try Google Sheets first (primary single source of truth)
+    rows = []
     try:
         from services.sheets_db import get_recent_logs
-        sheets_logs = get_recent_logs(days=days)
-        if sheets_logs:
-            _log_rows_cache = sheets_logs
-            _log_rows_cache_time = now_ts
-            return sheets_logs
+        rows = get_recent_logs(days=days)
     except Exception as e:
-        log_csv.warning(f"Failed to fetch logs from Google Sheets, falling back to local CSV: {e}")
+        log_csv.warning(f"Google Sheets unavailable, falling back to local CSV: {e}")
 
-    # 2. Fallback to local CSV if Sheets API fails or is offline
-    rows = []
-    csv_file = config.CSV_LOG_FILE
-    if os.path.exists(csv_file):
+    if not rows and os.path.exists(config.CSV_LOG_FILE):
         try:
-            with open(csv_file, "r", newline="", encoding="utf-8") as f:
+            with open(config.CSV_LOG_FILE, newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
-                _log_rows_cache = rows
-                _log_rows_cache_time = now_ts
-        except Exception as e:
+        except OSError as e:
             log_csv.warning(f"Error reading local CSV fallback: {e}")
 
+    _log_rows_cache, _log_rows_cache_time = rows, time.time()
     return rows
 
+
 def get_recent_sessions(limit: int = 5) -> list[dict]:
-    """Parses logs (local CSV + Google Sheets) and groups contiguous charging rows into distinct charging sessions."""
-    rows = get_all_log_rows()
-    if not rows:
-        return []
+    """Groups contiguous charging rows into distinct sessions, newest first."""
+    sessions, current = [], None
 
-    sessions = []
-    current_session = None
+    def stamp(row):
+        return row.get("timestamp") or f"{row.get('date', '')} {row.get('time', '')}".strip()
 
-    try:
-        for row in rows:
-            state_str = row.get("charger_state", "")
-            action_str = row.get("action", "")
-            is_charging = ("CHARGING" in state_str) or (action_str == "start")
+    for r in _readings(get_all_log_rows()):
+        row = r.row
+        if r.charging:
+            if current is None:
+                current = {
+                    "start_time": stamp(row),
+                    "start_battery_pct": row.get("battery_pct", "N/A"),
+                    "solar_kw": row.get("solar_kw", "0"),
+                    "max_duration_minutes": r.session_minutes,
+                    "stop_reason": row.get("session_stop_reason") or row.get("reason", ""),
+                }
+            current["end_time"] = stamp(row)
+            current["end_battery_pct"] = row.get("battery_pct", "N/A")
+            current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
+            if row.get("session_stop_reason"):
+                current["stop_reason"] = row["session_stop_reason"]
+        elif current is not None:
+            current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
+            current["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current["stop_reason"]
+            sessions.append(current)
+            current = None
 
-            if is_charging:
-                if current_session is None:
-                    current_session = {
-                        "start_time": row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}"),
-                        "start_battery_pct": row.get("battery_pct", "N/A"),
-                        "end_time": row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}"),
-                        "end_battery_pct": row.get("battery_pct", "N/A"),
-                        "max_duration_minutes": float(row.get("session_active_minutes", 0) or 0),
-                        "stop_reason": row.get("session_stop_reason", "") or row.get("reason", ""),
-                        "solar_kw": row.get("solar_kw", "0")
-                    }
-                else:
-                    current_session["end_time"] = row.get("timestamp", f"{row.get('date', '')} {row.get('time', '')}")
-                    current_session["end_battery_pct"] = row.get("battery_pct", "N/A")
-                    dur = float(row.get("session_active_minutes", 0) or 0)
-                    if dur > current_session["max_duration_minutes"]:
-                        current_session["max_duration_minutes"] = dur
-                    if row.get("session_stop_reason"):
-                        current_session["stop_reason"] = row.get("session_stop_reason")
-            else:
-                if current_session is not None:
-                    # Session just ended
-                    dur = float(row.get("session_active_minutes", 0) or 0)
-                    if dur > current_session["max_duration_minutes"]:
-                        current_session["max_duration_minutes"] = dur
-                    if action_str == "stop" or row.get("session_stop_reason") or row.get("reason"):
-                        current_session["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current_session["stop_reason"]
-                    sessions.append(current_session)
-                    current_session = None
-
-        if current_session is not None:
-            sessions.append(current_session)
-
-    except Exception as e:
-        log_csv.error(f"Error parsing recent sessions: {e}")
-
-    # Return most recent sessions first
+    if current is not None:
+        sessions.append(current)
     return sessions[-limit:][::-1]
 
-def _is_ev_charging_row(row: dict) -> bool:
-    """Returns True if the log row represents active EV charging."""
-    state_str = str(row.get("charger_state", "")).upper()
-    action_str = str(row.get("action", "")).lower()
-    return ("CHARGING" in state_str) or (action_str in ["start", "stop"])
 
-def _resolve_date_range(period: str, now: datetime = None) -> tuple[datetime.date, datetime.date, str]:
-    """Resolves period string into (start_date, end_date, period_label)."""
-    if now is None:
-        now = datetime.now(config.TZ)
-    
-    clean = str(period or "today").lower().strip()
-    if clean in ["today", ""]:
-        return now.date(), now.date(), f"Today ({now.date()})"
-    if clean == "yesterday":
-        yest = now.date() - timedelta(days=1)
-        return yest, yest, f"Yesterday ({yest})"
-    if clean in ["this_week", "week", "this week"]:
-        start = now.date() - timedelta(days=now.weekday())
-        return start, now.date(), f"This Week ({start} to {now.date()})"
-    if clean in ["last_week", "last week", "previous_week", "previous week"]:
-        this_week_start = now.date() - timedelta(days=now.weekday())
-        start = this_week_start - timedelta(days=7)
-        end = this_week_start - timedelta(days=1)
+# ── Period resolution ───────────────────────────────────────────────────────
+
+_MONTH_FORMATS = ("%Y-%m", "%Y/%m", "%m/%Y", "%B %Y", "%b %Y", "%B", "%b")
+
+_PERIOD_ALIASES = {
+    "today": "today", "": "today",
+    "yesterday": "yesterday",
+    "this_week": "this_week", "week": "this_week", "this week": "this_week",
+    "last_week": "last_week", "last week": "last_week",
+    "previous_week": "last_week", "previous week": "last_week",
+    "7days": "7_days", "7_days": "7_days", "last_7_days": "7_days", "last 7 days": "7_days",
+    "past_7_days": "7_days", "past 7 days": "7_days", "past week": "7_days",
+    "this_month": "this_month", "month": "this_month", "this month": "this_month",
+    "30days": "this_month", "30 days": "this_month",
+    "last_month": "last_month", "last month": "last_month",
+    "previous_month": "last_month", "previous month": "last_month",
+}
+
+
+def _month_bounds(day: date) -> tuple[date, date]:
+    start = day.replace(day=1)
+    end = (start.replace(year=start.year + 1, month=1) if start.month == 12
+           else start.replace(month=start.month + 1)) - timedelta(days=1)
+    return start, end
+
+
+def _resolve_date_range(period: str, now: datetime = None, default: str = "today") -> tuple[date, date, str]:
+    """Resolves a natural-language period into (start, end, label).
+
+    Shared by every analytic so that 'July 2026' means the same thing whether
+    it reaches the daily cost report or the monthly bill generator.
+    """
+    now = now or datetime.now(config.TZ)
+    today = now.date()
+    clean = str(period or default).lower().strip()
+    key = _PERIOD_ALIASES.get(clean, clean if clean in _PERIOD_ALIASES.values() else None)
+
+    if key == "today":
+        return today, today, f"Today ({today})"
+    if key == "yesterday":
+        y = today - timedelta(days=1)
+        return y, y, f"Yesterday ({y})"
+    if key == "this_week":
+        start = today - timedelta(days=today.weekday())
+        return start, today, f"This Week ({start} to {today})"
+    if key == "last_week":
+        end = today - timedelta(days=today.weekday() + 1)
+        start = end - timedelta(days=6)
         return start, end, f"Last Week ({start} to {end})"
-    if clean in ["7days", "7_days", "last_7_days", "last 7 days", "past_7_days", "past 7 days", "past week"]:
-        start = now.date() - timedelta(days=7)
-        return start, now.date(), f"Past 7 Days ({start} to {now.date()})"
-    if clean in ["this_month", "month", "30days", "30 days", "this month"]:
-        start = now.date().replace(day=1)
-        return start, now.date(), f"This Month ({start.strftime('%B %Y')})"
-    if clean in ["last_month", "previous_month", "last month", "previous month"]:
-        first_this_month = now.date().replace(day=1)
-        last_prev_month = first_this_month - timedelta(days=1)
-        start = last_prev_month.replace(day=1)
-        return start, last_prev_month, f"Last Month ({start.strftime('%B %Y')})"
-    
-    # Try parsing month strings (e.g. 'July', 'July 2026', '2026-07')
-    month_formats = ["%Y-%m", "%B %Y", "%b %Y", "%B", "%b"]
-    for fmt in month_formats:
+    if key == "7_days":
+        start = today - timedelta(days=7)
+        return start, today, f"Past 7 Days ({start} to {today})"
+    if key == "this_month":
+        start = today.replace(day=1)
+        return start, today, f"This Month ({start.strftime('%B %Y')})"
+    if key == "last_month":
+        start, end = _month_bounds(today.replace(day=1) - timedelta(days=1))
+        return start, end, f"Last Month ({start.strftime('%B %Y')})"
+
+    for fmt in _MONTH_FORMATS:
         try:
-            dt_cand = datetime.strptime(clean, fmt)
-            y = dt_cand.year
-            if fmt in ["%B", "%b"]:
-                y = now.year
-                if dt_cand.month > now.month:
-                    y -= 1
-            m_start = date(y, dt_cand.month, 1)
-            if m_start.month == 12:
-                m_end = date(m_start.year, 12, 31)
-            else:
-                m_end = date(m_start.year, m_start.month + 1, 1) - timedelta(days=1)
-            return m_start, m_end, f"{m_start.strftime('%B %Y')}"
-        except Exception:
+            parsed = datetime.strptime(clean, fmt)
+        except ValueError:
             continue
+        year = parsed.year
+        if fmt in ("%B", "%b"):  # Bare month name means the most recent one.
+            year = now.year - (1 if parsed.month > now.month else 0)
+        start, end = _month_bounds(date(year, parsed.month, 1))
+        return start, end, start.strftime("%B %Y")
 
     try:
-        parsed = datetime.strptime(clean, "%Y-%m-%d").date()
-        return parsed, parsed, f"Date ({parsed})"
-    except Exception:
-        return now.date(), now.date(), f"Today ({now.date()})"
+        exact = datetime.strptime(clean, "%Y-%m-%d").date()
+        return exact, exact, f"Date ({exact})"
+    except ValueError:
+        return _resolve_date_range(default, now, default="today")
+
+
+# ── Analytics ───────────────────────────────────────────────────────────────
 
 def get_daily_charging_cost(period: str = "today") -> dict:
-    """Calculates total grid energy drawn (kWh), solar energy used (kWh), and cost ($) for EV charging for a period."""
+    """Energy, cost, and driving range delivered to the EV over a period."""
     now = datetime.now(config.TZ)
-    start_date, end_date, period_label = _resolve_date_range(period, now)
-
+    start, end, label = _resolve_date_range(period, now)
     rows = get_all_log_rows()
     if not rows:
         return {"error": "No log data found yet."}
 
-    sessions = []
-    curr_session = None
-    grid_energy_by_interval = 0.0
-    grid_cost_by_interval = 0.0
-    solar_energy_by_interval = 0.0
-    charging_intervals_count = 0
-    
-    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-    ev_power_kw = (config.DEFAULT_CHARGER_AMPERAGE * 240.0) / 1000.0  # 4.8 kW at 20A, 7.68 kW at 32A
-
     try:
-        for row in rows:
-            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
-            try:
-                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
-            except Exception:
-                continue
+        sessions, current = [], None
+        grid_kwh = grid_cost = solar_kwh = 0.0
+        intervals = 0
 
-            if not (start_date <= row_date <= end_date):
-                continue
-
-            state_str = str(row.get("charger_state", "")).upper()
-            action_str = str(row.get("action", "")).lower()
-            is_chg = ("CHARGING" in state_str) or (action_str == "start")
-            dur = float(row.get("session_active_minutes", 0) or 0)
-            grid_kw = max(0.0, float(row.get("grid_kw", 0) or 0))
-            solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-            home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-            
-            ts_str = row.get("timestamp")
-            try:
-                rate = get_tou_rate(datetime.fromisoformat(ts_str))
-            except Exception:
-                rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
-
-            if is_chg:
-                charging_intervals_count += 1
-                reason_combined = (str(row.get("reason", "")) + " " + str(row.get("session_stop_reason", ""))).lower()
-                row_amp = 32 if ("32a" in reason_combined or "32 a" in reason_combined) else getattr(state, "active_amperage", config.DEFAULT_CHARGER_AMPERAGE)
-                row_power_kw = (row_amp * 240.0) / 1000.0
-                
-                if curr_session is None:
-                    curr_session = {"max_dur": dur, "amperage": row_amp, "power_kw": row_power_kw}
+        for r in _readings(rows, start, end):
+            if r.charging:
+                intervals += 1
+                if current is None:
+                    current = {"minutes": r.session_minutes, "power_kw": r.ev_power_kw}
                 else:
-                    if dur > curr_session["max_dur"]:
-                        curr_session["max_dur"] = dur
-                    if row_amp > curr_session.get("amperage", 20):
-                        curr_session["amperage"] = row_amp
-                        curr_session["power_kw"] = row_power_kw
-                    
-                ev_grid_kw = min(grid_kw, row_power_kw)
-                grid_energy_by_interval += ev_grid_kw * interval_h
-                grid_cost_by_interval += ev_grid_kw * interval_h * rate
-                solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - row_power_kw))
-                solar_energy_by_interval += min(solar_surplus_kw, row_power_kw) * interval_h
-            else:
-                if curr_session is not None:
-                    if dur > curr_session["max_dur"]:
-                        curr_session["max_dur"] = dur
-                    sessions.append(curr_session)
-                    curr_session = None
+                    current["minutes"] = max(current["minutes"], r.session_minutes)
+                    current["power_kw"] = max(current["power_kw"], r.ev_power_kw)
+                grid_kwh += r.ev_grid_kw * r.interval_h
+                grid_cost += r.ev_grid_kw * r.interval_h * r.rate
+                solar_kwh += r.ev_solar_kw * r.interval_h
+            elif current is not None:
+                current["minutes"] = max(current["minutes"], r.session_minutes)
+                sessions.append(current)
+                current = None
+        if current is not None:
+            sessions.append(current)
 
-        if curr_session is not None:
-            sessions.append(curr_session)
+        default_power = state.charger_power_kw(config.DEFAULT_CHARGER_AMPERAGE)
+        total_minutes = round(sum(s["minutes"] for s in sessions), 1)
+        if not total_minutes and intervals:
+            total_minutes = round(intervals * config.CHECK_INTERVAL_MINUTES, 1)
 
-        # Exact duration and energy calculation across all sessions in the period
-        total_charging_mins = round(sum(s["max_dur"] for s in sessions), 1)
-        if total_charging_mins == 0.0 and charging_intervals_count > 0:
-            total_charging_mins = round(charging_intervals_count * config.CHECK_INTERVAL_MINUTES, 1)
+        total_kwh = round(sum(s["minutes"] / 60.0 * s["power_kw"] for s in sessions), 2)
+        if not total_kwh and total_minutes:
+            total_kwh = round(total_minutes / 60.0 * default_power, 2)
 
-        total_ev_kwh = round(sum((s["max_dur"] / 60.0) * s.get("power_kw", ev_power_kw) for s in sessions), 2)
-        if total_ev_kwh == 0.0 and total_charging_mins > 0:
-            total_ev_kwh = round((total_charging_mins / 60.0) * ev_power_kw, 2)
-        total_grid_kwh = round(min(grid_energy_by_interval, total_ev_kwh), 2)
-        total_self_powered_kwh = round(max(0.0, total_ev_kwh - total_grid_kwh), 2)
-        total_solar_kwh = round(min(solar_energy_by_interval, total_self_powered_kwh), 2)
-        total_battery_kwh = round(max(0.0, total_self_powered_kwh - total_solar_kwh), 2)
-        total_grid_cost = round(grid_cost_by_interval, 2)
-
-        grid_pct = round((total_grid_kwh / total_ev_kwh * 100.0), 1) if total_ev_kwh > 0 else 0.0
-        self_powered_pct = round((total_self_powered_kwh / total_ev_kwh * 100.0), 1) if total_ev_kwh > 0 else 100.0
-        current_rate = get_tou_rate(now)
-
-        # Calculate driving range added using configured EV efficiency (miles / kWh)
-        estimated_miles = round(total_ev_kwh * config.EV_MILES_PER_KWH, 1)
+        from_grid = round(min(grid_kwh, total_kwh), 2)
+        self_powered = round(max(0.0, total_kwh - from_grid), 2)
+        from_solar = round(min(solar_kwh, self_powered), 2)
+        from_battery = round(max(0.0, self_powered - from_solar), 2)
 
         return {
-            "period": period_label,
-            "total_charging_hours": round(total_charging_mins / 60.0, 1),
-            "total_charging_minutes": total_charging_mins,
-            "charging_intervals_count": charging_intervals_count,
-            "ev_grid_kwh_pulled": total_grid_kwh,
-            "solar_kwh_used": total_solar_kwh,
-            "powerwall_battery_kwh_used": total_battery_kwh,
-            "total_self_powered_kwh": total_self_powered_kwh,
-            "total_kwh_added": total_ev_kwh,
-            "estimated_miles_added": estimated_miles,
-            "ev_grid_cost_dollars": total_grid_cost,
-            "grid_percentage": grid_pct,
-            "solar_percentage": self_powered_pct,
-            "estimated_solar_savings_dollars": round(total_self_powered_kwh * current_rate, 2),
-            "calculation_note": "Includes direct solar, Tesla Powerwall battery reserves, and grid energy delivered to vehicle."
+            "period": label,
+            "total_charging_hours": round(total_minutes / 60.0, 1),
+            "total_charging_minutes": total_minutes,
+            "charging_intervals_count": intervals,
+            "ev_grid_kwh_pulled": from_grid,
+            "solar_kwh_used": from_solar,
+            "powerwall_battery_kwh_used": from_battery,
+            "total_self_powered_kwh": self_powered,
+            "total_kwh_added": total_kwh,
+            "estimated_miles_added": round(total_kwh * config.EV_MILES_PER_KWH, 1),
+            "ev_grid_cost_dollars": round(grid_cost, 2),
+            "grid_percentage": round(from_grid / total_kwh * 100.0, 1) if total_kwh else 0.0,
+            "solar_percentage": round(self_powered / total_kwh * 100.0, 1) if total_kwh else 100.0,
+            "estimated_solar_savings_dollars": round(self_powered * get_tou_rate(now), 2),
+            "calculation_note": "Includes direct solar, Tesla Powerwall battery reserves, and grid energy delivered to the vehicle.",
         }
     except Exception as e:
-        log_csv.error(f"Error calculating charging cost summary: {e}")
+        log_csv.error(f"Error calculating charging cost summary: {e}", exc_info=True)
         return {"error": f"Failed to calculate charging cost: {e}"}
 
-def get_home_energy_summary(period: str = "today") -> dict:
-    """Calculates total home energy consumed (kWh), solar generated (kWh), grid imported (kWh), solar export credits ($), fixed fees ($), and utility bill breakdown."""
-    now = datetime.now(config.TZ)
-    start_date, end_date, period_label = _resolve_date_range(period, now)
-    days_count = (end_date - start_date).days + 1
 
+def _fixed_fee(days: int) -> float:
+    return config.UTILITY_FIXED_MONTHLY_FEE / 30.0 * days * config.UTILITY_TAX_MULTIPLIER
+
+
+def _export_credit_rate() -> float:
+    return config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER
+
+
+def _self_powered_pct(home_kwh: float, grid_kwh: float) -> float:
+    if home_kwh <= 0:
+        return 100.0
+    return round(max(0.0, min(100.0, (1 - grid_kwh / home_kwh) * 100.0)), 1)
+
+
+def get_home_energy_summary(period: str = "today") -> dict:
+    """Whole-home consumption, generation, and utility bill breakdown."""
+    start, end, label = _resolve_date_range(period)
+    days = (end - start).days + 1
     rows = get_all_log_rows()
     if not rows:
         return {"error": "No log data found yet."}
 
-    total_home_kwh = 0.0
-    total_solar_kwh = 0.0
-    total_grid_import_kwh = 0.0
-    total_solar_export_kwh = 0.0
-    delivered_grid_cost = 0.0
-    solar_export_credit = 0.0
-    ev_grid_kwh = 0.0
-    ev_solar_kwh = 0.0
-    ev_total_kwh = 0.0
-    ev_grid_cost = 0.0
-
     try:
-        for row in rows:
-            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
-            try:
-                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
-            except Exception:
-                continue
+        home = solar = imported = exported = 0.0
+        grid_cost = export_credit = 0.0
+        ev_kwh = ev_grid_kwh = ev_solar_kwh = ev_cost = 0.0
 
-            if start_date <= row_date <= end_date:
-                grid_kw = float(row.get("grid_kw", 0) or 0)
-                solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+        for r in _readings(rows, start, end):
+            h = r.interval_h
+            home += r.home_kw * h
+            solar += r.solar_kw * h
+            if r.charging:
+                ev_kwh += r.ev_power_kw * h
+                ev_grid_kwh += r.ev_grid_kw * h
+                ev_cost += r.ev_grid_kw * h * r.rate
+                ev_solar_kwh += r.ev_solar_kw * h
+            if r.grid_kw > 0:
+                imported += r.grid_import_kw * h
+                grid_cost += r.grid_import_kw * h * r.rate
+            else:
+                exported += r.grid_export_kw * h
+                export_credit += r.grid_export_kw * h * _export_credit_rate()
 
-                total_home_kwh += home_kw * interval_h
-                total_solar_kwh += solar_kw * interval_h
-                
-                ts_str = row.get("timestamp")
-                try:
-                    dt = datetime.fromisoformat(ts_str)
-                    rate = get_tou_rate(dt)
-                except Exception:
-                    rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
+        fixed = _fixed_fee(days)
+        appliance_cost = max(0.0, grid_cost - ev_cost)
 
-                if _is_ev_charging_row(row):
-                    ev_power_kw = (config.DEFAULT_CHARGER_AMPERAGE * 240.0) / 1000.0
-                    interval_ev_kwh = ev_power_kw * interval_h
-                    ev_total_kwh += interval_ev_kwh
-
-                    if grid_kw > 0:
-                        ev_grid_kw_interval = min(grid_kw, ev_power_kw)
-                        ev_kwh = ev_grid_kw_interval * interval_h
-                        ev_grid_kwh += ev_kwh
-                        ev_grid_cost += ev_kwh * rate
-                    solar_surplus_kw = max(0.0, solar_kw - max(0.0, home_kw - ev_power_kw))
-                    solar_kwh_interval = min(solar_surplus_kw, ev_power_kw) * interval_h
-                    ev_solar_kwh += solar_kwh_interval
-
-                if grid_kw > 0:
-                    import_kwh = grid_kw * interval_h
-                    total_grid_import_kwh += import_kwh
-                    delivered_grid_cost += import_kwh * rate
-                else:
-                    export_kwh = abs(grid_kw) * interval_h
-                    total_solar_export_kwh += export_kwh
-                    solar_export_credit += export_kwh * (config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER)
-
-        fixed_service_fee = (config.UTILITY_FIXED_MONTHLY_FEE / 30.0) * days_count * config.UTILITY_TAX_MULTIPLIER
-        estimated_bill_total = max(0.0, fixed_service_fee + delivered_grid_cost - solar_export_credit)
-        non_ev_home_cost = max(0.0, delivered_grid_cost - ev_grid_cost)
-        self_powered_pct = round(max(0.0, min(100.0, (1 - total_grid_import_kwh / max(total_home_kwh, 0.01)) * 100.0)), 1) if total_home_kwh > 0 else 100.0
-
-        if ev_total_kwh > 0 and ev_grid_cost == 0.0:
-            ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (100% solar/battery self-powered, $0.00 grid cost)"
-        elif ev_total_kwh > 0:
-            ev_summary_msg = f"{round(ev_total_kwh, 1)} kWh added (${round(ev_grid_cost, 2):.2f} grid cost, {round(ev_solar_kwh, 1)} kWh direct solar)"
+        if not ev_kwh:
+            ev_summary = "No EV charging recorded in this period"
+        elif not ev_cost:
+            ev_summary = f"{round(ev_kwh, 1)} kWh added (100% solar/battery self-powered, $0.00 grid cost)"
         else:
-            ev_summary_msg = "No EV charging recorded in this period"
-
-        provider_name = getattr(config, "UTILITY_PROVIDER", "MID")
-        plan_label = f"Modesto Irrigation District (MID) Rate N2-EVD" if provider_name == "MID" else f"PG&E EV2-A Rate Schedule" if provider_name == "PGE" else f"Custom Utility Rate ({provider_name})"
+            ev_summary = f"{round(ev_kwh, 1)} kWh added (${ev_cost:.2f} grid cost, {round(ev_solar_kwh, 1)} kWh direct solar)"
 
         return {
-            "period": period_label,
-            "period_days_count": days_count,
-            "total_home_consumption_kwh": round(total_home_kwh, 2),
-            "total_solar_generated_kwh": round(total_solar_kwh, 2),
-            "total_grid_imported_kwh": round(total_grid_import_kwh, 2),
-            "total_solar_exported_kwh": round(total_solar_export_kwh, 2),
-            "fixed_service_fee_dollars": round(fixed_service_fee, 2),
-            "grid_delivered_energy_cost_dollars": round(delivered_grid_cost, 2),
-            "solar_export_credit_dollars": round(solar_export_credit, 2),
-            "estimated_total_mid_utility_bill_dollars": round(estimated_bill_total, 2),
-            "ev_charging_share_of_bill_dollars": round(ev_grid_cost, 2),
-            "ev_charging_total_kwh": round(ev_total_kwh, 2),
-            "ev_estimated_miles_added": round(ev_total_kwh * config.EV_MILES_PER_KWH, 1),
+            "period": label,
+            "period_days_count": days,
+            "total_home_consumption_kwh": round(home, 2),
+            "total_solar_generated_kwh": round(solar, 2),
+            "total_grid_imported_kwh": round(imported, 2),
+            "total_solar_exported_kwh": round(exported, 2),
+            "fixed_service_fee_dollars": round(fixed, 2),
+            "grid_delivered_energy_cost_dollars": round(grid_cost, 2),
+            "solar_export_credit_dollars": round(export_credit, 2),
+            "estimated_total_mid_utility_bill_dollars": round(max(0.0, fixed + grid_cost - export_credit), 2),
+            "ev_charging_share_of_bill_dollars": round(ev_cost, 2),
+            "ev_charging_total_kwh": round(ev_kwh, 2),
+            "ev_estimated_miles_added": round(ev_kwh * config.EV_MILES_PER_KWH, 1),
             "ev_solar_kwh_used": round(ev_solar_kwh, 2),
             "ev_grid_kwh_used": round(ev_grid_kwh, 2),
-            "ev_charging_summary": ev_summary_msg,
-            "home_appliances_grid_energy_cost_dollars": round(non_ev_home_cost, 2),
-            "home_appliances_share_of_bill_dollars": round(non_ev_home_cost, 2),
-            "home_self_powered_percentage": self_powered_pct,
-            "utility_rate_plan": plan_label
+            "ev_charging_summary": ev_summary,
+            "home_appliances_grid_energy_cost_dollars": round(appliance_cost, 2),
+            "home_appliances_share_of_bill_dollars": round(appliance_cost, 2),
+            "home_self_powered_percentage": _self_powered_pct(home, imported),
+            "utility_rate_plan": provider_label(),
         }
     except Exception as e:
-        log_csv.error(f"Error calculating home energy summary: {e}")
+        log_csv.error(f"Error calculating home energy summary: {e}", exc_info=True)
         return {"error": f"Failed to calculate home energy summary: {e}"}
 
+
+EVENING_START_HOUR, EVENING_END_HOUR = 16, 22
+
+
 def get_energy_saving_advice() -> dict:
-    """Analyzes recent 7-day power usage logs to calculate solar generation windows, identify high-cost grid draws, and provide actionable tips to reduce electric bills."""
+    """Derives solar windows, evening battery needs, and actionable bill tips."""
     rows = get_all_log_rows()
     if not rows:
         return {"error": "No log data found yet."}
 
     now = datetime.now(config.TZ)
-    seven_days_ago = (now - timedelta(days=7)).date()
-
-    hourly_solar_surplus = {h: [] for h in range(24)}
-    on_peak_grid_cost = 0.0
-    ev_grid_draw_cost = 0.0
+    since = (now - timedelta(days=7)).date()
 
     try:
-        for row in rows:
-            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
-            try:
-                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
-            except Exception:
-                continue
+        hourly_surplus: dict[int, list[float]] = {h: [] for h in range(24)}
+        on_peak_cost = ev_grid_cost = 0.0
+        evening: dict[date, list[float]] = {}
 
-            if row_date >= seven_days_ago:
-                ts_str = row.get("timestamp", "")
-                try:
-                    dt = datetime.fromisoformat(ts_str)
-                    hour = dt.hour
-                    rate = get_tou_rate(dt)
-                except Exception:
-                    hour = int(row.get("time", "12:00").split(":")[0])
-                    rate = 0.1706
+        for r in _readings(rows, start=since):
+            h = r.interval_h
+            hourly_surplus[r.hour].append(max(0.0, r.solar_kw - r.home_kw))
 
-                solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                grid_kw = float(row.get("grid_kw", 0) or 0)
-                interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
+            if r.tou_period == "on_peak":
+                on_peak_cost += r.grid_import_kw * h * r.rate
+            ev_grid_cost += r.ev_grid_kw * h * r.rate
 
-                surplus = max(0.0, solar_kw - home_kw)
-                hourly_solar_surplus[hour].append(surplus)
+            if EVENING_START_HOUR <= r.hour < EVENING_END_HOUR:
+                # Exclude the charger so evening planning reflects the house alone.
+                appliance_kw = max(0.0, r.home_kw - r.ev_power_kw)
+                totals = evening.setdefault(r.day, [0.0, 0.0, 0.0])
+                totals[0] += appliance_kw * h
+                totals[1] += r.solar_kw * h
+                totals[2] += max(0.0, appliance_kw - r.solar_kw) * h
 
-                period = row.get("tou_period", "")
-                if period == "on_peak" and grid_kw > 0:
-                    on_peak_grid_cost += grid_kw * interval_h * rate
+        def evening_avg(index: int, fallback: float) -> float:
+            return sum(v[index] for v in evening.values()) / len(evening) if evening else fallback
 
-                state_str = row.get("charger_state", "")
-                action_str = row.get("action", "")
-                if ("CHARGING" in state_str or action_str == "start") and grid_kw > 0:
-                    ev_grid_kw_val = min(grid_kw, 4.8)
-                    ev_grid_draw_cost += ev_grid_kw_val * interval_h * rate
+        appliance_kwh = evening_avg(0, 5.0)
+        evening_solar_kwh = evening_avg(1, 2.0)
+        deficit_kwh = evening_avg(2, 3.5)
 
-        # Calculate historical evening peak household load & evening solar (16:00 - 22:00 / 4 PM - 10 PM)
-        evening_appliance_by_day = {}
-        evening_solar_by_day = {}
-        evening_net_deficit_by_day = {}
-        for row in rows:
-            row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
-            try:
-                row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
-            except Exception:
-                continue
-            if row_date >= seven_days_ago:
-                try:
-                    hour = int(row.get("time", "12:00").split(":")[0])
-                except Exception:
-                    continue
-                if 16 <= hour < 22:
-                    home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-                    solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-                    state_str = str(row.get("charger_state", "")).upper()
-                    action_str = str(row.get("action", "")).lower()
-                    if ("CHARGING" in state_str) or (action_str == "start"):
-                        home_appliance_kw = max(0.0, home_kw - 4.8)
-                    else:
-                        home_appliance_kw = home_kw
-                    
-                    net_deficit_kw = max(0.0, home_appliance_kw - solar_kw)
-                    evening_appliance_by_day[row_date] = evening_appliance_by_day.get(row_date, 0.0) + (home_appliance_kw * interval_h)
-                    evening_solar_by_day[row_date] = evening_solar_by_day.get(row_date, 0.0) + (solar_kw * interval_h)
-                    evening_net_deficit_by_day[row_date] = evening_net_deficit_by_day.get(row_date, 0.0) + (net_deficit_kw * interval_h)
+        # Reserve enough Powerwall to cover the evening deficit, plus 10% buffer.
+        reserve_pct = round(min(60.0, max(25.0, deficit_kwh / config.POWERWALL_USABLE_KWH * 100.0 + 10.0)), 1)
 
-        avg_evening_appliance_kwh = sum(evening_appliance_by_day.values()) / max(len(evening_appliance_by_day), 1) if evening_appliance_by_day else 5.0
-        avg_evening_solar_kwh = sum(evening_solar_by_day.values()) / max(len(evening_solar_by_day), 1) if evening_solar_by_day else 2.0
-        avg_evening_net_deficit_kwh = sum(evening_net_deficit_by_day.values()) / max(len(evening_net_deficit_by_day), 1) if evening_net_deficit_by_day else 3.5
-        
-        # Tesla Powerwall usable capacity is ~13.5 kWh. Add 10% safety buffer over net deficit.
-        recommended_battery_reserve = min(60.0, max(25.0, (avg_evening_net_deficit_kwh / 13.5) * 100.0 + 10.0))
-        rec_reserve_pct = round(recommended_battery_reserve, 1)
+        best_hours = [h for h, vals in hourly_surplus.items() if vals and sum(vals) / len(vals) >= 1.0]
+        window = f"{min(best_hours)}:00 - {max(best_hours) + 1}:00" if best_hours else "10:00 - 15:00"
 
-        avg_surplus = {h: (sum(vals)/len(vals) if vals else 0.0) for h, vals in hourly_solar_surplus.items()}
-        best_hours = [h for h, avg in avg_surplus.items() if avg >= 1.0]
-
-        solar_window_str = f"{min(best_hours)}:00 - {max(best_hours)+1}:00" if best_hours else "10:00 AM - 3:00 PM"
-
-        rec1 = f"Run heavy appliances (AC, washing machine, dishwasher, dryer) during {solar_window_str} when solar generation is at its peak."
-        rec2 = "Avoid running heavy appliances between 5:00 PM and 8:00 PM (On-Peak hours when MID grid rates are $0.35/kWh)."
-        rec3 = "Consuming your solar power directly saves 4.5x more money than exporting it back to MID ($0.35/kWh avoided vs $0.076/kWh solar export credit)."
-        rec4 = "Charge EV during daytime solar surplus hours (10:00 AM - 3:00 PM) to avoid pulling grid power at night."
-        rec5 = f"Evening appliance load averages {round(avg_evening_appliance_kwh, 1)} kWh (offset by {round(avg_evening_solar_kwh, 1)} kWh late solar). Maintain at least {rec_reserve_pct}% Powerwall reserve at 4:00 PM for net {round(avg_evening_net_deficit_kwh, 1)} kWh battery deficit."
+        peak_rate = get_tou_rate(now.replace(hour=18, minute=0))
+        export_rate = _export_credit_rate()
+        avoid_window = f"{17}:00 - {20}:00 (On-Peak ${peak_rate:.2f}/kWh rate)"
 
         return {
-            "optimal_solar_appliance_window": solar_window_str,
-            "cheapest_ev_charging_window": f"{solar_window_str} (Off-Peak solar surplus)",
-            "hours_to_avoid_heavy_loads": "5:00 PM - 8:00 PM (On-Peak $0.35/kWh rate)",
-            "avg_evening_appliance_load_kwh": round(avg_evening_appliance_kwh, 2),
-            "avg_evening_solar_generation_kwh": round(avg_evening_solar_kwh, 2),
-            "avg_evening_net_battery_deficit_kwh": round(avg_evening_net_deficit_kwh, 2),
-            "recommended_evening_battery_reserve_pct": rec_reserve_pct,
-            "on_peak_grid_cost_last_7_days": round(on_peak_grid_cost, 2),
-            "ev_grid_charging_cost_last_7_days": round(ev_grid_draw_cost, 2),
-            "actionable_recommendations": [rec1, rec2, rec3, rec4, rec5]
+            "optimal_solar_appliance_window": window,
+            "cheapest_ev_charging_window": f"{window} (Off-Peak solar surplus)",
+            "hours_to_avoid_heavy_loads": avoid_window,
+            "avg_evening_appliance_load_kwh": round(appliance_kwh, 2),
+            "avg_evening_solar_generation_kwh": round(evening_solar_kwh, 2),
+            "avg_evening_net_battery_deficit_kwh": round(deficit_kwh, 2),
+            "recommended_evening_battery_reserve_pct": reserve_pct,
+            "on_peak_grid_cost_last_7_days": round(on_peak_cost, 2),
+            "ev_grid_charging_cost_last_7_days": round(ev_grid_cost, 2),
+            "actionable_recommendations": [
+                f"Run heavy appliances (AC, washer, dishwasher, dryer) during {window} when solar generation peaks.",
+                f"Avoid heavy appliances between 17:00 and 20:00, when the on-peak rate is ${peak_rate:.2f}/kWh.",
+                f"Using solar directly saves {peak_rate / export_rate:.1f}x more than exporting it "
+                f"(${peak_rate:.2f}/kWh avoided vs ${export_rate:.3f}/kWh export credit).",
+                f"Charge the EV during the {window} solar surplus to avoid pulling grid power at night.",
+                f"Evening appliance load averages {round(appliance_kwh, 1)} kWh, offset by {round(evening_solar_kwh, 1)} kWh "
+                f"of late solar. Hold at least {reserve_pct}% Powerwall at {EVENING_START_HOUR}:00 to cover the "
+                f"{round(deficit_kwh, 1)} kWh evening deficit.",
+            ],
         }
     except Exception as e:
-        log_csv.error(f"Error calculating energy saving advice: {e}")
+        log_csv.error(f"Error calculating energy saving advice: {e}", exc_info=True)
         return {"error": f"Failed to calculate energy saving advice: {e}"}
 
+
 def get_monthly_billing_data(period: str = "last_month") -> dict:
-    """
-    Aggregates log rows for a given month ('last_month', 'this_month', or 'YYYY-MM').
-    Returns daily usage records (EXCLUDING fixed daily fee from daily cost) and monthly billing summary.
-    """
+    """Per-day usage records and the monthly bill summary for a given month."""
     now = datetime.now(config.TZ)
-    period_clean = str(period or "last_month").lower().strip()
-    
-    if period_clean in ["last_month", "previous_month", "last month"]:
-        first_of_this_month = now.date().replace(day=1)
-        last_of_prev_month = first_of_this_month - timedelta(days=1)
-        start_date = last_of_prev_month.replace(day=1)
-        end_date = last_of_prev_month
-    elif period_clean in ["this_month", "month", "this month"]:
-        start_date = now.date().replace(day=1)
-        end_date = now.date()
-    else:
-        month_formats = [
-            "%Y-%m", "%Y/%m", "%m/%Y", "%Y-%m-%d",
-            "%B %Y", "%b %Y", "%B", "%b"
-        ]
-        parsed_date = None
-        for fmt in month_formats:
-            try:
-                dt_cand = datetime.strptime(period_clean, fmt)
-                y = dt_cand.year
-                if fmt in ["%B", "%b"]:
-                    y = now.year
-                    if dt_cand.month > now.month:
-                        y -= 1
-                parsed_date = date(y, dt_cand.month, 1)
-                break
-            except Exception:
-                continue
-
-        if parsed_date:
-            start_date = parsed_date
-            if start_date.month == 12:
-                end_date = date(start_date.year, 12, 31)
-            else:
-                end_date = date(start_date.year, start_date.month + 1, 1) - timedelta(days=1)
-        else:
-            first_of_this_month = now.date().replace(day=1)
-            last_of_prev_month = first_of_this_month - timedelta(days=1)
-            start_date = last_of_prev_month.replace(day=1)
-            end_date = last_of_prev_month
-
-    if start_date > now.date():
-        return {"error": f"Cannot generate monthly report for a future month ({start_date.strftime('%B %Y')})."}
-
-    days_count = (end_date - start_date).days + 1
-    month_label = start_date.strftime("%B %Y")
+    start, end, _ = _resolve_date_range(period, now, default="last_month")
+    if start > now.date():
+        return {"error": f"Cannot generate a monthly report for a future month ({start.strftime('%B %Y')})."}
 
     rows = get_all_log_rows(days=365)
     if not rows:
         return {"error": "No log data available for monthly report."}
 
-    daily_map = {}
-    curr = start_date
-    while curr <= end_date:
-        daily_map[curr.strftime("%Y-%m-%d")] = {
-            "date": curr.strftime("%Y-%m-%d"),
-            "date_short": curr.strftime("%b %d"),
-            "day_num": curr.day,
-            "home_kwh": 0.0,
-            "solar_kwh": 0.0,
-            "grid_import_kwh": 0.0,
-            "solar_export_kwh": 0.0,
-            "variable_grid_cost": 0.0,
-            "solar_export_credit": 0.0,
-            "ev_grid_kwh": 0.0,
-            "ev_grid_cost": 0.0,
-            "readings_count": 0
+    fields = ("home_kwh", "solar_kwh", "grid_import_kwh", "solar_export_kwh",
+              "variable_grid_cost", "solar_export_credit", "ev_grid_kwh", "ev_grid_cost")
+
+    daily = {}
+    day = start
+    while day <= end:
+        daily[day] = {
+            "date": day.strftime("%Y-%m-%d"),
+            "date_short": day.strftime("%b %d"),
+            "day_num": day.day,
+            "readings_count": 0,
+            **{f: 0.0 for f in fields},
         }
-        curr += timedelta(days=1)
+        day += timedelta(days=1)
 
-    interval_h = config.CHECK_INTERVAL_MINUTES / 60.0
-
-    for row in rows:
-        row_date_str = row.get("date") or (row.get("timestamp", "")[:10])
-        try:
-            row_date = datetime.strptime(row_date_str, "%Y-%m-%d").date()
-        except Exception:
+    for r in _readings(rows, start, end):
+        entry = daily.get(r.day)
+        if entry is None:
             continue
+        h = r.interval_h
+        entry["readings_count"] += 1
+        entry["home_kwh"] += r.home_kw * h
+        entry["solar_kwh"] += r.solar_kw * h
+        if r.grid_kw > 0:
+            entry["grid_import_kwh"] += r.grid_import_kw * h
+            entry["variable_grid_cost"] += r.grid_import_kw * h * r.rate
+            entry["ev_grid_kwh"] += r.ev_grid_kw * h
+            entry["ev_grid_cost"] += r.ev_grid_kw * h * r.rate
+        else:
+            entry["solar_export_kwh"] += r.grid_export_kw * h
+            entry["solar_export_credit"] += r.grid_export_kw * h * _export_credit_rate()
 
-        if start_date <= row_date <= end_date:
-            d_key = row_date.strftime("%Y-%m-%d")
-            if d_key not in daily_map:
-                continue
+    expected = int(24 * 60 / max(1, config.CHECK_INTERVAL_MINUTES))
+    records, totals = [], dict.fromkeys(fields, 0.0)
 
-            day_data = daily_map[d_key]
-            day_data["readings_count"] += 1
+    for day in sorted(daily):
+        entry = daily[day]
+        count = entry["readings_count"]
+        # Scale up days that missed a few intervals (restarts, updates) so a
+        # short gap does not read as genuinely lower consumption.
+        if 0 < count < expected and expected - count <= 12:
+            scale = expected / count
+            for f in fields:
+                entry[f] *= scale
+        for f in fields:
+            totals[f] += entry[f]
+            entry[f] = round(entry[f], 2)
+        entry["net_variable_cost"] = round(max(0.0, entry["variable_grid_cost"] - entry["solar_export_credit"]), 2)
+        records.append(entry)
 
-            grid_kw = float(row.get("grid_kw", 0) or 0)
-            solar_kw = max(0.0, float(row.get("solar_kw", 0) or 0))
-            home_kw = max(0.0, float(row.get("home_kw", 0) or 0))
-
-            ts_str = row.get("timestamp")
-            try:
-                dt = datetime.fromisoformat(ts_str)
-                rate = get_tou_rate(dt)
-            except Exception:
-                rate = float(row.get("tou_rate_per_kwh", 0) or 0.1706)
-
-            day_data["home_kwh"] += home_kw * interval_h
-            day_data["solar_kwh"] += solar_kw * interval_h
-
-            if grid_kw > 0:
-                imp_kwh = grid_kw * interval_h
-                day_data["grid_import_kwh"] += imp_kwh
-                day_data["variable_grid_cost"] += imp_kwh * rate
-
-                if _is_ev_charging_row(row):
-                    ev_grid_kw_val = min(grid_kw, 4.8)
-                    ev_kwh = ev_grid_kw_val * interval_h
-                    day_data["ev_grid_kwh"] += ev_kwh
-                    day_data["ev_grid_cost"] += ev_kwh * rate
-            else:
-                exp_kwh = abs(grid_kw) * interval_h
-                day_data["solar_export_kwh"] += exp_kwh
-                credit = exp_kwh * (config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER)
-                day_data["solar_export_credit"] += credit
-
-    daily_list = []
-    tot_home = 0.0
-    tot_solar = 0.0
-    tot_grid_import = 0.0
-    tot_solar_export = 0.0
-    tot_variable_cost = 0.0
-    tot_export_credit = 0.0
-    tot_ev_kwh = 0.0
-    tot_ev_cost = 0.0
-
-    expected_daily_readings = int(24 * 60 / max(1, config.CHECK_INTERVAL_MINUTES))
-
-    for d_key in sorted(daily_map.keys()):
-        d = daily_map[d_key]
-        readings = d["readings_count"]
-        # Smart Normalization: If a few readings were missed (e.g. during app updates or restarts),
-        # scale proportionally so missing a few 15-min rows does not skew totals.
-        if 0 < readings < expected_daily_readings and (expected_daily_readings - readings) <= 12:
-            scale = expected_daily_readings / float(readings)
-            d["home_kwh"] *= scale
-            d["solar_kwh"] *= scale
-            d["grid_import_kwh"] *= scale
-            d["solar_export_kwh"] *= scale
-            d["variable_grid_cost"] *= scale
-            d["solar_export_credit"] *= scale
-            d["ev_grid_kwh"] *= scale
-            d["ev_grid_cost"] *= scale
-
-        d["home_kwh"] = round(d["home_kwh"], 2)
-        d["solar_kwh"] = round(d["solar_kwh"], 2)
-        d["grid_import_kwh"] = round(d["grid_import_kwh"], 2)
-        d["solar_export_kwh"] = round(d["solar_export_kwh"], 2)
-        d["variable_grid_cost"] = round(d["variable_grid_cost"], 2)
-        d["solar_export_credit"] = round(d["solar_export_credit"], 2)
-        d["net_variable_cost"] = round(max(0.0, d["variable_grid_cost"] - d["solar_export_credit"]), 2)
-        d["ev_grid_kwh"] = round(d["ev_grid_kwh"], 2)
-        d["ev_grid_cost"] = round(d["ev_grid_cost"], 2)
-
-        daily_list.append(d)
-
-        tot_home += d["home_kwh"]
-        tot_solar += d["solar_kwh"]
-        tot_grid_import += d["grid_import_kwh"]
-        tot_solar_export += d["solar_export_kwh"]
-        tot_variable_cost += d["variable_grid_cost"]
-        tot_export_credit += d["solar_export_credit"]
-        tot_ev_kwh += d["ev_grid_kwh"]
-        tot_ev_cost += d["ev_grid_cost"]
-
-    fixed_service_fee = (config.UTILITY_FIXED_MONTHLY_FEE / 30.0) * days_count * config.UTILITY_TAX_MULTIPLIER
-    estimated_bill_total = max(0.0, fixed_service_fee + tot_variable_cost - tot_export_credit)
-    appliance_cost = max(0.0, tot_variable_cost - tot_ev_cost)
-    self_powered_pct = round(max(0.0, min(100.0, (1 - tot_grid_import / max(tot_home, 0.01)) * 100.0)), 1) if tot_home > 0 else 100.0
-
-    provider_name = getattr(config, "UTILITY_PROVIDER", "MID")
-    plan_label = f"Modesto Irrigation District (MID) Rate N2-EVD" if provider_name == "MID" else f"PG&E EV2-A Rate Schedule" if provider_name == "PGE" else f"Custom Rate ({provider_name})"
+    days_count = (end - start).days + 1
+    fixed = _fixed_fee(days_count)
 
     return {
-        "month_label": month_label,
-        "start_date": str(start_date),
-        "end_date": str(end_date),
+        "month_label": start.strftime("%B %Y"),
+        "start_date": str(start),
+        "end_date": str(end),
         "days_count": days_count,
-        "total_home_kwh": round(tot_home, 2),
-        "total_solar_kwh": round(tot_solar, 2),
-        "total_grid_import_kwh": round(tot_grid_import, 2),
-        "total_solar_export_kwh": round(tot_solar_export, 2),
-        "total_variable_grid_cost_dollars": round(tot_variable_cost, 2),
-        "total_solar_export_credit_dollars": round(tot_export_credit, 2),
-        "fixed_service_fee_dollars": round(fixed_service_fee, 2),
-        "estimated_net_bill_dollars": round(estimated_bill_total, 2),
-        "ev_charging_kwh": round(tot_ev_kwh, 2),
-        "ev_charging_cost_dollars": round(tot_ev_cost, 2),
-        "home_appliances_cost_dollars": round(appliance_cost, 2),
-        "self_powered_percentage": self_powered_pct,
-        "utility_rate_plan": plan_label,
-        "daily_records": daily_list
+        "total_home_kwh": round(totals["home_kwh"], 2),
+        "total_solar_kwh": round(totals["solar_kwh"], 2),
+        "total_grid_import_kwh": round(totals["grid_import_kwh"], 2),
+        "total_solar_export_kwh": round(totals["solar_export_kwh"], 2),
+        "total_variable_grid_cost_dollars": round(totals["variable_grid_cost"], 2),
+        "total_solar_export_credit_dollars": round(totals["solar_export_credit"], 2),
+        "fixed_service_fee_dollars": round(fixed, 2),
+        "estimated_net_bill_dollars": round(
+            max(0.0, fixed + totals["variable_grid_cost"] - totals["solar_export_credit"]), 2),
+        "ev_charging_kwh": round(totals["ev_grid_kwh"], 2),
+        "ev_charging_cost_dollars": round(totals["ev_grid_cost"], 2),
+        "home_appliances_cost_dollars": round(max(0.0, totals["variable_grid_cost"] - totals["ev_grid_cost"]), 2),
+        "self_powered_percentage": _self_powered_pct(totals["home_kwh"], totals["grid_import_kwh"]),
+        "utility_rate_plan": provider_label(),
+        "daily_records": records,
     }

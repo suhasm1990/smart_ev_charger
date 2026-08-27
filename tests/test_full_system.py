@@ -1,18 +1,18 @@
 import os
 import sys
 import unittest
-from datetime import datetime, date, timedelta
+from datetime import date, datetime
 
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core import config, state, evaluate, check_manual_mode, get_tou_period, get_tou_rate, is_in_night_blackout, is_weekend
+from core import config, state
 from reporting.csv_logger import (
-    get_session_minutes, _resolve_date_range, _is_ev_charging_row,
-    get_daily_charging_cost, get_home_energy_summary, get_energy_saving_advice, get_monthly_billing_data
+    _is_ev_charging_row, _resolve_date_range,
+    get_home_energy_summary, get_monthly_billing_data,
 )
-from reporting.report_generator import generate_monthly_report_image
-from agent.alerts import add_alert, remove_alert, list_alerts, check_alerts, check_recent_log_errors
+from reporting import generate_monthly_report_image
+from agent.alerts import add_alert, check_alerts, list_alerts
 from agent import llm_client, telegram_bot
 import services.chargepoint
 import services.netzero
@@ -21,12 +21,12 @@ class TestFullSystem(unittest.TestCase):
 
     def setUp(self):
         # Mock external APIs and notifications
-        services.chargepoint.start_charger = lambda amp=20: None
+        services.chargepoint.start_charger = lambda amperage_limit=None: None
         services.chargepoint.stop_charger = lambda: None
-        services.chargepoint.set_charger_amperage_limit = lambda amp: None
-        telegram_bot.start_charger = lambda amp=20: None
+        services.chargepoint.set_charger_amperage_limit = lambda amperage: None
+        telegram_bot.start_charger = lambda amperage_limit=None: None
         telegram_bot.stop_charger = lambda: None
-        telegram_bot.set_charger_amperage_limit = lambda amp: None
+        telegram_bot.set_charger_amperage_limit = lambda amperage: None
         telegram_bot.notify = lambda msg: None
         
         # Reset runtime state
@@ -38,10 +38,10 @@ class TestFullSystem(unittest.TestCase):
         state.prev_manual_mode = False
         state.clear_manual_guards()
         config.MANUAL_MODE_OVERRIDE = "auto"
+        config.save_dynamic_config = lambda: None
 
     def tearDown(self):
         config.MANUAL_MODE_OVERRIDE = "auto"
-        config.save_dynamic_config()
         state.clear_manual_guards()
         state.charger_state = state.State.IDLE
         state.charge_session_start = None
@@ -121,6 +121,13 @@ class TestFullSystem(unittest.TestCase):
 
     def test_energy_analytics_and_report_generation(self):
         """Tests calculation of energy summaries and PNG infographic generation."""
+        import reporting.csv_logger as csv_logger
+        from tests.helpers import seed_telemetry
+        rows = seed_telemetry()
+        original = csv_logger.get_all_log_rows
+        csv_logger.get_all_log_rows = lambda days=7, force_refresh=False: rows
+        self.addCleanup(lambda: setattr(csv_logger, "get_all_log_rows", original))
+
         summary = get_home_energy_summary("last_month")
         self.assertNotIn("error", summary)
         self.assertIn("total_home_consumption_kwh", summary)
