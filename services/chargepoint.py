@@ -100,39 +100,29 @@ async def _stop_charger():
         status = await client.get_user_charging_status()
         session_id = getattr(status, "session_id", None) if status else None
         if not session_id:
-            log_chargepoint.info("No active charging session to stop (already idle).")
-            return
+            home = await client.get_home_charger_status(config.CHARGEPOINT_DEVICE_ID)
+            if home.charging_status != "CHARGING":
+                log_chargepoint.info("No active charging session to stop (already idle).")
+                return
+            session_id = 0
 
-        endpoints = client.global_config.endpoints.accounts_endpoint
-        response = await client._request(
-            "POST", endpoints / "v1/driver/station/stopSession",
-            json={"deviceId": config.CHARGEPOINT_DEVICE_ID, "portNumber": 1, "sessionId": session_id},
+        from python_chargepoint.session import _send_command
+        await _send_command(
+            client=client,
+            action="stop",
+            device_id=config.CHARGEPOINT_DEVICE_ID,
+            port_number=1,
+            session_id=session_id,
         )
-        if response.status != 200:
-            body = await response.text()
-            log_chargepoint.warning(f"Stop command returned status={response.status}: {body[:100]}")
-            return
-
-        ack_id = (await response.json()).get("ackId")
-        if not ack_id:
-            log_chargepoint.info(f"Stop command accepted for session_id={session_id}")
-            return
-
-        ack = await client._request(
-            "POST", endpoints / "v1/driver/station/session/ack",
-            json={"ackId": ack_id, "action": "stop_session"},
-        )
-        if ack.status == 200:
-            log_chargepoint.info(f"Session STOPPED and confirmed | session_id={session_id}")
-        else:
-            log_chargepoint.info(f"Session already stopped or finalized by the vehicle (status={ack.status}).")
+        log_chargepoint.info(f"Session STOPPED and confirmed by hardware | session_id={session_id}")
     except Exception as e:
         message = _clean_error(e)
-        if "422" in message or "Failed to stop session" in message:
-            log_chargepoint.info(f"Charger session already stopped or finalized: {message}")
+        if "already stopped" in message.lower() or "not in use" in message.lower():
+            log_chargepoint.info(f"Charger session already stopped: {message}")
             return
         log_chargepoint.warning(f"Error executing stop command: {message}")
         await _drop_client()
+        raise
 
 
 async def _get_charger_status() -> dict:
