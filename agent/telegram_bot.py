@@ -293,10 +293,14 @@ def set_battery_thresholds(start_pct: float, stop_pct: float) -> str:
         stop_pct: Battery level (%) at which charging stops to protect home power.
     """
     try:
-        config.BATTERY_START_PCT = float(start_pct)
-        config.BATTERY_STOP_PCT = float(stop_pct)
+        start = float(start_pct)
+        stop = float(stop_pct)
     except (TypeError, ValueError):
         return "Error: Invalid numeric value for battery thresholds."
+    if start <= stop:
+        return f"Error: Battery start threshold ({start}%) must be strictly greater than stop threshold ({stop}%)."
+    config.BATTERY_START_PCT = start
+    config.BATTERY_STOP_PCT = stop
     config.save_dynamic_config()
     _trigger_cycle()
     return f"Success: Set battery start threshold to {config.BATTERY_START_PCT}% and stop to {config.BATTERY_STOP_PCT}%."

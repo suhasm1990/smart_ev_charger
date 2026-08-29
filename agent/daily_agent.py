@@ -33,15 +33,15 @@ Home Energy & Load Profile:
 {instruction}
 
 Strategy Guidelines:
-1. Set 'battery_stop_pct' high enough (around {reserve_pct}%) that EV charging stops with enough \
-battery left for the evening.
-2. If the EV needs more than daytime solar can give, prefer cheap off-peak hours over draining the \
-battery before the evening peak.
+1. 'battery_stop_pct' is the LOWER cutoff limit (around {reserve_pct}%) where EV charging must STOP to safeguard evening home battery reserve.
+2. 'battery_start_pct' is the UPPER start/resume threshold where EV charging is allowed to begin.
+3. CRITICAL CONSTRAINT: 'battery_start_pct' MUST ALWAYS be strictly higher than 'battery_stop_pct' by at least 10-15% (e.g. if battery_stop_pct is 40.0%, battery_start_pct should be 55.0%).
+4. If the EV needs more than daytime solar can give, prefer cheap off-peak hours over draining the battery before the evening peak.
 
 Recommend today's optimal configuration. Respond ONLY with a valid JSON object matching this schema:
 {{
-  "battery_start_pct": <float 40.0-65.0>,
-  "battery_stop_pct": <float 20.0-55.0>,
+  "battery_start_pct": <float 45.0-80.0, MUST be strictly greater than battery_stop_pct>,
+  "battery_stop_pct": <float 20.0-50.0, MUST be strictly lower than battery_start_pct>,
   "charge_window_start_hour": <int 0-24>,
   "charge_window_end_hour": <int 0-24>,
   "daily_suggestion": "<concise 1-2 sentence advice on appliance scheduling and peak cost avoidance>",
@@ -50,7 +50,7 @@ Recommend today's optimal configuration. Respond ONLY with a valid JSON object m
 
 
 def _apply_plan(plan: dict) -> list[str]:
-    """Applies the returned plan, clamping each value into a safe range."""
+    """Applies the returned plan, clamping each value into a safe range and enforcing start_pct > stop_pct."""
     applied = []
     for setting, (key, cast, low, high) in PLAN_FIELDS.items():
         raw = plan.get(key)
@@ -63,6 +63,17 @@ def _apply_plan(plan: dict) -> list[str]:
             continue
         setattr(config, setting, value)
         applied.append(f"{setting}={value}")
+
+    # Enforce hysteresis constraint: start threshold must always be strictly higher than stop threshold
+    if config.BATTERY_START_PCT <= config.BATTERY_STOP_PCT:
+        corrected_start = min(100.0, max(config.BATTERY_START_PCT, config.BATTERY_STOP_PCT + 10.0))
+        log.warning(
+            f"Daily agent plan had invalid thresholds (start {config.BATTERY_START_PCT}% <= stop {config.BATTERY_STOP_PCT}%). "
+            f"Correcting BATTERY_START_PCT to {corrected_start}%."
+        )
+        config.BATTERY_START_PCT = corrected_start
+        applied.append(f"BATTERY_START_PCT={corrected_start} (corrected)")
+
     if applied:
         config.save_dynamic_config()
     return applied

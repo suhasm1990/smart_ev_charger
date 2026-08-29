@@ -362,3 +362,32 @@ class TestSheetsLoggingFeedbackLoop(unittest.TestCase):
         finally:
             sheets_db.append_system_log = original
         self.assertEqual(queued, [], "handler re-entered the Sheets pipeline")
+
+
+class TestBatteryThresholdGuards(unittest.TestCase):
+    """Guards against unreachable or inverted start/stop battery thresholds."""
+
+    def test_daily_agent_corrects_inverted_thresholds(self):
+        from agent.daily_agent import _apply_plan
+        from core import config
+        bad_plan = {
+            "battery_start_pct": 40.0,
+            "battery_stop_pct": 43.0,
+            "charge_window_start_hour": 10,
+            "charge_window_end_hour": 16,
+        }
+        _apply_plan(bad_plan)
+        self.assertGreater(config.BATTERY_START_PCT, config.BATTERY_STOP_PCT)
+        self.assertEqual(config.BATTERY_STOP_PCT, 43.0)
+        self.assertEqual(config.BATTERY_START_PCT, 53.0)
+
+    def test_telegram_bot_rejects_inverted_thresholds(self):
+        from agent.telegram_bot import set_battery_thresholds
+        response = set_battery_thresholds(40.0, 43.0)
+        self.assertTrue(response.startswith("Error:"))
+
+    def test_config_apply_enforces_start_greater_than_stop(self):
+        from core import config
+        config._apply({"BATTERY_START_PCT": 30.0, "BATTERY_STOP_PCT": 35.0})
+        self.assertGreater(config.BATTERY_START_PCT, config.BATTERY_STOP_PCT)
+

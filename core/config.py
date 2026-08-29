@@ -137,6 +137,9 @@ def _apply(source: dict):
             g[key] = cast(value)
         except (ValueError, TypeError):
             pass
+    # Guard: start percentage must always be strictly greater than stop percentage
+    if g.get("BATTERY_START_PCT", 40.0) <= g.get("BATTERY_STOP_PCT", 25.0):
+        g["BATTERY_START_PCT"] = max(g.get("BATTERY_START_PCT", 40.0), g.get("BATTERY_STOP_PCT", 25.0) + 10.0)
 
 
 def load_dynamic_config(remote: bool = True):
