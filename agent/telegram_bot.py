@@ -87,6 +87,7 @@ def get_system_status() -> str:
         state.charger_state = state.State.IDLE
         state.charge_session_start = None
 
+    is_manual = config.MANUAL_MODE_OVERRIDE == "manual"
     return json.dumps({
         "charger_state": "CHARGING" if charging else str(state.charger_state),
         "is_charging": charging,
@@ -116,6 +117,12 @@ def get_system_status() -> str:
         "config_blackout_start_hour": config.NIGHT_BLACKOUT_START_HOUR,
         "config_blackout_end_hour": config.NIGHT_BLACKOUT_END_HOUR,
         "manual_mode_override": config.MANUAL_MODE_OVERRIDE,
+        "mode_behavior": (
+            "MANUAL_MODE: Automatic solar and battery stop thresholds (e.g. stop at 35%) and charge windows are PAUSED. "
+            "Charging continues until the user manually stops it, switches back to auto, or morning reset at 09:00."
+            if is_manual else
+            "AUTO_MODE: Solar automation and battery stop thresholds are active."
+        ),
         "manual_guard_stop_battery_pct": state.manual_guard_stop_battery_pct,
         "manual_guard_stop_at_hour": state.manual_guard_stop_at_hour,
         "manual_guard_stop_time": state.manual_guard_stop_time.isoformat() if state.manual_guard_stop_time else None,
@@ -529,9 +536,15 @@ def restart_and_update_application() -> str:
 
 
 def _schedule_exit(delay: float = 2.0):
-    """Exits after a short delay so the acknowledgement reaches Telegram first."""
+    """Exits after a short delay so the acknowledgement reaches Telegram first, ensuring all Sheets writes flush."""
     def worker():
         time.sleep(delay)
+        log.info("RESTART | Flushing all pending queues to Google Sheets before exit...")
+        try:
+            from services.sheets_db import flush
+            flush(timeout=5.0)
+        except Exception:
+            pass
         log.info("RESTART | Exiting to trigger a container restart and git pull.")
         os._exit(0)
     threading.Thread(target=worker, daemon=True, name="Restart").start()
@@ -618,6 +631,11 @@ SYSTEM_INSTRUCTION = (
     "investigate bugs or open a pull request, 'read_source_code' to show source, and "
     "'restart_and_update_application' to restart or pull the latest code. Always run the appropriate tool "
     "when asked, then summarise what you did in friendly natural language.\n"
+    "Important operational rule: In MANUAL mode (manual_mode_override == 'manual'), automatic solar optimization, "
+    "charge windows (e.g. 10:00-16:00), and automatic battery stop thresholds (e.g. stop at 35%) are completely PAUSED "
+    "and bypassed. In manual mode, charging continues regardless of battery level until the user explicitly stops it, "
+    "switches back to auto, or the daily morning reset at 09:00 occurs (unless custom guardrails were explicitly configured). "
+    "Never tell the user that manual charging will stop at the automatic battery threshold.\n"
     "Format every response in the strict HTML subset Telegram supports: only <b>, <i>, <u>, <s>, <code>, "
     "<pre>, and <blockquote>. Telegram does NOT support <ul>, <ol>, <li>, <p>, or <br> — use bullet "
     "characters and newlines instead. Never use Markdown markers such as *, **, _, or `. "

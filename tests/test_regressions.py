@@ -391,3 +391,29 @@ class TestBatteryThresholdGuards(unittest.TestCase):
         config._apply({"BATTERY_START_PCT": 30.0, "BATTERY_STOP_PCT": 35.0})
         self.assertGreater(config.BATTERY_START_PCT, config.BATTERY_STOP_PCT)
 
+
+class TestSettingsSyncAndPersistence(unittest.TestCase):
+    """Guards Google Sheets as the single source of truth for runtime settings."""
+
+    def test_sheets_settings_sync_to_local_config(self):
+        from core import config
+        import services.sheets_db as sheets_db
+        from unittest.mock import patch
+
+        fake_sheets_settings = {
+            "BATTERY_START_PCT": "60.0",
+            "BATTERY_STOP_PCT": "35.0",
+            "MANUAL_MODE_OVERRIDE": "manual",
+            "LLM_PROVIDER": "nvidia",
+            "LLM_MODEL": "nvidia/nemotron-3-super-120b-a12b",
+        }
+
+        with patch.object(sheets_db, "get_settings", return_value=fake_sheets_settings):
+            config.load_dynamic_config(remote=True, force_refresh=True)
+            self.assertEqual(config.MANUAL_MODE_OVERRIDE, "manual")
+            self.assertEqual(config.BATTERY_START_PCT, 60.0)
+            self.assertEqual(config.BATTERY_STOP_PCT, 35.0)
+            self.assertEqual(config.LLM_PROVIDER, "nvidia")
+            self.assertEqual(config.LLM_MODEL, "nvidia/nemotron-3-super-120b-a12b")
+
+

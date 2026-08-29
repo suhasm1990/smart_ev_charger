@@ -379,14 +379,22 @@ def main():
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
+    # 1. Primary source of truth: Load Google Sheets settings immediately on startup
+    config.load_dynamic_config(remote=True, force_refresh=True)
+
     log.info("=" * 70)
     log.info("STARTUP | Smart EV Charger")
+    log.info(f"STARTUP | Mode: {config.MANUAL_MODE_OVERRIDE.upper()}")
     log.info(f"STARTUP | Thresholds: start={config.BATTERY_START_PCT}% | stop={config.BATTERY_STOP_PCT}%")
+    log.info(f"STARTUP | Charge Window: {config.ALLOWED_CHARGE_START_HOUR}:00 - {config.ALLOWED_CHARGE_END_HOUR}:00")
+    log.info(f"STARTUP | LLM Provider: {config.LLM_PROVIDER} | Model: {config.LLM_MODEL}")
     log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_MINUTES}min")
     log.info(f"STARTUP | Amperage: default={config.DEFAULT_CHARGER_AMPERAGE}A max={config.MAX_CHARGER_AMPERAGE}A")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
     log.info("=" * 70)
 
+    # 2. Reconcile manual mode and adopt current hardware charging state
+    check_manual_mode()
     adopt_startup_state()
 
     tz_name = getattr(config.TZ, "key", str(config.TZ))

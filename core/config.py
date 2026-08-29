@@ -142,12 +142,8 @@ def _apply(source: dict):
         g["BATTERY_START_PCT"] = max(g.get("BATTERY_START_PCT", 40.0), g.get("BATTERY_STOP_PCT", 25.0) + 10.0)
 
 
-def load_dynamic_config(remote: bool = True):
-    """Reloads runtime settings from environment, local JSON, then the cloud.
-
-    `remote=False` skips the Google Sheets layer, which is how import-time
-    initialisation avoids a blocking network call before anything has started.
-    """
+def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
+    """Reloads runtime settings with Google Sheets as the main source of truth, syncing to local JSON."""
     _apply({key: os.getenv(key, default) for key, (_, default) in DYNAMIC_CONFIG_SCHEMA.items()})
 
     try:
@@ -159,18 +155,30 @@ def load_dynamic_config(remote: bool = True):
     if remote:
         try:
             from services.sheets_db import get_settings
-            _apply(get_settings())
+            sheets_data = get_settings(force_refresh=force_refresh)
+            if sheets_data:
+                _apply(sheets_data)
+                # Keep local config_dynamic.json in sync with Google Sheets
+                data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
+                try:
+                    os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
+                    with open(DYNAMIC_CONFIG_FILE, "w") as f:
+                        json.dump(data, f, indent=4)
+                except OSError:
+                    pass
         except Exception:
             pass
 
 
-def save_dynamic_config():
-    """Persists runtime settings locally, then mirrors them to the cloud.
-
-    The Sheets write is queued rather than awaited, so callers on the control
-    loop and the Telegram handler are never blocked by a network round-trip.
-    """
+def save_dynamic_config(blocking: bool = True):
+    """Persists runtime settings to Google Sheets (main source of truth) and mirrors to local JSON."""
     data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
+    try:
+        from services.sheets_db import update_settings
+        update_settings(data, blocking=blocking)
+    except Exception:
+        pass
+
     try:
         os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
         with open(DYNAMIC_CONFIG_FILE, "w") as f:
@@ -178,14 +186,8 @@ def save_dynamic_config():
     except OSError:
         pass
 
-    try:
-        from services.sheets_db import update_settings
-        update_settings(data)
-    except Exception:
-        pass
 
-
-# Populate from environment and disk only; the cloud layer loads on first cycle.
+# Populate from environment and disk only; the cloud layer loads on first cycle or startup.
 load_dynamic_config(remote=False)
 
 PGE_HOLIDAYS = {
