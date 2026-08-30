@@ -83,17 +83,7 @@ def get_system_status() -> str:
 
     # Trust the hardware over in-memory state, which may have drifted.
     charging = cp.get("charging_status") == "CHARGING"
-    if charging:
-        state.charger_state = state.State.CHARGING
-        reported = cp.get("session_start_time")
-        if not state.charge_session_start:
-            state.charge_session_start = reported or datetime.now(config.TZ)
-        elif reported and abs((state.charge_session_start - reported).total_seconds()) > 3600:
-            state.charge_session_start = reported
-        state.session_stop_reason = None
-    elif state.charger_state == state.State.CHARGING or state.charge_session_start is not None:
-        state.charger_state = state.State.IDLE
-        state.charge_session_start = None
+    state.sync_with_hardware(cp, datetime.now(config.TZ))
 
     is_manual = config.MANUAL_MODE_OVERRIDE == "manual"
     return json.dumps({
@@ -382,18 +372,16 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None,
             except (TypeError, ValueError):
                 return None
 
-        state.manual_guard_stop_battery_pct = optional(stop_battery_pct, float)
-        state.manual_guard_stop_at_hour = optional(stop_at_hour, int)
         hours = optional(duration_hours, float)
-        state.manual_guard_stop_time = datetime.now(config.TZ) + timedelta(hours=hours) if hours else None
+        state.set_manual_guards(
+            stop_battery_pct=optional(stop_battery_pct, float),
+            stop_at_hour=optional(stop_at_hour, int),
+            stop_time=datetime.now(config.TZ) + timedelta(hours=hours) if hours else None,
+        )
 
         start_charger(amperage)
 
-        state.charger_state = state.State.CHARGING
-        state.charge_session_start = datetime.now(config.TZ)
-        state.active_amperage = amperage
-        state.session_count_today += 1
-        state.session_stop_reason = None
+        state.begin_session(datetime.now(config.TZ), amperage)
         config.MANUAL_MODE_OVERRIDE = "manual"
         config.save_dynamic_config()
 
@@ -424,9 +412,7 @@ def stop_charging() -> str:
         except Exception as e:
             log.warning(f"Could not restore default amperage: {e}")
 
-        state.charger_state = state.State.IDLE
-        state.charge_session_start = None
-        state.session_stop_reason = "Stopped manually via Telegram bot"
+        state.end_session("Stopped manually via Telegram bot")
         state.clear_manual_guards()
         config.MANUAL_MODE_OVERRIDE = "manual"
         config.save_dynamic_config()

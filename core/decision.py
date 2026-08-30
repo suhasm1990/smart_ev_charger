@@ -5,8 +5,8 @@ state transitions after the hardware confirms the action succeeded.
 """
 from datetime import datetime
 
-from core import config, state
-from core.state import get_session_minutes
+from core import config
+from core.state import StateSnapshot, state
 from core.tou import is_in_night_blackout, is_weekend
 from reporting.logger import log_decision
 
@@ -20,11 +20,12 @@ def is_in_charge_window(hour: int, start_hr: int, end_hr: int) -> bool:
     return hour >= start_hr or hour < end_hr
 
 
-def min_charge_time_met() -> bool:
+def min_charge_time_met(snap: StateSnapshot) -> bool:
     """Guards against short-cycling the charger on transient dips."""
-    if state.charge_session_start is None:
+    if snap.charge_session_start is None:
         return True
-    return get_session_minutes() >= config.MIN_CHARGE_MINUTES
+    minutes = (datetime.now(config.TZ) - snap.charge_session_start).total_seconds() / 60
+    return minutes >= config.MIN_CHARGE_MINUTES
 
 
 def _stop(reason: str, log_label: str) -> tuple[str, str]:
@@ -35,7 +36,10 @@ def _stop(reason: str, log_label: str) -> tuple[str, str]:
 def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
     """Returns the action ('start', 'stop', 'hold', 'blackout') and its reason."""
     battery_pct = stats["battery_pct"]
-    charging = state.charger_state == state.State.CHARGING
+    # One consistent view per decision: a concurrent bot command must not be
+    # observed half-applied partway through the rule chain.
+    snap = state.snapshot()
+    charging = snap.charger_state == state.State.CHARGING
 
     # ── 1. Safety stops, always evaluated first ─────────────────────────────
     if not stats.get("is_plugged_in", True):
@@ -58,7 +62,7 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
 
     if battery_pct < config.BATTERY_STOP_PCT:
         if charging:
-            if not min_charge_time_met():
+            if not min_charge_time_met(snap):
                 return "hold", f"Battery low ({battery_pct}%), but min {config.MIN_CHARGE_MINUTES}min session not met"
             return _stop(
                 f"Battery {battery_pct}% < {config.BATTERY_STOP_PCT}% safe limit",
@@ -71,7 +75,7 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
     if not is_in_charge_window(now.hour, start_hr, end_hr):
         window = f"AI charge window ({start_hr}:00 - {end_hr}:00)"
         if charging:
-            if not min_charge_time_met():
+            if not min_charge_time_met(snap):
                 return "hold", "Outside window, but min session not met"
             return _stop(f"Outside {window}", f"Outside AI window | {start_hr}:00 - {end_hr}:00")
         return "hold", f"Outside {window}"

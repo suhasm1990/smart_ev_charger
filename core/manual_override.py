@@ -1,7 +1,8 @@
 """Manual override mode and its automatic morning reset."""
 from datetime import datetime, timedelta
 
-from core import config, state
+from core import config
+from core.state import state
 from reporting.logger import log_mode
 from reporting.notifications import notify
 

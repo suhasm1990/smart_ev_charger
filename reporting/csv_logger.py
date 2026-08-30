@@ -5,8 +5,8 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from core import config, state
-from core.state import get_session_minutes
+from core import config
+from core.state import get_session_minutes, state
 from core.tou import (
     get_tou_period,
     get_tou_rate,

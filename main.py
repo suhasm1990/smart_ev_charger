@@ -46,9 +46,8 @@ SESSION_DRIFT_SECONDS = 3600
 
 
 def daily_reset():
-    log.info(f"DAILY RESET | sessions_today={state.session_count_today} | grid_draw_events={state.grid_draw_count}")
-    state.session_count_today = 0
-    state.grid_draw_count = 0
+    sessions, grid_draws = state.reset_daily()
+    log.info(f"DAILY RESET | sessions_today={sessions} | grid_draw_events={grid_draws}")
 
 
 def _alert_state(stats: dict, cp_status: dict) -> dict:
@@ -76,27 +75,13 @@ def _evaluate_alerts(stats: dict, cp_status: dict):
         log.warning(f"Error evaluating custom alerts: {e}")
 
 
-def _go_idle(reason: str):
-    state.charger_state = state.State.IDLE
-    state.charge_session_start = None
-    state.session_stop_reason = reason
-
-
 def _sync_with_hardware(cp_status: dict, now: datetime):
     """Reconciles in-memory session state with what the charger is actually doing."""
-    if cp_status.get("charging_status") == "CHARGING":
-        if state.charger_state != state.State.CHARGING or state.charge_session_start is None:
-            log.info("SYNC | Charger is physically charging. Adopting active session.")
-            state.charger_state = state.State.CHARGING
-            state.charge_session_start = cp_status.get("session_start_time") or now
-        else:
-            reported = cp_status.get("session_start_time")
-            if reported and abs((state.charge_session_start - reported).total_seconds()) > SESSION_DRIFT_SECONDS:
-                state.charge_session_start = reported
-    elif state.charger_state == state.State.CHARGING or state.charge_session_start is not None:
+    changed = state.sync_with_hardware(cp_status, now, drift_seconds=SESSION_DRIFT_SECONDS)
+    if changed == "adopted":
+        log.info("SYNC | Charger is physically charging. Adopting active session.")
+    elif changed == "cleared":
         log.info("SYNC | Charger is physically idle. Clearing session state.")
-        state.charger_state = state.State.IDLE
-        state.charge_session_start = None
 
 
 def _stop_manual_charge(reason: str, message: str, stats: dict, now: datetime):
@@ -106,7 +91,7 @@ def _stop_manual_charge(reason: str, message: str, stats: dict, now: datetime):
         set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
     except Exception as e:
         log_chargepoint.warning(f"Could not reset amperage to {config.DEFAULT_CHARGER_AMPERAGE}A: {e}")
-    _go_idle(reason)
+    state.end_session(reason)
     config.MANUAL_MODE_OVERRIDE = "auto"
     config.save_dynamic_config()
     state.clear_manual_guards()
@@ -192,7 +177,7 @@ def _handle_protective_stop(stats: dict, now: datetime, label: str, reason: str,
     if state.charger_state == state.State.CHARGING:
         log.warning(f"{label} | Active session detected — stopping charger")
         stop_charger()
-        _go_idle(reason)
+        state.end_session(reason)
     log_to_csv(stats, "skipped", csv_reason, now)
     return True
 
@@ -238,7 +223,7 @@ def run_cycle():
         _evaluate_alerts(stats, cp_status)
 
         if stats["grid_kw"] > GRID_DRAW_THRESHOLD_KW:
-            state.grid_draw_count += 1
+            state.bump("grid_draw_count")
             log_netzero.warning(
                 f"GRID DRAW DETECTED | grid={stats['grid_kw']}kW | solar={stats['solar_kw']}kW | "
                 f"battery={stats['battery_pct']}% | tou={tou} | rate=${get_tou_rate(now)}/kWh | "
@@ -278,11 +263,7 @@ def run_cycle():
                 log_chargepoint.warning(f"CHARGE START REJECTED | {e}")
                 notify(f"⚠️ <b>EV Charging Start Notice</b>\n{e}")
             else:
-                state.charger_state = state.State.CHARGING
-                state.charge_session_start = now
-                state.session_count_today += 1
-                state.session_stop_reason = None
-                state.active_amperage = config.DEFAULT_CHARGER_AMPERAGE
+                state.begin_session(now, config.DEFAULT_CHARGER_AMPERAGE)
                 log_chargepoint.info(
                     f"CHARGE STARTED | battery={stats['battery_pct']}% | solar={stats['solar_kw']}kW | "
                     f"amperage={config.DEFAULT_CHARGER_AMPERAGE}A | tou={tou} | reason={reason}"
@@ -322,8 +303,7 @@ def run_cycle():
 
 
 def _note_api_failure(description: str):
-    state.consecutive_api_failures += 1
-    if state.consecutive_api_failures == API_FAILURE_ALERT_STREAK:
+    if state.bump("consecutive_api_failures") == API_FAILURE_ALERT_STREAK:
         notify(
             f"⚠️ <b>Smart EV Charger Notice</b>\n{description} for "
             f"{API_FAILURE_ALERT_STREAK} consecutive cycles. Will keep retrying."
@@ -430,14 +410,8 @@ def adopt_startup_state():
             f"STARTUP CHECK | status={status['charging_status']} | plugged_in={status['is_plugged_in']} | "
             f"connected={status['is_connected']} | amperage={status['amperage_limit']}A"
         )
-        if status["charging_status"] == "CHARGING":
+        if state.sync_with_hardware(status, datetime.now(config.TZ)) == "adopted":
             log.info("STARTUP SYNC | Adopting active charging session.")
-            state.charger_state = state.State.CHARGING
-            state.charge_session_start = status.get("session_start_time") or datetime.now(config.TZ)
-            state.active_amperage = status.get("amperage_limit") or config.DEFAULT_CHARGER_AMPERAGE
-        else:
-            state.charger_state = state.State.IDLE
-            state.charge_session_start = None
     except Exception as e:
         log_chargepoint.warning(f"STARTUP CHECK FAILED | {e} — will retry on the first cycle")
 

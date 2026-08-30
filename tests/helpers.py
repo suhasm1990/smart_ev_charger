@@ -72,15 +72,7 @@ class MockedCycle:
 
     def reset_state(self, override="auto"):
         self.calls.clear()
-        state.charger_state = state.State.IDLE
-        state.charge_session_start = None
-        state.session_stop_reason = None
-        state.manual_mode = state.prev_manual_mode = False
-        state.manual_mode_set_at = None
-        state.session_count_today = 0
-        state.grid_draw_count = 0
-        state.consecutive_api_failures = 0
-        state.clear_manual_guards()
+        state.reset_for_tests()
         config.MANUAL_MODE_OVERRIDE = override
         config.BATTERY_START_PCT, config.BATTERY_STOP_PCT = 40.0, 25.0
         config.BATTERY_LOW_RESERVE_PCT = 15.0
