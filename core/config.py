@@ -197,7 +197,10 @@ def update(**changes):
 
 # Sheets is the declared primary source of truth, so sync failures must be
 # visible — but load runs every cycle, so warn at most once per 10 minutes.
-_last_sync_warning = 0.0
+# None (not 0.0) means "never warned": time.monotonic() counts from boot, so
+# on a freshly booted host `monotonic() - 0.0` can be under the interval and
+# a 0.0 sentinel would silently swallow the first warning.
+_last_sync_warning = None
 _SYNC_WARNING_INTERVAL_S = 600.0
 
 
@@ -206,7 +209,7 @@ def _warn_sync_failure(operation: str, error: Exception):
     import logging
     import time
     now = time.monotonic()
-    if now - _last_sync_warning < _SYNC_WARNING_INTERVAL_S:
+    if _last_sync_warning is not None and now - _last_sync_warning < _SYNC_WARNING_INTERVAL_S:
         return
     _last_sync_warning = now
     logging.getLogger("EV_CHARGER").warning(f"Config {operation} with Google Sheets failed: {error}")

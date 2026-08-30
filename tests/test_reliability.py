@@ -191,8 +191,8 @@ class TestLoudConfigSync(unittest.TestCase):
     """Sheets is the primary source of truth — sync failures must be logged."""
 
     def setUp(self):
-        config._last_sync_warning = 0.0
-        self.addCleanup(lambda: setattr(config, "_last_sync_warning", 0.0))
+        config._last_sync_warning = None
+        self.addCleanup(lambda: setattr(config, "_last_sync_warning", None))
 
     def test_load_failure_warns_and_still_applies_local_layers(self):
         with mock.patch("services.sheets_db.get_settings", side_effect=RuntimeError("offline")):
@@ -203,6 +203,16 @@ class TestLoudConfigSync(unittest.TestCase):
 
     def test_save_failure_warns(self):
         with mock.patch("services.sheets_db.update_settings", side_effect=RuntimeError("offline")):
+            with self.assertLogs("EV_CHARGER", level="WARNING") as captured:
+                config.save_dynamic_config()
+        self.assertTrue(any("Config save" in line for line in captured.output))
+
+    def test_first_warning_fires_even_just_after_boot(self):
+        """time.monotonic() counts from boot; a 0.0 'never warned' sentinel
+        swallowed the first warning on hosts up for less than the rate-limit
+        interval (exactly what fresh CI runners are)."""
+        with mock.patch("time.monotonic", return_value=5.0), \
+             mock.patch("services.sheets_db.update_settings", side_effect=RuntimeError("offline")):
             with self.assertLogs("EV_CHARGER", level="WARNING") as captured:
                 config.save_dynamic_config()
         self.assertTrue(any("Config save" in line for line in captured.output))
