@@ -2,7 +2,6 @@ import unittest
 from datetime import datetime
 
 import main
-import reporting.notifications
 from agent import llm_client, telegram_bot
 from core import config, state
 from tests.helpers import MockedCycle, charger, frozen_now, powerwall
@@ -14,12 +13,7 @@ class TestManualGuardrails(unittest.TestCase):
         self.mock.reset_state()
         telegram_bot.RUN_CYCLE_CALLBACK = None
         self.addCleanup(self.mock.restore)
-        telegram_bot.start_charger = lambda amperage=None: None
-        telegram_bot.stop_charger = lambda: None
-        telegram_bot.set_charger_amperage_limit = lambda amperage: None
-        telegram_bot.notify = lambda message: None
-        reporting.notifications.notify = lambda message: None
-        config.save_dynamic_config = lambda: None
+        self.mock.install_bot()
 
     def test_start_charging_records_every_guardrail(self):
         result = telegram_bot.start_charging(

@@ -1,6 +1,6 @@
 """Morning AI planner: sets today's charge window and battery thresholds."""
-from core import config
 from agent import llm_client
+from core import config
 from reporting.csv_logger import get_energy_saving_advice, get_home_energy_summary
 from reporting.logger import log
 from reporting.notifications import notify

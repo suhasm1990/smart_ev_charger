@@ -1,7 +1,9 @@
 import re
 
 import requests
+
 from reporting.logger import log
+
 
 def notify(message: str):
     from core import config

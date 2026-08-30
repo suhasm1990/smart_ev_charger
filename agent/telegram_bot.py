@@ -17,8 +17,14 @@ from core import config, state
 from core.tou import RATE_SCHEDULES, get_tou_rate, provider, provider_label
 from reporting.csv_logger import (
     get_daily_charging_cost as calc_cost,
+)
+from reporting.csv_logger import (
     get_energy_saving_advice as calc_advice,
+)
+from reporting.csv_logger import (
     get_home_energy_summary as calc_home_summary,
+)
+from reporting.csv_logger import (
     get_monthly_billing_data,
     get_recent_sessions,
     get_session_minutes,
@@ -28,6 +34,8 @@ from reporting.notifications import notify
 from reporting.report_generator import generate_monthly_report_image
 from services.chargepoint import (
     get_charger_status as get_cp_status,
+)
+from services.chargepoint import (
     set_charger_amperage_limit,
     start_charger,
     stop_charger,
@@ -153,7 +161,8 @@ def get_recent_charging_sessions(limit: int = 5) -> str:
 def get_tou_schedule() -> str:
     """Gets Time-Of-Use electricity rate periods, night blackout windows, peak/partial-peak/off-peak hours, and rates for the configured utility provider."""
     schedule = RATE_SCHEDULES.get(provider(), RATE_SCHEDULES["MID"])
-    fmt = lambda season: {k: f"${v:.5f}/kWh" for k, v in schedule[season].items()}
+    def fmt(season):
+        return {k: f"${v:.5f}/kWh" for k, v in schedule[season].items()}
     return json.dumps({
         "utility_provider": provider_label(),
         "timezone": str(config.TZ),

@@ -224,6 +224,7 @@ class TestTelegramAuthorization(unittest.TestCase):
 
     def setUp(self):
         import telebot
+
         from agent.telegram_bot import AuthMiddleware
 
         self.reached = []
@@ -295,6 +296,7 @@ class TestTelegramAuthorization(unittest.TestCase):
     def test_invalid_allowlist_values_parse_to_none(self):
         """A non-numeric ID must become None (deny) rather than an unmatchable string."""
         import importlib
+
         import core.config as config_module
         original = os.environ.get("TELEGRAM_ALLOWED_USER_ID")
         try:
@@ -396,9 +398,10 @@ class TestSettingsSyncAndPersistence(unittest.TestCase):
     """Guards Google Sheets as the single source of truth for runtime settings."""
 
     def test_sheets_settings_sync_to_local_config(self):
-        from core import config
-        import services.sheets_db as sheets_db
         from unittest.mock import patch
+
+        import services.sheets_db as sheets_db
+        from core import config
 
         fake_sheets_settings = {
             "BATTERY_START_PCT": "60.0",

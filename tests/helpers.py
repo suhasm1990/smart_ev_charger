@@ -52,6 +52,18 @@ class MockedCycle:
         self._patch(services.sheets_db, "append_log_row", lambda row: True)
         self._patch(services.sheets_db, "update_settings", lambda settings, blocking=False: True)
 
+    def install_bot(self):
+        """Neutralises hardware, notifications, and config persistence reachable
+        from the Telegram bot tools, with exact restore via restore()."""
+        import reporting.notifications
+        from agent import telegram_bot
+        self._patch(telegram_bot, "start_charger", lambda amperage=None: None)
+        self._patch(telegram_bot, "stop_charger", lambda: None)
+        self._patch(telegram_bot, "set_charger_amperage_limit", lambda amperage: None)
+        self._patch(telegram_bot, "notify", lambda message: None)
+        self._patch(reporting.notifications, "notify", lambda message: None)
+        self._patch(config, "save_dynamic_config", lambda blocking=True: None)
+
     def restore(self):
         """Undoes every patch, so one test cannot leak stubs into the next."""
         for module, name, original in reversed(self._patched):
@@ -93,7 +105,6 @@ def frozen_now(moment: datetime):
 def seed_telemetry(days_back_start: int = 40, days: int = 31, interval_minutes: int = 15) -> list[dict]:
     """Builds a deterministic telemetry history so analytics tests never depend
     on whatever happens to be in the live spreadsheet."""
-    from datetime import date
 
     rows = []
     start = datetime.now(config.TZ).date() - timedelta(days=days_back_start)

@@ -3,15 +3,16 @@ import os
 import re
 import subprocess
 import threading
+
+from agent import llm_client
 from reporting.logger import log
 from reporting.notifications import notify
-from agent import llm_client
 
 # ── Autonomous Developer Tools ───────────────────────────────────────────────
 
 def dev_read_file(file_path: str, start_line: int = 1, end_line: int = 250) -> str:
     """Reads lines from a file in the repository.
-    
+
     Args:
         file_path: Relative path to the file from repository root (e.g. 'main.py' or 'core/config.py').
         start_line: 1-indexed starting line number (default 1).
@@ -31,7 +32,7 @@ def dev_read_file(file_path: str, start_line: int = 1, end_line: int = 250) -> s
 
 def dev_write_file(file_path: str, content: str) -> str:
     """Writes or updates a file with the given content.
-    
+
     Args:
         file_path: Relative path to the file.
         content: The complete content to write into the file.
@@ -47,7 +48,7 @@ def dev_write_file(file_path: str, content: str) -> str:
 
 def dev_list_files(directory: str = ".") -> str:
     """Lists code files in the repository.
-    
+
     Args:
         directory: Directory path to list (default '.').
     """
@@ -65,7 +66,7 @@ def dev_list_files(directory: str = ".") -> str:
 
 def dev_search_code(pattern: str, directory: str = ".") -> str:
     """Searches for a keyword or regex pattern across codebase files.
-    
+
     Args:
         pattern: Text string or regex to search for.
         directory: Directory to search in (default '.').
@@ -93,7 +94,7 @@ def dev_search_code(pattern: str, directory: str = ".") -> str:
 
 def dev_run_command(command: str) -> str:
     """Executes a shell command (such as pytest, git, or gh CLI) in the workspace.
-    
+
     Args:
         command: Exact shell command line to run (e.g. 'git status', 'python -m unittest', 'gh pr create').
     """
@@ -192,7 +193,7 @@ def run_dev_agent_loop(task_description: str, pr_number: int = None) -> str:
         )
 
     log.info(f"DEV AGENT | Starting autonomous loop for task: {task_description[:80]}...")
-    
+
     # Run single multi-turn autonomous tool interaction loop
     response_text, _ = llm_client.chat_with_tools(
         history=[],

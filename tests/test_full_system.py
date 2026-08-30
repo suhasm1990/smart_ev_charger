@@ -6,39 +6,34 @@ from datetime import date, datetime
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core import config, state
-from reporting.csv_logger import (
-    _is_ev_charging_row, _resolve_date_range,
-    get_home_energy_summary, get_monthly_billing_data,
-)
-from reporting import generate_monthly_report_image
-from agent.alerts import add_alert, check_alerts, list_alerts
-from agent import llm_client, telegram_bot
 import services.chargepoint
 import services.netzero
+from agent import llm_client, telegram_bot
+from agent.alerts import add_alert, check_alerts, list_alerts
+from core import config, state
+from reporting import generate_monthly_report_image
+from reporting.csv_logger import (
+    _is_ev_charging_row,
+    _resolve_date_range,
+    get_home_energy_summary,
+    get_monthly_billing_data,
+)
+from tests.helpers import MockedCycle
+
 
 class TestFullSystem(unittest.TestCase):
 
     def setUp(self):
-        # Mock external APIs and notifications
-        services.chargepoint.start_charger = lambda amperage_limit=None: None
-        services.chargepoint.stop_charger = lambda: None
-        services.chargepoint.set_charger_amperage_limit = lambda amperage: None
-        telegram_bot.start_charger = lambda amperage_limit=None: None
-        telegram_bot.stop_charger = lambda: None
-        telegram_bot.set_charger_amperage_limit = lambda amperage: None
-        telegram_bot.notify = lambda msg: None
-        
+        # Mock external APIs and notifications, with exact restore after each test
+        self.mock = MockedCycle()
+        self.addCleanup(self.mock.restore)
+        self.mock.install_bot()
+        self.mock._patch(services.chargepoint, "start_charger", lambda amperage_limit=None: None)
+        self.mock._patch(services.chargepoint, "stop_charger", lambda: None)
+        self.mock._patch(services.chargepoint, "set_charger_amperage_limit", lambda amperage: None)
+
         # Reset runtime state
-        state.charger_state = state.State.IDLE
-        state.charge_session_start = None
-        state.session_stop_reason = None
-        state.manual_mode = False
-        state.manual_mode_set_at = None
-        state.prev_manual_mode = False
-        state.clear_manual_guards()
-        config.MANUAL_MODE_OVERRIDE = "auto"
-        config.save_dynamic_config = lambda: None
+        self.mock.reset_state()
 
     def tearDown(self):
         config.MANUAL_MODE_OVERRIDE = "auto"
@@ -48,11 +43,11 @@ class TestFullSystem(unittest.TestCase):
 
     def test_imports_and_no_circular_dependencies(self):
         """Ensures all top-level package modules import cleanly without circular dependency errors."""
-        import core
-        import services
-        import reporting
         import agent
+        import core
         import main
+        import reporting
+        import services
         self.assertIsNotNone(core)
         self.assertIsNotNone(services)
         self.assertIsNotNone(reporting)
@@ -62,27 +57,27 @@ class TestFullSystem(unittest.TestCase):
     def test_date_range_resolution(self):
         """Tests natural language date and period parsing."""
         now = datetime(2026, 8, 19, 12, 0, tzinfo=config.TZ)
-        
+
         # Today
         s, e, lbl = _resolve_date_range("today", now)
         self.assertEqual(s, date(2026, 8, 19))
         self.assertEqual(e, date(2026, 8, 19))
-        
+
         # Yesterday
         s, e, lbl = _resolve_date_range("yesterday", now)
         self.assertEqual(s, date(2026, 8, 18))
         self.assertEqual(e, date(2026, 8, 18))
-        
+
         # Past 7 Days
         s, e, lbl = _resolve_date_range("last 7 days", now)
         self.assertEqual(s, date(2026, 8, 12))
         self.assertEqual(e, date(2026, 8, 19))
-        
+
         # Last Month
         s, e, lbl = _resolve_date_range("last_month", now)
         self.assertEqual(s, date(2026, 7, 1))
         self.assertEqual(e, date(2026, 7, 31))
-        
+
         # Specific month string
         s, e, lbl = _resolve_date_range("July 2026", now)
         self.assertEqual(s, date(2026, 7, 1))
@@ -146,15 +141,15 @@ class TestFullSystem(unittest.TestCase):
         """Tests adding, listing, matching, and removing custom dynamic alerts."""
         res_add = add_alert(field="battery_pct", operator="gte", value=80.0, message="Battery reached 80%", once=True)
         self.assertIn("Success", res_add)
-        
+
         alerts_text = list_alerts()
         self.assertIn("battery_pct", alerts_text)
-        
+
         # Test alert match
         mock_notified = []
         import agent.alerts
-        agent.alerts.notify = lambda msg: mock_notified.append(msg)
-        
+        self.mock._patch(agent.alerts, "notify", lambda msg: mock_notified.append(msg))
+
         check_alerts({"battery_pct": 85.0})
         self.assertTrue(any("Battery reached 80%" in m for m in mock_notified))
 

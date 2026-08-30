@@ -12,7 +12,7 @@ class TestSessionMinutes(unittest.TestCase):
         self.mock = MockedCycle()
         self.mock.reset_state()
         # Notifications and save are patched at source for the modules under test.
-        config.save_dynamic_config = lambda: None
+        self.mock._patch(config, "save_dynamic_config", lambda blocking=True: None)
         self.addCleanup(self.mock.restore)
 
     def test_zero_when_idle(self):

@@ -1,0 +1,15 @@
+# Tooling configuration only — the app is not packaged; it runs from the repo root.
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+# Long lines are dominated by LLM tool docstrings (load-bearing: the bot derives
+# tool schemas from them) and matplotlib styling calls — not worth rewrapping.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import app modules after sys.path/env setup in tests/__init__.py.
+"tests/*" = ["E402"]

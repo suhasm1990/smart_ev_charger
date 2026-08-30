@@ -1,12 +1,15 @@
 import os
 
 import matplotlib
+
 matplotlib.use('Agg')  # Non-interactive background renderer for Docker/headless environments
-import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+
 from reporting.csv_logger import get_monthly_billing_data
 from reporting.logger import log
+
 
 def generate_monthly_report_image(period: str = "last_month", data: dict = None) -> str:
     """Renders the monthly bill infographic and returns the saved PNG path.
@@ -23,10 +26,10 @@ def generate_monthly_report_image(period: str = "last_month", data: dict = None)
 
     month_label = data["month_label"]
     daily_records = data["daily_records"]
-    
+
     output_dir = "logs/monthly_bills"
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Create filename key (e.g. monthly_report_2026_07.png)
     file_tag = data["start_date"][:7].replace("-", "_")
     output_path = os.path.abspath(os.path.join(output_dir, f"monthly_report_{file_tag}.png"))
@@ -47,7 +50,7 @@ def generate_monthly_report_image(period: str = "last_month", data: dict = None)
     ax_header.set_facecolor('#0F172A')
 
     # Main Title
-    ax_header.text(0.5, 0.88, f"⚡ MONTHLY ELECTRICITY & ENERGY REPORT", color='#F8FAFC', fontsize=18, fontweight='bold', ha='center')
+    ax_header.text(0.5, 0.88, "⚡ MONTHLY ELECTRICITY & ENERGY REPORT", color='#F8FAFC', fontsize=18, fontweight='bold', ha='center')
     ax_header.text(0.5, 0.72, f"{month_label.upper()}  •  {data['utility_rate_plan']}", color='#94A3B8', fontsize=11, ha='center')
 
     # Metric Cards (4 Boxes)
@@ -84,7 +87,7 @@ def generate_monthly_report_image(period: str = "last_month", data: dict = None)
         x_indices = list(range(len(daily_records)))
 
         # Plot 1: Daily Variable Grid Cost ($) as Bar Chart
-        bars = ax_chart.bar(x_indices, grid_costs, color='#F59E0B', alpha=0.85, width=0.55, label='Grid Electricity Cost ($) [Excl. Fixed Fee]')
+        ax_chart.bar(x_indices, grid_costs, color='#F59E0B', alpha=0.85, width=0.55, label='Grid Electricity Cost ($) [Excl. Fixed Fee]')
 
         ax_chart.set_ylabel('Daily Variable Grid Cost ($)', color='#F59E0B', fontsize=11, fontweight='bold')
         ax_chart.tick_params(axis='y', labelcolor='#F59E0B')
@@ -93,7 +96,7 @@ def generate_monthly_report_image(period: str = "last_month", data: dict = None)
 
         # Plot 2: Daily Solar Generation (kWh) on Twin Axis Line
         ax_solar = ax_chart.twinx()
-        line = ax_solar.plot(x_indices, solar_kwhs, color='#38BDF8', linewidth=2.5, marker='o', markersize=4, label='Solar Generation (kWh)')
+        ax_solar.plot(x_indices, solar_kwhs, color='#38BDF8', linewidth=2.5, marker='o', markersize=4, label='Solar Generation (kWh)')
         ax_solar.set_ylabel('Solar Generation (kWh)', color='#38BDF8', fontsize=11, fontweight='bold')
         ax_solar.tick_params(axis='y', labelcolor='#38BDF8')
         ax_solar.grid(False)

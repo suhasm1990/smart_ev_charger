@@ -8,8 +8,12 @@ from datetime import date, datetime, timedelta
 from core import config, state
 from core.state import get_session_minutes
 from core.tou import (
-    get_tou_period, get_tou_rate, is_expensive_period,
-    is_in_night_blackout, is_weekend, provider_label,
+    get_tou_period,
+    get_tou_rate,
+    is_expensive_period,
+    is_in_night_blackout,
+    is_weekend,
+    provider_label,
 )
 from reporting.logger import log_csv
 

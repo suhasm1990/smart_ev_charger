@@ -87,6 +87,7 @@ class GoogleSheetsLogHandler(logging.Handler):
             if record.levelno < logging.INFO or record.name.lower() in self._SKIP:
                 return
             from datetime import datetime
+
             from core import config
             from services.sheets_db import append_system_log, in_worker
 
