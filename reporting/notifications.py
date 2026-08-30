@@ -12,6 +12,14 @@ import requests
 
 from reporting.logger import log
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html(text: str) -> str:
+    """Removes HTML tags, for plain-text fallbacks of Telegram-formatted messages."""
+    return _HTML_TAG_RE.sub("", text)
+
+
 _queue: queue.Queue = queue.Queue(maxsize=200)
 _worker_lock = threading.Lock()
 _worker_started = False
@@ -59,7 +67,7 @@ def _deliver(message: str):
     # 1. Pushover Notifications (if configured)
     if config.PUSHOVER_USER_KEY and config.PUSHOVER_API_TOKEN:
         try:
-            plain_msg = re.sub(r'<[^>]+>', '', message)
+            plain_msg = strip_html(message)
             requests.post(
                 "https://api.pushover.net/1/messages.json",
                 data={
@@ -90,7 +98,7 @@ def _deliver(message: str):
         except Exception as e:
             log.warning(f"Telegram HTML notify failed ({e}). Falling back to plain text...")
             try:
-                plain_text = re.sub(r'<[^>]+>', '', message)
+                plain_text = strip_html(message)
                 r_fallback = requests.post(
                     url,
                     json={

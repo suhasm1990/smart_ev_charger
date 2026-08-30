@@ -420,3 +420,33 @@ class TestSettingsSyncAndPersistence(unittest.TestCase):
             self.assertEqual(config.LLM_MODEL, "nvidia/nemotron-3-super-120b-a12b")
 
 
+
+
+class TestMeteredEnergyColumn(unittest.TestCase):
+    """The metered kWh column is appended last so legacy rows stay parseable."""
+
+    def test_log_to_csv_records_the_metered_energy(self):
+        import csv
+        import tempfile
+        from datetime import datetime
+        from unittest.mock import patch
+
+        import reporting.csv_logger as csv_logger
+        from core import config
+        from tests.helpers import powerwall
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "log.csv")
+            stats = powerwall()
+            stats["cp_session_energy_kwh"] = 4.25
+            with patch.object(config, "CSV_LOG_FILE", csv_path), \
+                 patch("services.sheets_db.append_log_row", return_value=True):
+                csv_logger.log_to_csv(stats, "hold", "test", datetime.now(config.TZ))
+            with open(csv_path, newline="") as f:
+                row = list(csv.DictReader(f))[0]
+        self.assertEqual(row["cp_session_energy_kwh"], "4.25")
+
+    def test_legacy_rows_without_the_column_read_as_zero(self):
+        from reporting.csv_logger import _num
+        legacy_row = {"date": "2026-01-01"}
+        self.assertEqual(_num(legacy_row.get("cp_session_energy_kwh")), 0.0)

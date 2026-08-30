@@ -14,7 +14,7 @@ from telebot.handler_backends import BaseMiddleware, CancelUpdate
 from agent import llm_client
 from agent.alerts import add_alert, list_alerts, remove_alert
 from core import config, state
-from core.tou import RATE_SCHEDULES, get_tou_rate, provider, provider_label
+from core.tou import RATE_SCHEDULES, get_tou_rate, provider, provider_label, weekday_schedule_description
 from reporting.csv_logger import (
     get_daily_charging_cost as calc_cost,
 )
@@ -30,7 +30,7 @@ from reporting.csv_logger import (
     get_session_minutes,
 )
 from reporting.logger import log, tail_lines
-from reporting.notifications import notify
+from reporting.notifications import notify, strip_html
 from reporting.report_generator import generate_monthly_report_image
 from services.chargepoint import (
     get_charger_status as get_cp_status,
@@ -38,8 +38,8 @@ from services.chargepoint import (
 from services.chargepoint import (
     set_charger_amperage_limit,
     start_charger,
-    stop_charger,
 )
+from services.charger_ops import stop_and_restore_defaults
 from services.netzero import get_powerwall_stats
 from services.sheets_db import add_user_instruction
 
@@ -159,12 +159,7 @@ def get_tou_schedule() -> str:
         "current_rate_per_kwh": f"${get_tou_rate(datetime.now(config.TZ)):.5f}",
         "summer_rates": fmt("summer"),
         "winter_rates": fmt("winter"),
-        "weekday_schedule": {
-            "off_peak": "00:00 - 13:00 and 23:00 - 24:00",
-            "partial_peak_1": "13:00 - 17:00",
-            "on_peak": "17:00 - 20:00",
-            "partial_peak_2": "20:00 - 23:00",
-        },
+        "weekday_schedule": weekday_schedule_description(),
         "weekend_schedule": {"off_peak": "All day on weekends and holidays"},
         "night_blackout_window": f"{config.NIGHT_BLACKOUT_START_HOUR}:00 - {config.NIGHT_BLACKOUT_END_HOUR}:00",
         "night_blackout_description":
@@ -399,11 +394,7 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None,
 def stop_charging() -> str:
     """Immediately forces the charger to stop charging."""
     try:
-        stop_charger()
-        try:
-            set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
-        except Exception as e:
-            log.warning(f"Could not restore default amperage: {e}")
+        stop_and_restore_defaults()
 
         state.end_session("Stopped manually via Telegram bot")
         state.clear_manual_guards()
@@ -795,7 +786,7 @@ def _bot_polling_loop():
                     bot.reply_to(message, cleaned, parse_mode="HTML")
                 except telebot.apihelper.ApiTelegramException as e:
                     log.warning(f"Telegram HTML parse error: {e}. Retrying as plain text.")
-                    plain = re.sub(r"<[^>]+>", "", raw).strip()
+                    plain = strip_html(raw).strip()
                     if plain:
                         bot.reply_to(message, plain, parse_mode=None)
             elif not getattr(_pending_image, "path", None):

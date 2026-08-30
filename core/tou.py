@@ -23,6 +23,11 @@ PROVIDER_LABELS = {
     "PGE": "PG&E EV2-A Rate Schedule",
 }
 
+# Weekday TOU boundaries (24-hour): the single source for every place that
+# names these hours (period lookup, bot schedule tool, savings advice).
+ON_PEAK_HOURS = (17, 20)
+PARTIAL_PEAK_HOURS = ((13, 17), (20, 23))
+
 
 def provider() -> str:
     return getattr(config, "UTILITY_PROVIDER", "MID").upper()
@@ -77,11 +82,22 @@ def get_tou_period(now: datetime) -> str:
     if is_weekend(now) or is_utility_holiday(now.date()):
         return "off_peak"
     hour = now.hour
-    if 17 <= hour < 20:
+    if ON_PEAK_HOURS[0] <= hour < ON_PEAK_HOURS[1]:
         return "on_peak"
-    if 13 <= hour < 17 or 20 <= hour < 23:
+    if any(lo <= hour < hi for lo, hi in PARTIAL_PEAK_HOURS):
         return "partial_peak"
     return "off_peak"
+
+
+def weekday_schedule_description() -> dict:
+    """Human-readable weekday TOU windows, derived from the boundary constants."""
+    (p1_lo, p1_hi), (p2_lo, p2_hi) = PARTIAL_PEAK_HOURS
+    return {
+        "off_peak": f"00:00 - {p1_lo}:00 and {p2_hi}:00 - 24:00",
+        "partial_peak_1": f"{p1_lo}:00 - {p1_hi}:00",
+        "on_peak": f"{ON_PEAK_HOURS[0]}:00 - {ON_PEAK_HOURS[1]}:00",
+        "partial_peak_2": f"{p2_lo}:00 - {p2_hi}:00",
+    }
 
 
 def get_base_tou_rate(now: datetime) -> float:

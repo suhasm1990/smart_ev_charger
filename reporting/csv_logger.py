@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from core import config
 from core.state import get_session_minutes, state
 from core.tou import (
+    ON_PEAK_HOURS,
     get_tou_period,
     get_tou_rate,
     is_expensive_period,
@@ -27,6 +28,11 @@ CSV_HEADERS = [
     "session_active_minutes", "session_count_today", "session_stop_reason",
     "is_night_blackout", "manual_mode", "island_mode", "storm_mode",
     "est_grid_cost_this_minute", "charge_window_start_hour", "charge_window_end_hour",
+    # Appended last for backward compatibility: rows written before this column
+    # existed simply read as missing -> 0.0. Cumulative metered kWh reported by
+    # the ChargePoint session, so analytics can eventually prefer real meter
+    # deltas over the amperage x voltage x interval estimate.
+    "cp_session_energy_kwh",
 ]
 
 # `charger_amperage` and `charger_power_kw` replaced two always-zero columns.
@@ -166,6 +172,7 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
         is_in_night_blackout(now), state.manual_mode,
         stats.get("island_mode", "on_grid"), stats.get("storm_mode", False),
         est_cost, config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR,
+        _num(stats.get("cp_session_energy_kwh")),
     ]
 
     try:
@@ -534,9 +541,10 @@ def get_energy_saving_advice() -> dict:
         best_hours = [h for h, vals in hourly_surplus.items() if vals and sum(vals) / len(vals) >= 1.0]
         window = f"{min(best_hours)}:00 - {max(best_hours) + 1}:00" if best_hours else "10:00 - 15:00"
 
-        peak_rate = get_tou_rate(now.replace(hour=18, minute=0))
+        peak_start, peak_end = ON_PEAK_HOURS
+        peak_rate = get_tou_rate(now.replace(hour=peak_start + 1, minute=0))
         export_rate = _export_credit_rate()
-        avoid_window = f"{17}:00 - {20}:00 (On-Peak ${peak_rate:.2f}/kWh rate)"
+        avoid_window = f"{peak_start}:00 - {peak_end}:00 (On-Peak ${peak_rate:.2f}/kWh rate)"
 
         return {
             "optimal_solar_appliance_window": window,
@@ -550,7 +558,8 @@ def get_energy_saving_advice() -> dict:
             "ev_grid_charging_cost_last_7_days": round(ev_grid_cost, 2),
             "actionable_recommendations": [
                 f"Run heavy appliances (AC, washer, dishwasher, dryer) during {window} when solar generation peaks.",
-                f"Avoid heavy appliances between 17:00 and 20:00, when the on-peak rate is ${peak_rate:.2f}/kWh.",
+                f"Avoid heavy appliances between {peak_start}:00 and {peak_end}:00, "
+                f"when the on-peak rate is ${peak_rate:.2f}/kWh.",
                 f"Using solar directly saves {peak_rate / export_rate:.1f}x more than exporting it "
                 f"(${peak_rate:.2f}/kWh avoided vs ${export_rate:.3f}/kWh export credit).",
                 f"Charge the EV during the {window} solar surplus to avoid pulling grid power at night.",

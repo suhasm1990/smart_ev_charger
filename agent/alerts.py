@@ -10,7 +10,7 @@ from core import config, state
 from reporting.logger import log, tail_lines
 from reporting.notifications import notify
 
-ALERTS_FILE = os.getenv("ALERTS_FILE", "logs/alerts.json")
+ALERTS_FILE = config.ALERTS_FILE
 MAX_ALERTS = 20
 VALID_OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte")
 

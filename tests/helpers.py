@@ -39,11 +39,15 @@ class MockedCycle:
 
     def install(self, pw: dict, cp: dict):
         import core.decision as decision
+        import services.charger_ops as charger_ops
         self._patch(main, "get_powerwall_stats", lambda: pw)
         self._patch(main, "get_charger_status", lambda: cp)
         self._patch(main, "start_charger", lambda amperage=None: self.calls.append(("start", amperage)))
         self._patch(main, "stop_charger", lambda: self.calls.append(("stop", None)))
-        self._patch(main, "set_charger_amperage_limit", lambda amperage: self.calls.append(("amperage", amperage)))
+        # The manual-stop path goes through charger_ops, so patch its internals.
+        self._patch(charger_ops, "stop_charger", lambda: self.calls.append(("stop", None)))
+        self._patch(charger_ops, "set_charger_amperage_limit",
+                    lambda amperage: self.calls.append(("amperage", amperage)))
         self._patch(main, "notify", lambda message: None)
         self._patch(main, "is_in_night_blackout", lambda dt=None: False)
         self._patch(decision, "is_in_night_blackout", lambda dt=None: False)
@@ -58,7 +62,7 @@ class MockedCycle:
         import reporting.notifications
         from agent import telegram_bot
         self._patch(telegram_bot, "start_charger", lambda amperage=None: None)
-        self._patch(telegram_bot, "stop_charger", lambda: None)
+        self._patch(telegram_bot, "stop_and_restore_defaults", lambda: None)
         self._patch(telegram_bot, "set_charger_amperage_limit", lambda amperage: None)
         self._patch(telegram_bot, "notify", lambda message: None)
         self._patch(reporting.notifications, "notify", lambda message: None)

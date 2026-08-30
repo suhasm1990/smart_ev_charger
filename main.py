@@ -33,8 +33,8 @@ from services import (
     ChargePointStartError,
     get_charger_status,
     get_powerwall_stats,
-    set_charger_amperage_limit,
     start_charger,
+    stop_and_restore_defaults,
     stop_charger,
 )
 
@@ -86,11 +86,7 @@ def _sync_with_hardware(cp_status: dict, now: datetime):
 
 def _stop_manual_charge(reason: str, message: str, stats: dict, now: datetime):
     """Ends a manual session, restores default amperage, and returns to auto."""
-    stop_charger()
-    try:
-        set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
-    except Exception as e:
-        log_chargepoint.warning(f"Could not reset amperage to {config.DEFAULT_CHARGER_AMPERAGE}A: {e}")
+    stop_and_restore_defaults()
     state.end_session(reason)
     config.update(MANUAL_MODE_OVERRIDE="auto")
     state.clear_manual_guards()
@@ -206,6 +202,7 @@ def run_cycle():
         try:
             cp_status = get_charger_status()
             stats["is_plugged_in"] = cp_status.get("is_plugged_in", False)
+            stats["cp_session_energy_kwh"] = cp_status.get("energy_kwh", 0.0)
             _sync_with_hardware(cp_status, now)
         except Exception as e:
             log_chargepoint.warning(f"Failed to get charger status: {e}")

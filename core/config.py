@@ -110,6 +110,11 @@ DYNAMIC_CONFIG_FILE = _env("DYNAMIC_CONFIG_FILE", "logs/config_dynamic.json")
 CSV_LOG_FILE        = _env("CSV_LOG_FILE", "logs/charger_log.csv")
 TEXT_LOG_FILE       = _env("TEXT_LOG_FILE", "logs/charger.log")
 HEARTBEAT_FILE      = _env("HEARTBEAT_FILE", "logs/heartbeat")
+ALERTS_FILE         = _env("ALERTS_FILE", "logs/alerts.json")
+GOOGLE_CREDENTIALS_FILE = _env("GOOGLE_CREDENTIALS_FILE", "service_account.json")
+# NOTE: reporting/logger.py reads TEXT_LOG_FILE and its LOG_* settings straight
+# from the environment — it must stay importable without core, since core's own
+# modules import it.
 
 # ── Runtime-tunable settings ────────────────────────────────────────────────
 # Every key here can be changed at runtime by the Telegram bot or the morning

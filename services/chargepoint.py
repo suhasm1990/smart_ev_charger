@@ -9,7 +9,6 @@ Sync callers must always go through `_run`. `_client_lock` guards only the
 loop/thread creation in `_ensure_loop`.
 """
 import asyncio
-import re
 import threading
 
 from core import config
@@ -60,7 +59,8 @@ def _clean_error(e: Exception) -> str:
             if code in raw:
                 return f"ChargePoint API {label} (Cloudflare {code})"
         return "ChargePoint API Server Error (Cloudflare Response)"
-    lines = [ln.strip() for ln in re.sub(r"<[^>]+>", "", raw).splitlines() if ln.strip()]
+    from reporting.notifications import strip_html
+    lines = [ln.strip() for ln in strip_html(raw).splitlines() if ln.strip()]
     return (lines[0] if lines else raw)[:150]
 
 

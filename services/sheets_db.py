@@ -14,13 +14,11 @@ try:
 except ImportError:
     gspread = Credentials = None
 
+from core import config
 from reporting.logger import log
 
-SHEET_URL = os.getenv(
-    "GOOGLE_SHEET_URL",
-    "https://docs.google.com/spreadsheets/d/1-GKCjMHUIPdh_2vvN9CadfisgOwwYAe0GHkQk3e1HUA",
-)
-CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "service_account.json")
+SHEET_URL = config.GOOGLE_SHEET_URL
+CREDS_FILE = config.GOOGLE_CREDENTIALS_FILE
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 SHEET_TTL = 900.0     # Reuse the spreadsheet handle for 15 minutes.

@@ -6,6 +6,7 @@ from services.chargepoint import (
     start_charger,
     stop_charger,
 )
+from services.charger_ops import stop_and_restore_defaults
 from services.netzero import get_powerwall_stats
 from services.sheets_db import (
     add_user_instruction,
@@ -20,6 +21,7 @@ from services.sheets_db import (
 )
 
 __all__ = [
+    "stop_and_restore_defaults",
     "ChargePointStartError", "start_charger", "stop_charger", "get_charger_status",
     "set_charger_amperage_limit", "get_powerwall_stats", "get_sheet", "append_log_row",
     "get_recent_logs", "get_system_logs", "get_settings", "update_settings",
