@@ -2,6 +2,11 @@
 
 The vendor library is async-only, so all coroutines run on one long-lived
 background event loop and are exposed to the daemon as blocking calls.
+
+Threading invariant: `_client` may only be touched from coroutines running on
+`_loop` (they never interleave mid-await on globals here), so it needs no lock.
+Sync callers must always go through `_run`. `_client_lock` guards only the
+loop/thread creation in `_ensure_loop`.
 """
 import asyncio
 import re
@@ -20,6 +25,8 @@ class ChargePointStartError(Exception):
 
 async def _get_client():
     global _client
+    assert _loop is None or asyncio.get_running_loop() is _loop, \
+        "_client must only be touched from the dedicated ChargePoint loop"
     if _client is None:
         if not config.CHARGEPOINT_USERNAME or not config.CHARGEPOINT_COULOMB_TOKEN:
             raise RuntimeError("CHARGEPOINT_USERNAME and CHARGEPOINT_COULOMB_TOKEN must be configured.")
@@ -35,6 +42,8 @@ async def _get_client():
 async def _drop_client():
     """Discards the cached client so the next call re-authenticates."""
     global _client
+    assert _loop is None or asyncio.get_running_loop() is _loop, \
+        "_client must only be touched from the dedicated ChargePoint loop"
     stale, _client = _client, None
     if stale is not None:
         try:

@@ -31,7 +31,11 @@ SYSLOG_TAB = "System Logs"
 SETTINGS_TAB = "Settings"
 SYSLOG_HEADERS = ["Timestamp", "Level", "Module", "Message"]
 
-_lock = threading.Lock()
+# Guards the connection-handle globals (_client, _sheet, _worksheets, ...).
+# An RLock because get_or_create_worksheet -> get_sheet -> get_client nest.
+# Holding it across the open/create network calls serializes the three workers
+# on (re)connection only, which is rare and keeps the handles consistent.
+_lock = threading.RLock()
 # Set on the Sheets worker threads. The Google Sheets log handler checks this to
 # avoid a feedback loop: a warning raised while writing to Sheets would other-
 # wise be queued for Sheets, drained by this same worker, and warn again.
@@ -64,71 +68,74 @@ def get_client():
     global _client, _credentials_warned
     if gspread is None or Credentials is None:
         return None
-    if _client is None:
-        if not os.path.exists(CREDS_FILE):
-            if not _credentials_warned:
-                _credentials_warned = True
-                log.warning(f"{CREDS_FILE} not found. Google Sheets integration disabled.")
-            return None
-        try:
-            _client = gspread.authorize(Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES))
+    with _lock:
+        if _client is None:
+            if not os.path.exists(CREDS_FILE):
+                if not _credentials_warned:
+                    _credentials_warned = True
+                    log.warning(f"{CREDS_FILE} not found. Google Sheets integration disabled.")
+                return None
             try:
-                _client.http_client.set_timeout(30)
-            except AttributeError:  # gspread < 6
-                pass
-        except Exception as e:
-            log.error(f"Failed to authenticate with Google Sheets: {e}")
-            return None
-    return _client
+                _client = gspread.authorize(Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES))
+                try:
+                    _client.http_client.set_timeout(30)
+                except AttributeError:  # gspread < 6
+                    pass
+            except Exception as e:
+                log.error(f"Failed to authenticate with Google Sheets: {e}")
+                return None
+        return _client
 
 
 def get_sheet():
     global _sheet, _sheet_opened_at, _worksheets
-    client = get_client()
-    if not client:
-        return None
-    now = time.time()
-    if _sheet is not None and (now - _sheet_opened_at) < SHEET_TTL:
-        return _sheet
-    try:
-        _sheet = client.open_by_url(SHEET_URL)
-        _sheet_opened_at = now
-        _worksheets = {}
-        return _sheet
-    except Exception as e:
-        log.error(f"Failed to open spreadsheet by URL: {e}")
-        _sheet = None
-        return None
+    with _lock:
+        client = get_client()
+        if not client:
+            return None
+        now = time.time()
+        if _sheet is not None and (now - _sheet_opened_at) < SHEET_TTL:
+            return _sheet
+        try:
+            _sheet = client.open_by_url(SHEET_URL)
+            _sheet_opened_at = now
+            _worksheets = {}
+            return _sheet
+        except Exception as e:
+            log.error(f"Failed to open spreadsheet by URL: {e}")
+            _sheet = None
+            return None
 
 
 def get_or_create_worksheet(title: str, headers: list = None, rows: int = 1000, cols: int = 32):
     """Returns a cached worksheet handle, creating the tab on first use."""
-    sheet = get_sheet()
-    if not sheet:
-        return None
-    if title in _worksheets:
-        return _worksheets[title]
-    try:
-        ws = sheet.worksheet(title)
-    except Exception:
-        # Adopt the legacy default tab name rather than orphaning its history.
-        ws = None
-        if title == TELEMETRY_TAB:
-            try:
-                ws = sheet.worksheet("Sheet1")
-                ws.update_title(TELEMETRY_TAB)
-            except Exception:
-                ws = None
-        if ws is None:
-            try:
-                ws = sheet.add_worksheet(title=title, rows=rows, cols=cols)
-                if headers:
-                    ws.update(range_name="A1", values=[headers])
-            except Exception as e:
-                log.error(f"Failed to create worksheet '{title}': {e}")
-                return None
-    _worksheets[title] = ws
-    return ws
+    with _lock:
+        sheet = get_sheet()
+        if not sheet:
+            return None
+        if title in _worksheets:
+            return _worksheets[title]
+        try:
+            ws = sheet.worksheet(title)
+        except Exception:
+            # Adopt the legacy default tab name rather than orphaning its history.
+            ws = None
+            if title == TELEMETRY_TAB:
+                try:
+                    ws = sheet.worksheet("Sheet1")
+                    ws.update_title(TELEMETRY_TAB)
+                except Exception:
+                    ws = None
+            if ws is None:
+                try:
+                    ws = sheet.add_worksheet(title=title, rows=rows, cols=cols)
+                    if headers:
+                        ws.update(range_name="A1", values=[headers])
+                except Exception as e:
+                    log.error(f"Failed to create worksheet '{title}': {e}")
+                    return None
+        _worksheets[title] = ws
+        return ws
 
 
 # ── Asynchronous write workers ──────────────────────────────────────────────
@@ -325,6 +332,8 @@ def get_system_logs(limit: int = 100, level_filter: str = None) -> list[dict]:
 
 _settings_cache: dict | None = None
 _settings_cache_time = 0.0
+# Guards only the cache tuple above — never held across a Sheets round-trip.
+_settings_lock = threading.Lock()
 
 
 def get_settings(force_refresh: bool = False) -> dict:
@@ -334,8 +343,9 @@ def get_settings(force_refresh: bool = False) -> dict:
     a Google Sheets round-trip on the hot path.
     """
     global _settings_cache, _settings_cache_time
-    if not force_refresh and _settings_cache is not None and (time.time() - _settings_cache_time) < SETTINGS_TTL:
-        return _settings_cache
+    with _settings_lock:
+        if not force_refresh and _settings_cache is not None and (time.time() - _settings_cache_time) < SETTINGS_TTL:
+            return _settings_cache
     try:
         ws = get_or_create_worksheet(SETTINGS_TAB, headers=["Key", "Value"], rows=100, cols=2)
         values = ws.get_all_values() if ws else []
@@ -343,8 +353,10 @@ def get_settings(force_refresh: bool = False) -> dict:
     except Exception as e:
         log.error(f"Failed to fetch settings from Sheets: {e}")
         # Serve the last good snapshot rather than reporting "no settings".
-        return _settings_cache if _settings_cache is not None else {}
-    _settings_cache, _settings_cache_time = settings, time.time()
+        with _settings_lock:
+            return _settings_cache if _settings_cache is not None else {}
+    with _settings_lock:
+        _settings_cache, _settings_cache_time = settings, time.time()
     return settings
 
 
@@ -359,7 +371,8 @@ def _write_settings(patch: dict, remove: set = frozenset()) -> bool:
         merged.update({k: v for k, v in patch.items() if k not in remove})
         ws.clear()
         ws.update(range_name="A1", values=[["Key", "Value"]] + [[str(k), str(v)] for k, v in merged.items()])
-        _settings_cache, _settings_cache_time = {k: str(v) for k, v in merged.items()}, time.time()
+        with _settings_lock:
+            _settings_cache, _settings_cache_time = {k: str(v) for k, v in merged.items()}, time.time()
         return True
     except Exception as e:
         log.error(f"Failed to update settings in Sheets: {e}")
@@ -376,9 +389,10 @@ def update_settings(settings: dict, blocking: bool = False) -> bool:
     if blocking:
         return _write_settings(settings)
     # Reflect the change locally at once so readers never see a stale value.
-    if _settings_cache is not None:
-        _settings_cache = {**_settings_cache, **{k: str(v) for k, v in settings.items()}}
-        _settings_cache_time = time.time()
+    with _settings_lock:
+        if _settings_cache is not None:
+            _settings_cache = {**_settings_cache, **{k: str(v) for k, v in settings.items()}}
+            _settings_cache_time = time.time()
     try:
         _settings_queue.put_nowait(dict(settings))
         return True

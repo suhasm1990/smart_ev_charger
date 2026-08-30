@@ -1,4 +1,3 @@
-import asyncio
 import unittest
 
 import services.chargepoint as cp
@@ -27,7 +26,9 @@ class TestChargePointHelpers(unittest.TestCase):
         try:
             cp._client = None
             with self.assertRaises(RuntimeError):
-                asyncio.run(cp._get_client())
+                # Through _run, the only supported entry point for sync callers
+                # (coroutines assert they run on the dedicated loop).
+                cp._run(cp._get_client(), timeout=5.0)
         finally:
             config.CHARGEPOINT_USERNAME, config.CHARGEPOINT_COULOMB_TOKEN = original
 

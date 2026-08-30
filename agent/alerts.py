@@ -1,6 +1,7 @@
 """User-defined threshold alerts plus the built-in grid-export notification."""
 import json
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -21,37 +22,41 @@ _NUMERIC_OPS = {
 
 _cache: list | None = None
 _cache_mtime = -1.0
+# The bot thread CRUDs alerts while the cycle thread evaluates them.
+_cache_lock = threading.Lock()
 
 
 def load_alerts() -> list:
     """Reads the alert rules, re-parsing only when the file changes on disk."""
     global _cache, _cache_mtime
-    try:
-        mtime = os.path.getmtime(ALERTS_FILE)
-    except OSError:
-        _cache, _cache_mtime = [], -1.0
-        return []
-    if _cache is not None and mtime == _cache_mtime:
+    with _cache_lock:
+        try:
+            mtime = os.path.getmtime(ALERTS_FILE)
+        except OSError:
+            _cache, _cache_mtime = [], -1.0
+            return []
+        if _cache is not None and mtime == _cache_mtime:
+            return _cache
+        try:
+            with open(ALERTS_FILE) as f:
+                _cache = json.load(f)
+            _cache_mtime = mtime
+        except (OSError, ValueError) as e:
+            log.error(f"Failed to load alerts: {e}")
+            _cache = []
         return _cache
-    try:
-        with open(ALERTS_FILE) as f:
-            _cache = json.load(f)
-        _cache_mtime = mtime
-    except (OSError, ValueError) as e:
-        log.error(f"Failed to load alerts: {e}")
-        _cache = []
-    return _cache
 
 
 def save_alerts(alerts: list):
     global _cache, _cache_mtime
-    try:
-        os.makedirs(os.path.dirname(ALERTS_FILE) or ".", exist_ok=True)
-        with open(ALERTS_FILE, "w") as f:
-            json.dump(alerts, f, indent=4)
-        _cache, _cache_mtime = alerts, os.path.getmtime(ALERTS_FILE)
-    except OSError as e:
-        log.error(f"Failed to save alerts: {e}")
+    with _cache_lock:
+        try:
+            os.makedirs(os.path.dirname(ALERTS_FILE) or ".", exist_ok=True)
+            with open(ALERTS_FILE, "w") as f:
+                json.dump(alerts, f, indent=4)
+            _cache, _cache_mtime = alerts, os.path.getmtime(ALERTS_FILE)
+        except OSError as e:
+            log.error(f"Failed to save alerts: {e}")
 
 
 def add_alert(field: str, operator: str, value, message: str, once: bool = True) -> str:

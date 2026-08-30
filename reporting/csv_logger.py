@@ -1,6 +1,7 @@
 """Telemetry persistence and energy/billing analytics over the logged history."""
 import csv
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -184,13 +185,16 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
     except Exception as e:
         log_csv.error(f"Failed to queue row for Google Sheets: {e}")
 
-    _log_rows_cache = None
+    with _log_rows_cache_lock:
+        _log_rows_cache = None
 
 
 # ── Reading ─────────────────────────────────────────────────────────────────
 
 _log_rows_cache: list[dict] | None = None
 _log_rows_cache_time = 0.0
+# Guards the cache tuple; read from the cycle, bot, and agent threads.
+_log_rows_cache_lock = threading.Lock()
 LOG_CACHE_TTL = 60.0
 
 
@@ -201,8 +205,9 @@ def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
     60-second in-memory cache keeps repeated analytics off the network.
     """
     global _log_rows_cache, _log_rows_cache_time
-    if not force_refresh and _log_rows_cache is not None and (time.time() - _log_rows_cache_time) < LOG_CACHE_TTL:
-        return _log_rows_cache
+    with _log_rows_cache_lock:
+        if not force_refresh and _log_rows_cache is not None and (time.time() - _log_rows_cache_time) < LOG_CACHE_TTL:
+            return _log_rows_cache
 
     rows = []
     try:
@@ -218,7 +223,8 @@ def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
         except OSError as e:
             log_csv.warning(f"Error reading local CSV fallback: {e}")
 
-    _log_rows_cache, _log_rows_cache_time = rows, time.time()
+    with _log_rows_cache_lock:
+        _log_rows_cache, _log_rows_cache_time = rows, time.time()
     return rows
 
 
