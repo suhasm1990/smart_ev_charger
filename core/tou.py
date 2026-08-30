@@ -1,5 +1,6 @@
 """Time-of-use rate periods and blackout windows for the configured utility."""
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from functools import lru_cache
 
 from core import config
 
@@ -36,8 +37,44 @@ def is_weekend(now: datetime) -> bool:
     return now.weekday() >= 5
 
 
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """The n-th given weekday (0=Mon) of a month, e.g. the 3rd Monday of February."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + (n - 1) * 7)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """The last given weekday of a month, e.g. the last Monday of May."""
+    last = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+@lru_cache(maxsize=8)
+def utility_holidays(year: int) -> frozenset:
+    """The utility's observed holidays (priced off-peak), computed for any year.
+
+    Fixed-date holidays are not shifted to the nearest weekday, matching the
+    published PG&E/MID calendars this replaced.
+    """
+    return frozenset({
+        date(year, 1, 1),              # New Year's Day
+        _nth_weekday(year, 2, 0, 3),   # Presidents Day
+        _last_weekday(year, 5, 0),     # Memorial Day
+        date(year, 7, 4),              # Independence Day
+        _nth_weekday(year, 9, 0, 1),   # Labor Day
+        date(year, 11, 11),            # Veterans Day
+        _nth_weekday(year, 11, 3, 4),  # Thanksgiving
+        date(year, 12, 25),            # Christmas Day
+    })
+
+
+def is_utility_holiday(day: date) -> bool:
+    return day in utility_holidays(day.year)
+
+
 def get_tou_period(now: datetime) -> str:
-    if is_weekend(now) or now.date() in config.PGE_HOLIDAYS:
+    if is_weekend(now) or is_utility_holiday(now.date()):
         return "off_peak"
     hour = now.hour
     if 17 <= hour < 20:

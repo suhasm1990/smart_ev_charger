@@ -551,7 +551,12 @@ def _schedule_exit(delay: float = 2.0):
         log.info("RESTART | Flushing all pending queues to Google Sheets before exit...")
         try:
             from services.sheets_db import flush
-            flush(timeout=5.0)
+            flush(timeout=10.0)
+        except Exception:
+            pass
+        try:
+            from reporting.notifications import notify_flush
+            notify_flush(2.0)
         except Exception:
             pass
         log.info("RESTART | Exiting to trigger a container restart and git pull.")

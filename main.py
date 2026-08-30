@@ -1,6 +1,5 @@
 """Smart EV Charger daemon: solar-aware charging control loop."""
 import signal
-import sys
 import threading
 import time
 from datetime import datetime
@@ -198,6 +197,19 @@ def _handle_protective_stop(stats: dict, now: datetime, label: str, reason: str,
     return True
 
 
+def _touch_heartbeat():
+    """Records a completed cycle for the container healthcheck.
+
+    Deliberately NOT touched on skipped or failed cycles, so a wedged or
+    permanently failing loop eventually turns the container unhealthy.
+    """
+    try:
+        with open(config.HEARTBEAT_FILE, "w") as f:
+            f.write(datetime.now(config.TZ).isoformat())
+    except OSError as e:
+        log.warning(f"Could not write heartbeat file: {e}")
+
+
 def run_cycle():
     """One evaluation of the world: read telemetry, decide, act, record."""
     config.load_dynamic_config()
@@ -218,6 +230,7 @@ def run_cycle():
         if check_manual_mode():
             try:
                 _run_manual_cycle(stats, cp_status, now, tou)
+                _touch_heartbeat()
             except Exception as e:
                 log_mode.warning(f"Manual mode cycle failed: {e}")
             return
@@ -237,12 +250,14 @@ def run_cycle():
                 stats, now, "OFF-GRID DETECTED",
                 "Powerwall went off-grid — stopping to protect home",
                 "Powerwall off-grid — protecting home load")
+            _touch_heartbeat()
             return
         if stats.get("storm_mode"):
             _handle_protective_stop(
                 stats, now, "STORM MODE ACTIVE",
                 "Storm mode activated — stopping to preserve backup reserve",
                 "Storm mode active — preserving backup reserve")
+            _touch_heartbeat()
             return
 
         action, reason = evaluate(stats, now)
@@ -254,9 +269,19 @@ def run_cycle():
             f"blackout={is_in_night_blackout(now)} | {reason}"
         )
 
+        # State transitions happen only after the hardware confirms the action,
+        # so a rejected start never inflates counters and a failed stop retries.
         if action == "start":
             try:
                 start_charger(config.DEFAULT_CHARGER_AMPERAGE)
+            except ChargePointStartError as e:
+                log_chargepoint.warning(f"CHARGE START REJECTED | {e}")
+                notify(f"⚠️ <b>EV Charging Start Notice</b>\n{e}")
+            else:
+                state.charger_state = state.State.CHARGING
+                state.charge_session_start = now
+                state.session_count_today += 1
+                state.session_stop_reason = None
                 state.active_amperage = config.DEFAULT_CHARGER_AMPERAGE
                 log_chargepoint.info(
                     f"CHARGE STARTED | battery={stats['battery_pct']}% | solar={stats['solar_kw']}kW | "
@@ -266,22 +291,10 @@ def run_cycle():
                     f"🟢 Charging started\n{reason}\n"
                     f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | TOU: {tou}"
                 )
-            except ChargePointStartError as e:
-                _go_idle(str(e))
-                log_chargepoint.warning(f"CHARGE START REJECTED | {e}")
-                notify(f"⚠️ <b>EV Charging Start Notice</b>\n{e}")
-            except Exception:
-                _go_idle("Charger start failed")
-                raise
 
         elif action == "stop":
             duration = get_session_minutes()
-            try:
-                stop_charger()
-            except Exception:
-                # Leave the state as CHARGING so the next cycle retries the stop.
-                state.charger_state = state.State.CHARGING
-                raise
+            stop_charger()  # raising leaves state CHARGING, so the next cycle retries
             log_chargepoint.info(
                 f"CHARGE STOPPED | battery={stats['battery_pct']}% | solar={stats['solar_kw']}kW | "
                 f"tou={tou} | reason={reason} | session_duration={duration:.0f}min"
@@ -291,11 +304,13 @@ def run_cycle():
                 f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | Session: {duration:.0f} min"
             )
             state.charger_state = state.State.IDLE
+            state.session_stop_reason = reason
 
         state.consecutive_api_failures = 0
         log_to_csv(stats, action, reason, now)
         if state.charger_state == state.State.IDLE:
             state.charge_session_start = None
+        _touch_heartbeat()
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "N/A"
@@ -351,6 +366,28 @@ def _run_in_thread(fn, name: str):
     return lambda: threading.Thread(target=fn, daemon=True, name=name).start()
 
 
+_scheduled_interval: int | None = None
+
+
+def _register_cycle_job(interval_minutes: int):
+    """(Re-)registers the control-cycle job at the given interval."""
+    global _scheduled_interval
+    schedule.clear("cycle")
+    schedule.every(interval_minutes).minutes.do(run_cycle_safe).tag("cycle")
+    _scheduled_interval = interval_minutes
+
+
+def _sync_cycle_interval():
+    """Applies a runtime CHECK_INTERVAL_MINUTES change to the scheduler.
+
+    Called only from the main thread: the `schedule` module's job list is not
+    thread-safe against the run_pending() loop.
+    """
+    if config.CHECK_INTERVAL_MINUTES != _scheduled_interval:
+        log.info(f"INTERVAL | Cycle interval changed {_scheduled_interval} -> {config.CHECK_INTERVAL_MINUTES}min")
+        _register_cycle_job(config.CHECK_INTERVAL_MINUTES)
+
+
 def check_monthly_schedule():
     """Sends the bill infographic on the first morning of each month."""
     if datetime.now(config.TZ).day != 1:
@@ -362,14 +399,27 @@ def check_monthly_schedule():
         log.error(f"Failed to send the monthly report: {e}")
 
 
+_shutdown_event = threading.Event()
+
+
 def handle_shutdown(signum, frame):
+    """Flushes pending writes, then lets the main loop exit on its own.
+
+    Setting an event instead of sys.exit() avoids SystemExit unwinding inside
+    whatever the main thread happened to be doing when the signal arrived.
+    """
     log.info("SHUTDOWN | Signal received — leaving charger state untouched")
     try:
         from services import flush
-        flush(timeout=5.0)
+        flush(timeout=10.0)  # docker stop_grace_period is 20s
     except Exception:
         pass
-    sys.exit(0)
+    try:
+        from reporting.notifications import notify_flush
+        notify_flush(2.0)
+    except Exception:
+        pass
+    _shutdown_event.set()
 
 
 def adopt_startup_state():
@@ -413,21 +463,24 @@ def main():
     # 2. Reconcile manual mode and adopt current hardware charging state
     check_manual_mode()
     adopt_startup_state()
+    _touch_heartbeat()
 
     tz_name = getattr(config.TZ, "key", str(config.TZ))
     schedule.every().day.at(config.DAILY_RESET_TIME, tz_name).do(daily_reset)
     schedule.every().day.at(config.DAILY_AGENT_TIME, tz_name).do(_run_in_thread(run_daily_agent, "DailyAgent"))
     schedule.every().day.at("07:00", tz_name).do(_run_in_thread(check_monthly_schedule, "MonthlyReport"))
-    schedule.every(config.CHECK_INTERVAL_MINUTES).minutes.do(run_cycle_safe)
+    _register_cycle_job(config.CHECK_INTERVAL_MINUTES)
 
     if config.TELEGRAM_BOT_TOKEN:
         start_telegram_bot(run_cycle_safe)
 
     run_cycle_safe()
 
-    while True:
+    while not _shutdown_event.is_set():
         schedule.run_pending()
+        _sync_cycle_interval()
         time.sleep(1)
+    log.info("SHUTDOWN | Main loop exited cleanly")
 
 
 if __name__ == "__main__":

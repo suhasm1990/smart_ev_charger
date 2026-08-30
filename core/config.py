@@ -1,6 +1,5 @@
 import json
 import os
-from datetime import date
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -108,11 +107,20 @@ GEMINI_API_KEY    = _env("GEMINI_API_KEY")
 DYNAMIC_CONFIG_FILE = _env("DYNAMIC_CONFIG_FILE", "logs/config_dynamic.json")
 CSV_LOG_FILE        = _env("CSV_LOG_FILE", "logs/charger_log.csv")
 TEXT_LOG_FILE       = _env("TEXT_LOG_FILE", "logs/charger.log")
+HEARTBEAT_FILE      = _env("HEARTBEAT_FILE", "logs/heartbeat")
 
 # ── Runtime-tunable settings ────────────────────────────────────────────────
 # Every key here can be changed at runtime by the Telegram bot or the morning
 # planner. Precedence, lowest to highest: environment -> local JSON -> Sheets.
+
+
+def _interval_minutes(value) -> int:
+    """Clamps the runtime-tunable cycle interval to a sane 1-60 minute range."""
+    return max(1, min(60, int(value)))
+
+
 DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
+    "CHECK_INTERVAL_MINUTES":    (_interval_minutes, "15"),
     "BATTERY_START_PCT":         (float, "40"),
     "BATTERY_STOP_PCT":          (float, "25"),
     "BATTERY_LOW_RESERVE_PCT":   (float, "15"),
@@ -125,6 +133,23 @@ DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
     "LLM_PROVIDER":              (str,   "gemini"),
     "LLM_MODEL":                 (str,   "gemini-2.5-flash"),
 }
+
+
+# Sheets is the declared primary source of truth, so sync failures must be
+# visible — but load runs every cycle, so warn at most once per 10 minutes.
+_last_sync_warning = 0.0
+_SYNC_WARNING_INTERVAL_S = 600.0
+
+
+def _warn_sync_failure(operation: str, error: Exception):
+    global _last_sync_warning
+    import logging
+    import time
+    now = time.monotonic()
+    if now - _last_sync_warning < _SYNC_WARNING_INTERVAL_S:
+        return
+    _last_sync_warning = now
+    logging.getLogger("EV_CHARGER").warning(f"Config {operation} with Google Sheets failed: {error}")
 
 
 def _apply(source: dict):
@@ -166,8 +191,8 @@ def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
                         json.dump(data, f, indent=4)
                 except OSError:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            _warn_sync_failure("load", e)
 
 
 def save_dynamic_config(blocking: bool = True):
@@ -176,8 +201,8 @@ def save_dynamic_config(blocking: bool = True):
     try:
         from services.sheets_db import update_settings
         update_settings(data, blocking=blocking)
-    except Exception:
-        pass
+    except Exception as e:
+        _warn_sync_failure("save", e)
 
     try:
         os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
@@ -189,12 +214,3 @@ def save_dynamic_config(blocking: bool = True):
 
 # Populate from environment and disk only; the cloud layer loads on first cycle or startup.
 load_dynamic_config(remote=False)
-
-PGE_HOLIDAYS = {
-    date(2025, 1, 1),  date(2025, 2, 17),  date(2025, 5, 26),
-    date(2025, 7, 4),  date(2025, 9, 1),   date(2025, 11, 11),
-    date(2025, 11, 27), date(2025, 12, 25),
-    date(2026, 1, 1),  date(2026, 2, 16),  date(2026, 5, 25),
-    date(2026, 7, 4),  date(2026, 9, 7),   date(2026, 11, 11),
-    date(2026, 11, 26), date(2026, 12, 25),
-}

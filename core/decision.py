@@ -1,4 +1,8 @@
-"""Pure-ish charging decision rules evaluated once per cycle."""
+"""Pure charging decision rules evaluated once per cycle.
+
+evaluate() only reads state and returns (action, reason); the caller applies
+state transitions after the hardware confirms the action succeeded.
+"""
 from datetime import datetime
 
 from core import config, state
@@ -24,8 +28,6 @@ def min_charge_time_met() -> bool:
 
 
 def _stop(reason: str, log_label: str) -> tuple[str, str]:
-    state.charger_state = state.State.IDLE
-    state.session_stop_reason = reason
     log_decision.info(f"STOP | {log_label}")
     return "stop", reason
 
@@ -79,11 +81,6 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
         reason = f"Battery healthy ({battery_pct}% >= {config.BATTERY_START_PCT}%)"
         if charging:
             return "hold", reason
-        state.charger_state = state.State.CHARGING
-        state.charge_session_start = now
-        state.session_count_today += 1
-        state.session_stop_reason = None
-        state.active_amperage = config.DEFAULT_CHARGER_AMPERAGE
         log_decision.info(f"START | {reason}")
         return "start", reason
 

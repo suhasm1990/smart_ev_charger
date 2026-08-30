@@ -72,6 +72,10 @@ def get_client():
             return None
         try:
             _client = gspread.authorize(Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES))
+            try:
+                _client.http_client.set_timeout(30)
+            except AttributeError:  # gspread < 6
+                pass
         except Exception as e:
             log.error(f"Failed to authenticate with Google Sheets: {e}")
             return None
@@ -165,6 +169,38 @@ def _drain(target: queue.Queue, limit: int = 25) -> list:
     return batch
 
 
+def _write_batch(tab: str, batch: list, headers: list, row_count, max_rows: int, trim_chunk: int):
+    """Writes one batch with retries; returns the updated row count (None on failure)."""
+    for attempt in range(3):
+        try:
+            ws = get_or_create_worksheet(tab, headers=headers)
+            if ws is None:
+                # Treat like any failed attempt so the batch is retried and,
+                # if still failing, its drop is logged — never silent.
+                raise RuntimeError(f"worksheet '{tab}' is unavailable")
+            ws.append_rows(batch)
+            if row_count is None:
+                row_count = _data_row_count(ws)
+            else:
+                row_count += len(batch)
+            # Trim in chunks so a delete_rows call is amortised over
+            # many appends instead of firing on every single write.
+            if row_count > max_rows + trim_chunk:
+                excess = row_count - max_rows
+                ws.delete_rows(2, 1 + excess)
+                row_count -= excess
+            return row_count
+        except Exception as e:
+            row_count = None
+            _reset_connection()
+            log.warning(f"Sheets append to '{tab}' failed (attempt {attempt + 1}/3): {e}")
+            if attempt == 2:
+                log.error(f"Dropped {len(batch)} row(s) destined for '{tab}' after 3 failed attempts.")
+            else:
+                time.sleep(2 ** attempt)
+    return None
+
+
 def _append_worker(target: queue.Queue, tab: str, max_rows: int, trim_chunk: int, headers: list = None):
     """Batches queued rows into a worksheet and enforces a rolling ring buffer."""
     _worker_local.active = True
@@ -174,31 +210,7 @@ def _append_worker(target: queue.Queue, tab: str, max_rows: int, trim_chunk: int
         if not batch:
             continue
         try:
-            for attempt in range(3):
-                try:
-                    ws = get_or_create_worksheet(tab, headers=headers)
-                    if ws is None:
-                        break
-                    ws.append_rows(batch)
-                    if row_count is None:
-                        row_count = _data_row_count(ws)
-                    else:
-                        row_count += len(batch)
-                    # Trim in chunks so a delete_rows call is amortised over
-                    # many appends instead of firing on every single write.
-                    if row_count > max_rows + trim_chunk:
-                        excess = row_count - max_rows
-                        ws.delete_rows(2, 1 + excess)
-                        row_count -= excess
-                    break
-                except Exception as e:
-                    row_count = None
-                    _reset_connection()
-                    log.warning(f"Sheets append to '{tab}' failed (attempt {attempt + 1}/3): {e}")
-                    if attempt == 2:
-                        log.error(f"Dropped {len(batch)} row(s) destined for '{tab}' after 3 failed attempts.")
-                    else:
-                        time.sleep(2 ** attempt)
+            row_count = _write_batch(tab, batch, headers, row_count, max_rows, trim_chunk)
         finally:
             for _ in batch:
                 target.task_done()
@@ -255,11 +267,15 @@ def append_system_log(timestamp: str, level: str, module: str, message: str) -> 
 
 
 def flush(timeout: float = 10.0):
-    """Waits for pending writes to land, for use during graceful shutdown."""
+    """Waits for pending writes to land, for use during graceful shutdown.
+
+    unfinished_tasks (not empty()) is the right signal: workers pop an item
+    before writing it, so an empty queue can still have a write in flight.
+    """
     deadline = time.time() + timeout
-    for q in (_settings_queue, _telemetry_queue, _syslog_queue):
-        while not q.empty() and time.time() < deadline:
-            time.sleep(0.1)
+    queues = (_settings_queue, _telemetry_queue, _syslog_queue)
+    while any(q.unfinished_tasks for q in queues) and time.time() < deadline:
+        time.sleep(0.05)
 
 
 # ── Reads ───────────────────────────────────────────────────────────────────

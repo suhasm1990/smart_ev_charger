@@ -20,8 +20,10 @@ services:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      # The daemon writes a log line every cycle; a stale log means it is wedged.
-      test: ["CMD-SHELL", "python -c \"import os,time,sys; p='/app/logs/charger.log'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 2400 else 1)\""]
+      # The daemon touches the heartbeat file only on a SUCCESSFUL cycle, so a
+      # wedged or permanently failing loop turns unhealthy (a stale log did not:
+      # the "SKIP CYCLE" line kept refreshing the log's mtime forever).
+      test: ["CMD-SHELL", "python -c \"import os,time,sys; p='/app/logs/heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 2400 else 1)\""]
       interval: 5m
       timeout: 10s
       retries: 3

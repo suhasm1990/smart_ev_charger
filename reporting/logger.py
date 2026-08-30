@@ -1,13 +1,11 @@
 import logging
 import logging.handlers
 import os
-import socket
 import sys
 
-# Single global socket timeout for every networking library in the process
-# (requests, urllib3, gspread, litellm). Defined here because this module is
-# imported first by every entry point.
-socket.setdefaulttimeout(25.0)
+# No process-wide socket.setdefaulttimeout() here: it silently capped every
+# library's own timeout (Telegram's 60s long-poll, ChargePoint calls). Each
+# client sets its own explicit timeout instead.
 
 TEXT_LOG_FILE = os.getenv("TEXT_LOG_FILE", "logs/charger.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

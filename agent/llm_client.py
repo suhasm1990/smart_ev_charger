@@ -115,7 +115,7 @@ def get_thinking_kwargs(provider: str, model_name: str) -> dict:
 
 def _completion_kwargs(cfg: dict) -> tuple[str, dict]:
     model_name = format_model_name(cfg["provider"], cfg["model"])
-    kwargs = {"model": model_name, "api_key": cfg["api_key"]}
+    kwargs = {"model": model_name, "api_key": cfg["api_key"], "timeout": 60}
     if cfg["base_url"]:
         kwargs["api_base"] = cfg["base_url"]
     kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
@@ -129,19 +129,36 @@ def extract_json_from_text(text: str) -> dict:
     return json.loads(match.group(1) if match else text)
 
 
+def _is_transient_llm_error(e: Exception) -> bool:
+    """Rate limits, provider 5xx, connection drops, and timeouts are retryable."""
+    transient_types = tuple(
+        t for t in (
+            getattr(litellm, "RateLimitError", None),
+            getattr(litellm, "InternalServerError", None),
+            getattr(litellm, "ServiceUnavailableError", None),
+            getattr(litellm, "APIConnectionError", None),
+            getattr(litellm, "Timeout", None),
+        ) if t is not None
+    )
+    if transient_types and isinstance(e, transient_types):
+        return True
+    msg = str(e).lower()
+    return any(t in msg for t in
+               ("429", "rate limit", "too many requests", "overloaded", "500", "502", "503", "timeout"))
+
+
 def _complete(**kwargs):
-    """Calls the model, backing off on rate limits."""
+    """Calls the model, backing off on transient failures."""
     if litellm is None:
         raise RuntimeError("litellm is not installed.")
     for attempt in range(RETRY_ATTEMPTS):
         try:
             return litellm.completion(**kwargs)
         except Exception as e:
-            transient = any(t in str(e).lower() for t in ("429", "rate limit", "too many requests", "overloaded"))
-            if not transient or attempt == RETRY_ATTEMPTS - 1:
+            if not _is_transient_llm_error(e) or attempt == RETRY_ATTEMPTS - 1:
                 raise
             wait = 3 * (attempt + 1)
-            log.warning(f"Rate limited; retrying in {wait}s ({attempt + 1}/{RETRY_ATTEMPTS})")
+            log.warning(f"Transient LLM error ({type(e).__name__}); retrying in {wait}s ({attempt + 1}/{RETRY_ATTEMPTS})")
             time.sleep(wait)
 
 

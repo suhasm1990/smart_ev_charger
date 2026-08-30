@@ -203,13 +203,22 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-def _run(coro, timeout: float = 60.0):
-    future = asyncio.run_coroutine_threadsafe(coro, _ensure_loop())
+# Must stay comfortably below main.CYCLE_TIMEOUT_SECONDS (45s): a cycle makes up
+# to two ChargePoint calls, and only cancellation *inside* the event loop can
+# actually unblock a hung vendor call — future.cancel() cannot.
+CHARGEPOINT_CALL_TIMEOUT = 30.0
+
+
+def _run(coro, timeout: float = CHARGEPOINT_CALL_TIMEOUT):
+    loop = _ensure_loop()
+    future = asyncio.run_coroutine_threadsafe(asyncio.wait_for(coro, timeout=timeout), loop)
     try:
-        return future.result(timeout=timeout)
+        return future.result(timeout=timeout + 5.0)
     except TimeoutError:
         future.cancel()
         log_chargepoint.warning(f"ChargePoint API call timed out after {timeout}s")
+        # The wedged client's connection state is suspect — re-auth on next call.
+        asyncio.run_coroutine_threadsafe(_drop_client(), loop)
         raise
 
 
