@@ -68,21 +68,26 @@ docker-compose up -d
 ```
 smart_ev_charger/
 ├── Dockerfile              # Production container build
-├── docker-compose.yml      # Compose service configuration
+├── docker-compose.yml      # Compose service configuration & heartbeat healthcheck
 ├── entrypoint.sh           # Auto-pulls latest Git updates on boot
 ├── requirements.txt        # Python dependencies
+├── requirements-dev.txt    # Development tooling (ruff)
+├── pyproject.toml          # Lint configuration
 ├── main.py                 # Core scheduler daemon & decision cycle
 │
+├── .github/workflows/      # CI: ruff + full test suite on push/PR
+│
 ├── core/                   # Configuration & state machines
-│   ├── config.py           # Environment schema & dynamic settings
-│   ├── state.py            # Runtime state & guardrails
-│   ├── decision.py         # Solar/battery evaluation rules
+│   ├── config.py           # Environment schema, locked dynamic settings (update/snapshot)
+│   ├── state.py            # Locked StateStore: runtime state, sessions & guardrails
+│   ├── decision.py         # Pure solar/battery evaluation rules
 │   ├── manual_override.py  # Manual mode manager & auto-reset
-│   └── tou.py              # Time-Of-Use rate schedule calculations
+│   └── tou.py              # Time-Of-Use rates, boundaries & computed utility holidays
 │
 ├── services/               # Hardware & Cloud IoT APIs
-│   ├── chargepoint.py      # ChargePoint Flex API wrapper
-│   ├── netzero.py          # Tesla Powerwall NetZero API client
+│   ├── chargepoint.py      # ChargePoint Flex API wrapper (dedicated event loop)
+│   ├── charger_ops.py      # Shared stop-and-restore-defaults operation
+│   ├── netzero.py          # Tesla Powerwall NetZero API client (with retries)
 │   └── sheets_db.py        # Google Sheets cloud database sync
 │
 ├── agent/                  # AI Intelligence & Telegram Interface
@@ -95,10 +100,10 @@ smart_ev_charger/
 ├── reporting/              # Telemetry, Reports & Notifications
 │   ├── csv_logger.py       # Telemetry logging & energy analytics engine
 │   ├── report_generator.py # PNG monthly billing card infographic builder
-│   ├── notifications.py    # Telegram & Pushover notifier
+│   ├── notifications.py    # Non-blocking Telegram & Pushover notifier
 │   └── logger.py           # Rotating system logger
 │
-└── tests/                  # Automated unit test suite
+└── tests/                  # Automated unit test suite (146 tests)
 ```
 
 ---
@@ -119,25 +124,39 @@ smart_ev_charger/
 | `DEFAULT_CHARGER_AMPERAGE` / `MAX_CHARGER_AMPERAGE` | Amperage used by auto mode, and the boost ceiling | `20` / `32` |
 | `MIN_CHARGER_AMPERAGE` | Lowest amperage the charger accepts | `8` |
 | `CHARGER_VOLTAGE` | Supply voltage used to convert amperage to kW | `240` |
-| `CHECK_INTERVAL_MINUTES` | Control loop evaluation interval | `15` |
+| `CHECK_INTERVAL_MINUTES` | Control loop evaluation interval (clamped 1–60) | `15` |
 | `MIN_CHARGE_MINUTES` | Minimum session length, to prevent short-cycling | `15` |
 | `POWERWALL_USABLE_KWH` | Usable Powerwall capacity, for evening reserve planning | `13.5` |
 | `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`) | `INFO` |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | Rotating log file size and retained backups | `8388608` / `3` |
 | `GOOGLE_CREDENTIALS_FILE` | Path to the Google service account JSON | `service_account.json` |
+| `HEARTBEAT_FILE` | File touched only on successful control cycles; the Docker healthcheck watches its mtime | `logs/heartbeat` |
+| `ALERTS_FILE` | Storage for user-defined custom alert rules | `logs/alerts.json` |
+
+Runtime-tunable keys (`BATTERY_*`, `NIGHT_BLACKOUT_*`, `ALLOWED_CHARGE_*`,
+`CHECK_INTERVAL_MINUTES`, `MANUAL_MODE_OVERRIDE`, `EV_MILES_PER_KWH`,
+`LLM_PROVIDER`/`LLM_MODEL`) can also be changed live via the Telegram bot, the
+morning planner, or the Google Sheets `Settings` tab — the env value is only the
+lowest-precedence layer (env → local JSON → Sheets).
 
 ---
 
-## 🧪 Testing
+## 🧪 Testing & CI
 
 ```bash
+pip install -r requirements-dev.txt   # ruff (lint)
+ruff check .
 python -m unittest discover -s tests -t .
 ```
 
-The suite runs fully offline: `tests/__init__.py` redirects logs, telemetry, and
-dynamic config into a temporary directory and disables the Google Sheets
-integration, so running tests never touches the live spreadsheet. Tests that
-need real hardware credentials skip themselves automatically.
+The suite (146 tests) runs fully offline and is order-independent:
+`tests/__init__.py` redirects logs, telemetry, and dynamic config into a
+temporary directory and disables the Google Sheets integration, so running
+tests never touches the live spreadsheet. Tests that need real hardware
+credentials skip themselves automatically.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the linter and the full suite
+on every push to `main` and on every pull request.
 
 ---
 
