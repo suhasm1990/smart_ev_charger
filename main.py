@@ -92,8 +92,7 @@ def _stop_manual_charge(reason: str, message: str, stats: dict, now: datetime):
     except Exception as e:
         log_chargepoint.warning(f"Could not reset amperage to {config.DEFAULT_CHARGER_AMPERAGE}A: {e}")
     state.end_session(reason)
-    config.MANUAL_MODE_OVERRIDE = "auto"
-    config.save_dynamic_config()
+    config.update(MANUAL_MODE_OVERRIDE="auto")
     state.clear_manual_guards()
     notify(message)
     log_to_csv(stats, "stop", reason, now)

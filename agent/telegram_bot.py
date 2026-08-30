@@ -285,8 +285,7 @@ def switch_llm_model(provider: str = "", model_name: str = None) -> str:
     if not getattr(config, key_attr, ""):
         return f"Warning: {key_attr} is not configured in .env."
 
-    config.LLM_PROVIDER, config.LLM_MODEL = resolved, model
-    config.save_dynamic_config()
+    config.update(LLM_PROVIDER=resolved, LLM_MODEL=model)
     log.info(f"AI model switched to provider='{resolved}', model='{model}'")
     return f"✅ Switched active AI model to <b>{resolved.upper()}</b> (<code>{model}</code>)."
 
@@ -305,9 +304,7 @@ def set_battery_thresholds(start_pct: float, stop_pct: float) -> str:
         return "Error: Invalid numeric value for battery thresholds."
     if start <= stop:
         return f"Error: Battery start threshold ({start}%) must be strictly greater than stop threshold ({stop}%)."
-    config.BATTERY_START_PCT = start
-    config.BATTERY_STOP_PCT = stop
-    config.save_dynamic_config()
+    config.update(BATTERY_START_PCT=start, BATTERY_STOP_PCT=stop)
     _trigger_cycle()
     return f"Success: Set battery start threshold to {config.BATTERY_START_PCT}% and stop to {config.BATTERY_STOP_PCT}%."
 
@@ -320,11 +317,9 @@ def set_blackout_hours(start_hour: int, end_hour: int) -> str:
         end_hour: Hour (0-23) when the blackout ends (default 9).
     """
     try:
-        config.NIGHT_BLACKOUT_START_HOUR = int(start_hour)
-        config.NIGHT_BLACKOUT_END_HOUR = int(end_hour)
+        config.update(NIGHT_BLACKOUT_START_HOUR=int(start_hour), NIGHT_BLACKOUT_END_HOUR=int(end_hour))
     except (TypeError, ValueError):
         return "Error: Invalid hour values for the blackout window."
-    config.save_dynamic_config()
     _trigger_cycle()
     return (f"Success: Set the night blackout window to "
             f"{config.NIGHT_BLACKOUT_START_HOUR}:00 - {config.NIGHT_BLACKOUT_END_HOUR}:00.")
@@ -339,8 +334,7 @@ def set_override_mode(mode: str) -> str:
     normalized = (mode or "").lower().strip()
     if normalized not in ("manual", "auto"):
         return "Error: Mode must be 'manual' or 'auto'."
-    config.MANUAL_MODE_OVERRIDE = normalized
-    config.save_dynamic_config()
+    config.update(MANUAL_MODE_OVERRIDE=normalized)
     if normalized == "auto":
         state.clear_manual_guards()
         try:
@@ -382,8 +376,7 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None,
         start_charger(amperage)
 
         state.begin_session(datetime.now(config.TZ), amperage)
-        config.MANUAL_MODE_OVERRIDE = "manual"
-        config.save_dynamic_config()
+        config.update(MANUAL_MODE_OVERRIDE="manual")
 
         guards = []
         if state.manual_guard_stop_battery_pct is not None:
@@ -414,8 +407,7 @@ def stop_charging() -> str:
 
         state.end_session("Stopped manually via Telegram bot")
         state.clear_manual_guards()
-        config.MANUAL_MODE_OVERRIDE = "manual"
-        config.save_dynamic_config()
+        config.update(MANUAL_MODE_OVERRIDE="manual")
 
         notify("🔴 Charging stopped (Forced manually via Telegram)")
         _trigger_cycle()

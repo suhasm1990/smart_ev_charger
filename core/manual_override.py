@@ -32,8 +32,7 @@ def check_manual_mode() -> bool:
         state.manual_mode_set_at = None
         state.clear_manual_guards()
         if config.MANUAL_MODE_OVERRIDE == "manual":
-            config.MANUAL_MODE_OVERRIDE = "default"
-            config.save_dynamic_config()
+            config.update(MANUAL_MODE_OVERRIDE="default")
             notify(
                 f"⚙️ <b>Auto Mode Restored</b>\n"
                 f"Daily reset at {config.NIGHT_BLACKOUT_END_HOUR}:00 ended the manual override. "

@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -134,6 +136,59 @@ DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
     "LLM_MODEL":                 (str,   "gemini-2.5-flash"),
 }
 
+# Statically declared so linters and readers can see every dynamic key; the
+# authoritative values are (re)applied through _apply()/update() under the lock.
+BATTERY_START_PCT         = _env_float("BATTERY_START_PCT", "40")
+BATTERY_STOP_PCT          = _env_float("BATTERY_STOP_PCT", "25")
+BATTERY_LOW_RESERVE_PCT   = _env_float("BATTERY_LOW_RESERVE_PCT", "15")
+NIGHT_BLACKOUT_START_HOUR = _env_int("NIGHT_BLACKOUT_START_HOUR", "16")
+NIGHT_BLACKOUT_END_HOUR   = _env_int("NIGHT_BLACKOUT_END_HOUR", "9")
+ALLOWED_CHARGE_START_HOUR = _env_int("ALLOWED_CHARGE_START_HOUR", "0")
+ALLOWED_CHARGE_END_HOUR   = _env_int("ALLOWED_CHARGE_END_HOUR", "24")
+MANUAL_MODE_OVERRIDE      = _env("MANUAL_MODE_OVERRIDE", "default")  # 'manual', 'auto', or 'default'
+
+# Guards every read-modify-write of the dynamic keys above. Static env-derived
+# keys are written once at import and need no locking.
+_dynamic_lock = threading.RLock()
+
+
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    CHECK_INTERVAL_MINUTES: int
+    BATTERY_START_PCT: float
+    BATTERY_STOP_PCT: float
+    BATTERY_LOW_RESERVE_PCT: float
+    NIGHT_BLACKOUT_START_HOUR: int
+    NIGHT_BLACKOUT_END_HOUR: int
+    ALLOWED_CHARGE_START_HOUR: int
+    ALLOWED_CHARGE_END_HOUR: int
+    MANUAL_MODE_OVERRIDE: str
+    EV_MILES_PER_KWH: float
+    LLM_PROVIDER: str
+    LLM_MODEL: str
+
+
+def snapshot() -> ConfigSnapshot:
+    """One consistent view of every dynamic key, for multi-field decisions."""
+    with _dynamic_lock:
+        g = globals()
+        return ConfigSnapshot(**{key: g[key] for key in DYNAMIC_CONFIG_SCHEMA})
+
+
+def update(**changes):
+    """Validated, locked setter for runtime-tunable keys.
+
+    Casts values via the schema, applies the start>stop hysteresis guard, and
+    persists to Sheets + local JSON. Unknown keys raise KeyError so callers
+    cannot silently create config that nothing reads.
+    """
+    unknown = set(changes) - set(DYNAMIC_CONFIG_SCHEMA)
+    if unknown:
+        raise KeyError(f"Not runtime-tunable: {', '.join(sorted(unknown))}")
+    with _dynamic_lock:
+        _apply(changes)
+    save_dynamic_config()
+
 
 # Sheets is the declared primary source of truth, so sync failures must be
 # visible — but load runs every cycle, so warn at most once per 10 minutes.
@@ -153,51 +208,58 @@ def _warn_sync_failure(operation: str, error: Exception):
 
 
 def _apply(source: dict):
-    g = globals()
-    for key, (cast, _) in DYNAMIC_CONFIG_SCHEMA.items():
-        value = source.get(key)
-        if value is None:
-            continue
-        try:
-            g[key] = cast(value)
-        except (ValueError, TypeError):
-            pass
-    # Guard: start percentage must always be strictly greater than stop percentage
-    if g.get("BATTERY_START_PCT", 40.0) <= g.get("BATTERY_STOP_PCT", 25.0):
-        g["BATTERY_START_PCT"] = max(g.get("BATTERY_START_PCT", 40.0), g.get("BATTERY_STOP_PCT", 25.0) + 10.0)
+    with _dynamic_lock:
+        g = globals()
+        for key, (cast, _) in DYNAMIC_CONFIG_SCHEMA.items():
+            value = source.get(key)
+            if value is None:
+                continue
+            try:
+                g[key] = cast(value)
+            except (ValueError, TypeError):
+                pass
+        # Guard: start percentage must always be strictly greater than stop percentage
+        if g.get("BATTERY_START_PCT", 40.0) <= g.get("BATTERY_STOP_PCT", 25.0):
+            g["BATTERY_START_PCT"] = max(g.get("BATTERY_START_PCT", 40.0), g.get("BATTERY_STOP_PCT", 25.0) + 10.0)
 
 
 def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
     """Reloads runtime settings with Google Sheets as the main source of truth, syncing to local JSON."""
-    _apply({key: os.getenv(key, default) for key, (_, default) in DYNAMIC_CONFIG_SCHEMA.items()})
-
-    try:
-        with open(DYNAMIC_CONFIG_FILE) as f:
-            _apply(json.load(f))
-    except (OSError, ValueError):
-        pass
-
+    # The Sheets round-trip happens outside the lock so a slow network call
+    # never blocks other threads' config reads/writes.
+    sheets_data = None
     if remote:
         try:
             from services.sheets_db import get_settings
             sheets_data = get_settings(force_refresh=force_refresh)
-            if sheets_data:
-                _apply(sheets_data)
-                # Keep local config_dynamic.json in sync with Google Sheets
-                data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
-                try:
-                    os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
-                    with open(DYNAMIC_CONFIG_FILE, "w") as f:
-                        json.dump(data, f, indent=4)
-                except OSError:
-                    pass
         except Exception as e:
             _warn_sync_failure("load", e)
+
+    with _dynamic_lock:
+        _apply({key: os.getenv(key, default) for key, (_, default) in DYNAMIC_CONFIG_SCHEMA.items()})
+
+        try:
+            with open(DYNAMIC_CONFIG_FILE) as f:
+                _apply(json.load(f))
+        except (OSError, ValueError):
+            pass
+
+        if sheets_data:
+            _apply(sheets_data)
+            # Keep local config_dynamic.json in sync with Google Sheets
+            data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
+            try:
+                os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
+                with open(DYNAMIC_CONFIG_FILE, "w") as f:
+                    json.dump(data, f, indent=4)
+            except OSError:
+                pass
 
 
 def save_dynamic_config(blocking: bool = True):
     """Persists runtime settings to Google Sheets (main source of truth) and mirrors to local JSON."""
-    data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
+    with _dynamic_lock:
+        data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
     try:
         from services.sheets_db import update_settings
         update_settings(data, blocking=blocking)

@@ -52,6 +52,7 @@ Recommend today's optimal configuration. Respond ONLY with a valid JSON object m
 def _apply_plan(plan: dict) -> list[str]:
     """Applies the returned plan, clamping each value into a safe range and enforcing start_pct > stop_pct."""
     applied = []
+    changes = {}
     for setting, (key, cast, low, high) in PLAN_FIELDS.items():
         raw = plan.get(key)
         if raw is None:
@@ -61,21 +62,23 @@ def _apply_plan(plan: dict) -> list[str]:
         except (TypeError, ValueError):
             log.warning(f"Daily agent returned an unusable value for {key}: {raw!r}")
             continue
-        setattr(config, setting, value)
+        changes[setting] = value
         applied.append(f"{setting}={value}")
 
     # Enforce hysteresis constraint: start threshold must always be strictly higher than stop threshold
-    if config.BATTERY_START_PCT <= config.BATTERY_STOP_PCT:
-        corrected_start = min(100.0, max(config.BATTERY_START_PCT, config.BATTERY_STOP_PCT + 10.0))
+    start = changes.get("BATTERY_START_PCT", config.BATTERY_START_PCT)
+    stop = changes.get("BATTERY_STOP_PCT", config.BATTERY_STOP_PCT)
+    if start <= stop:
+        corrected_start = min(100.0, max(start, stop + 10.0))
         log.warning(
-            f"Daily agent plan had invalid thresholds (start {config.BATTERY_START_PCT}% <= stop {config.BATTERY_STOP_PCT}%). "
+            f"Daily agent plan had invalid thresholds (start {start}% <= stop {stop}%). "
             f"Correcting BATTERY_START_PCT to {corrected_start}%."
         )
-        config.BATTERY_START_PCT = corrected_start
+        changes["BATTERY_START_PCT"] = corrected_start
         applied.append(f"BATTERY_START_PCT={corrected_start} (corrected)")
 
-    if applied:
-        config.save_dynamic_config()
+    if changes:
+        config.update(**changes)  # one atomic, validated, persisted transition
     return applied
 
 

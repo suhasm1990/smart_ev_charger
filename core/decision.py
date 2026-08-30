@@ -39,6 +39,7 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
     # One consistent view per decision: a concurrent bot command must not be
     # observed half-applied partway through the rule chain.
     snap = state.snapshot()
+    cfg = config.snapshot()
     charging = snap.charger_state == state.State.CHARGING
 
     # ── 1. Safety stops, always evaluated first ─────────────────────────────
@@ -48,30 +49,30 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
         return "hold", "Car is unplugged"
 
     if is_in_night_blackout(now) and not is_weekend(now):
-        reason = f"Night blackout window ({config.NIGHT_BLACKOUT_START_HOUR}:00–{config.NIGHT_BLACKOUT_END_HOUR}:00)"
+        reason = f"Night blackout window ({cfg.NIGHT_BLACKOUT_START_HOUR}:00–{cfg.NIGHT_BLACKOUT_END_HOUR}:00)"
         if charging:
             return _stop(reason, f"Night blackout | battery={battery_pct}%")
-        return "blackout", f"{reason} — no charging until {config.NIGHT_BLACKOUT_END_HOUR}:00"
+        return "blackout", f"{reason} — no charging until {cfg.NIGHT_BLACKOUT_END_HOUR}:00"
 
-    low_reserve = config.BATTERY_LOW_RESERVE_PCT
+    low_reserve = cfg.BATTERY_LOW_RESERVE_PCT
     if battery_pct < low_reserve:
         reason = f"Critical low battery reserve ({battery_pct}% < {low_reserve}%)"
         if charging:
             return _stop(reason, f"Battery critical low reserve | {battery_pct}%")
         return "hold", f"Battery reserve low ({battery_pct}% < {low_reserve}% reserve limit)"
 
-    if battery_pct < config.BATTERY_STOP_PCT:
+    if battery_pct < cfg.BATTERY_STOP_PCT:
         if charging:
             if not min_charge_time_met(snap):
                 return "hold", f"Battery low ({battery_pct}%), but min {config.MIN_CHARGE_MINUTES}min session not met"
             return _stop(
-                f"Battery {battery_pct}% < {config.BATTERY_STOP_PCT}% safe limit",
-                f"Battery low | {battery_pct}% < {config.BATTERY_STOP_PCT}%",
+                f"Battery {battery_pct}% < {cfg.BATTERY_STOP_PCT}% safe limit",
+                f"Battery low | {battery_pct}% < {cfg.BATTERY_STOP_PCT}%",
             )
-        return "hold", f"Battery {battery_pct}% < {config.BATTERY_STOP_PCT}% (need {config.BATTERY_START_PCT}% to restart)"
+        return "hold", f"Battery {battery_pct}% < {cfg.BATTERY_STOP_PCT}% (need {cfg.BATTERY_START_PCT}% to restart)"
 
     # ── 2. Charge window set by the morning planner ─────────────────────────
-    start_hr, end_hr = config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR
+    start_hr, end_hr = cfg.ALLOWED_CHARGE_START_HOUR, cfg.ALLOWED_CHARGE_END_HOUR
     if not is_in_charge_window(now.hour, start_hr, end_hr):
         window = f"AI charge window ({start_hr}:00 - {end_hr}:00)"
         if charging:
@@ -81,14 +82,14 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
         return "hold", f"Outside {window}"
 
     # ── 3. Core solar/battery logic ─────────────────────────────────────────
-    if battery_pct >= config.BATTERY_START_PCT:
-        reason = f"Battery healthy ({battery_pct}% >= {config.BATTERY_START_PCT}%)"
+    if battery_pct >= cfg.BATTERY_START_PCT:
+        reason = f"Battery healthy ({battery_pct}% >= {cfg.BATTERY_START_PCT}%)"
         if charging:
             return "hold", reason
         log_decision.info(f"START | {reason}")
         return "start", reason
 
     if charging:
-        return "hold", f"Continuing charge (Battery {battery_pct}% > {config.BATTERY_STOP_PCT}%)"
+        return "hold", f"Continuing charge (Battery {battery_pct}% > {cfg.BATTERY_STOP_PCT}%)"
 
-    return "hold", f"Idle (Battery {battery_pct}% < {config.BATTERY_START_PCT}%)"
+    return "hold", f"Idle (Battery {battery_pct}% < {cfg.BATTERY_START_PCT}%)"
