@@ -447,7 +447,7 @@ def manage_custom_alert(action: str = "list", field: str = "battery_pct", operat
 
 def get_daily_charging_cost(date_or_period: str = "today") -> str:
     """Calculates grid energy drawn (kWh), solar energy used, total energy added, estimated miles added, and cost ($) for EV charging over a period.
-    Use this whenever the user asks how many miles or how much range was added, how much charging cost, or how many grid units were pulled.
+    Use this whenever the user asks about total miles added today, miles or range added, total kWh charged, charging cost, or solar energy used.
 
     Args:
         date_or_period: Period or date, e.g. 'today', 'yesterday', 'this_week', 'this_month', or 'YYYY-MM-DD'.
@@ -614,6 +614,11 @@ SYSTEM_INSTRUCTION = (
     "investigate bugs or open a pull request, 'read_source_code' to show source, and "
     "'restart_and_update_application' to restart or pull the latest code. Always run the appropriate tool "
     "when asked, then summarise what you did in friendly natural language.\n"
+    "CRITICAL RULE FOR METRICS & STATUS: Whenever the user asks about miles added (e.g. 'total miles added today'), "
+    "energy added (kWh), charging duration, charging cost, or solar/battery/grid metrics, ALWAYS execute the "
+    "corresponding tool (e.g. 'get_daily_charging_cost' with date_or_period='today', 'get_recent_charging_sessions', "
+    "or 'get_system_status') to fetch live, fresh data. NEVER guess, estimate, or repeat stale numbers from previous "
+    "messages in the chat history.\n"
     "Important operational rule: In MANUAL mode (manual_mode_override == 'manual'), automatic solar optimization, "
     "charge windows (e.g. 10:00-16:00), and automatic battery stop thresholds (e.g. stop at 35%) are completely PAUSED "
     "and bypassed. In manual mode, charging continues regardless of battery level until the user explicitly stops it, "
