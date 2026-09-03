@@ -127,17 +127,26 @@ def get_system_status() -> str:
     })
 
 
-def get_recent_charging_sessions(limit: int = 5) -> str:
-    """Gets recent EV charging sessions from logs, including start time, end time, duration in minutes, battery level change, and why charging stopped.
-    Use this whenever the user asks when charging stopped, why it stopped, or about previous session times.
+def get_recent_charging_sessions(limit: int = 5, date_or_period: str = None) -> str:
+    """Gets EV charging sessions from logs, including start time, end time, duration in minutes, battery level change, and why charging stopped.
+    Use this whenever the user asks for session details, session history, or why charging stopped.
 
     Args:
         limit: Number of recent sessions to return (default 5).
+        date_or_period: Optional date or period filter such as 'today', 'yesterday', 'this_week', or 'YYYY-MM-DD'. If provided, only sessions from that period are returned.
     """
-    sessions = get_recent_sessions(limit=limit)
+    sessions = get_recent_sessions(limit=limit, period=date_or_period)
     if not sessions:
+        if date_or_period:
+            return f"No charging sessions recorded for {date_or_period}."
         return "No recent charging sessions found in logs."
-    return "\n\n".join(
+
+    header = f"Charging Sessions ({len(sessions)} recorded"
+    if date_or_period:
+        header += f" for {date_or_period}"
+    header += "):\n\n"
+
+    return header + "\n\n".join(
         f"Session {i}:\n"
         f"  • Start Time: {s.get('start_time', 'N/A')}\n"
         f"  • End Time: {s.get('end_time', 'N/A')}\n"
@@ -607,17 +616,19 @@ SYSTEM_INSTRUCTION = (
     "You are an AI assistant for a Smart EV Charger. You help the user monitor and control their solar EV charging system.\n\n"
     "CAPABILITIES & TOOLS:\n"
     "- Real-time status: Call 'get_system_status' or 'get_tesla_powerwall_status' for Powerwall battery %, solar, home load, grid, and charger state.\n"
-    "- History & metrics: Call 'get_daily_charging_cost', 'get_recent_charging_sessions', or 'get_home_energy_summary' for miles added, kWh, duration, and energy costs.\n"
+    "- History & metrics: Call 'get_daily_charging_cost' (returns 'total_sessions_count' for session count, and 'total_kwh_added') or 'get_recent_charging_sessions' (pass date_or_period='today' or 'yesterday' to filter by date) or 'get_home_energy_summary'.\n"
     "- Advice & TOU rates: Call 'get_energy_saving_advice' or 'get_tou_schedule'.\n"
     "- Charger control: Call 'start_charging' (use 32A for full/maximum power, 20A otherwise) or 'stop_charging'. Only pass stop_battery_pct, stop_at_hour, or duration_hours if explicitly asked.\n"
     "- Thresholds & blackout: Call 'set_battery_thresholds', 'set_blackout_hours', or 'set_override_mode'.\n"
     "- Alerts & models: Call 'manage_custom_alert' or 'switch_llm_model'.\n"
     "- Daily planner & system: Call 'trigger_daily_agent', 'generate_monthly_report', 'read_application_logs', 'read_source_code', or 'restart_and_update_application'.\n\n"
     "CRITICAL OPERATIONAL RULES:\n"
-    "1. Whenever the user asks about status, metrics, battery, solar, or costs (e.g. 'Charger status.', 'How many miles today?'), ALWAYS call the relevant tool to fetch fresh live data. Never guess or use stale numbers.\n"
-    "2. In MANUAL mode, automatic solar optimization and battery-stop thresholds are paused until auto mode is restored.\n"
-    "3. After running a tool, always provide a concise, friendly natural language summary of the results.\n"
-    "4. Format responses using clean Telegram HTML (<b>bold</b>, <i>italic</i>, <code>code</code>). Avoid unsupported HTML tags."
+    "1. When asked how many charging sessions happened (e.g. 'How many charging sessions happened today?'), report 'total_sessions_count' from 'get_daily_charging_cost'. NEVER report 'charging_15min_intervals_count' (which counts 15-minute polling rows, not sessions).\n"
+    "2. When the user asks for session details or history for a specific day (or asks 'Total charging session details' after asking about today/yesterday), ALWAYS pass date_or_period='today' (or the specified date) to 'get_recent_charging_sessions' so sessions from other days are excluded.\n"
+    "3. Whenever the user asks about status, metrics, battery, solar, or costs, ALWAYS call the relevant tool to fetch fresh live data. Never guess or use stale numbers.\n"
+    "4. In MANUAL mode, automatic solar optimization and battery-stop thresholds are paused until auto mode is restored.\n"
+    "5. After running a tool, always provide a concise, friendly natural language summary of the results.\n"
+    "6. Format responses using clean Telegram HTML (<b>bold</b>, <i>italic</i>, <code>code</code>). Avoid unsupported HTML tags."
 )
 
 _history: list = []

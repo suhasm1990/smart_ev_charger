@@ -235,14 +235,22 @@ def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
     return rows
 
 
-def get_recent_sessions(limit: int = 5) -> list[dict]:
-    """Groups contiguous charging rows into distinct sessions, newest first."""
+def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
+    """Groups contiguous charging rows into distinct sessions, newest first.
+
+    If period is supplied (e.g. 'today', 'yesterday', 'this_week', 'YYYY-MM-DD'),
+    only sessions that took place within that date window are returned.
+    """
     sessions, current = [], None
+    start = end = None
+    if period:
+        now = datetime.now(config.TZ)
+        start, end, _ = _resolve_date_range(period, now)
 
     def stamp(row):
         return row.get("timestamp") or f"{row.get('date', '')} {row.get('time', '')}".strip()
 
-    for r in _readings(get_all_log_rows()):
+    for r in _readings(get_all_log_rows(), start, end):
         row = r.row
         if r.charging:
             if current is None:
@@ -266,7 +274,7 @@ def get_recent_sessions(limit: int = 5) -> list[dict]:
 
     if current is not None:
         sessions.append(current)
-    return sessions[-limit:][::-1]
+    return sessions[-limit:][::-1] if limit else sessions[::-1]
 
 
 # ── Period resolution ───────────────────────────────────────────────────────
@@ -395,9 +403,12 @@ def get_daily_charging_cost(period: str = "today") -> dict:
 
         return {
             "period": label,
+            "total_sessions_count": len(sessions),
             "total_charging_hours": round(total_minutes / 60.0, 1),
             "total_charging_minutes": total_minutes,
+            "charging_sessions_count": len(sessions),
             "charging_intervals_count": intervals,
+            "charging_15min_intervals_count": intervals,
             "ev_grid_kwh_pulled": from_grid,
             "solar_kwh_used": from_solar,
             "powerwall_battery_kwh_used": from_battery,
