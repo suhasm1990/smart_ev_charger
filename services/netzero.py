@@ -61,19 +61,28 @@ def get_powerwall_stats() -> dict:
         solar_kw = 0.0
     home_kw = max(0.0, round(live["load_power"] / 1000, 2))
     grid_kw = round(live["grid_power"] / 1000, 2)
+    battery_kw = round(live["battery_power"] / 1000, 2)
+    battery_activity = "charging" if battery_kw < -0.05 else ("discharging" if battery_kw > 0.05 else "idle")
+    battery_flow_desc = (
+        f"charging at {abs(battery_kw)} kW from solar surplus"
+        if battery_kw < -0.05
+        else (f"discharging {battery_kw} kW to power home" if battery_kw > 0.05 else "idle (0.0 kW)")
+    )
 
     stats = {
-        "battery_pct":      round(live.get("percentage_charged") or data.get("percentage_charged", 0), 1),
-        "solar_kw":         solar_kw,
-        "home_kw":          home_kw,
-        "grid_kw":          grid_kw,
-        "battery_kw":       round(live["battery_power"] / 1000, 2),
-        "solar_surplus_kw": round(solar_kw - home_kw, 2),
-        "grid_export_kw":   round(max(0.0, -grid_kw), 2),
-        "self_powered_pct": round(max(0.0, min(100.0, (1 - max(0.0, grid_kw) / home_kw) * 100)), 1) if home_kw > 0 else 100.0,
-        "island_mode":      live.get("island_status", "on_grid"),
-        "storm_mode":       live.get("storm_mode_active", False),
-        "data_ts":          live.get("timestamp", ""),
+        "battery_pct":        round(live.get("percentage_charged") or data.get("percentage_charged", 0), 1),
+        "solar_kw":           solar_kw,
+        "home_kw":            home_kw,
+        "grid_kw":            grid_kw,
+        "battery_kw":         battery_kw,
+        "battery_activity":   battery_activity,
+        "battery_flow_desc":  battery_flow_desc,
+        "solar_surplus_kw":   round(solar_kw - home_kw, 2),
+        "grid_export_kw":     round(max(0.0, -grid_kw), 2),
+        "self_powered_pct":   round(max(0.0, min(100.0, (1 - max(0.0, grid_kw) / home_kw) * 100)), 1) if home_kw > 0 else 100.0,
+        "island_mode":        live.get("island_status", "on_grid"),
+        "storm_mode":         live.get("storm_mode_active", False),
+        "data_ts":            live.get("timestamp", ""),
     }
 
     log_netzero.debug(
