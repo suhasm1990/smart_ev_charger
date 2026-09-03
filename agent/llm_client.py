@@ -261,6 +261,34 @@ def chat_with_tools(history: list, user_text: str, tools: list,
             messages.append(entry)
 
             if not tool_calls:
+                content = (message.content or "").strip()
+                if content:
+                    return content, messages
+
+                # If tools were executed previously, prompt for the final summary
+                if any(m.get("role") == "tool" for m in messages):
+                    log.info("Model returned empty content after tools; prompting for summary...")
+                    messages.append({"role": "user", "content": "Please summarise the results and current status in a friendly, concise response."})
+                    followup = _complete(messages=messages, temperature=0.1, request_timeout=CHAT_TIMEOUT, **kwargs)
+                    final_content = (followup.choices[0].message.content or "").strip()
+                    if final_content:
+                        return final_content, messages
+
+                # If still empty on the first turn without tools, recover gracefully
+                if not content and any(k in user_text.lower() for k in ("status", "charger", "battery", "solar", "state")):
+                    log.info("Model returned empty content for status query; fetching get_system_status directly...")
+                    status_str = _execute_tool(tool_map, "get_system_status", {})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": "direct_status",
+                        "name": "get_system_status",
+                        "content": status_str,
+                    })
+                    messages.append({"role": "user", "content": "Summarise the current charger and energy status in friendly Telegram HTML."})
+                    followup = _complete(messages=messages, temperature=0.1, request_timeout=CHAT_TIMEOUT, **kwargs)
+                    final_content = (followup.choices[0].message.content or "").strip()
+                    return final_content or status_str, messages
+
                 return message.content or "", messages
 
             for call in tool_calls:
