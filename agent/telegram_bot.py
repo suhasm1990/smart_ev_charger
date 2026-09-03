@@ -90,8 +90,13 @@ def get_system_status() -> str:
         "charger_state": "CHARGING" if charging else str(state.charger_state),
         "is_charging": charging,
         "session_duration_minutes": round(get_session_minutes(), 1),
-        "previous_session_stop_reason": state.session_stop_reason or "N/A",
         "battery_pct": pw.get("battery_pct"),
+        "battery_activity": pw.get("battery_activity") or ("charging" if pw.get("battery_kw", 0) < -0.05 else ("discharging" if pw.get("battery_kw", 0) > 0.05 else "idle")),
+        "battery_flow": pw.get("battery_flow_desc") or (
+            f"charging at {abs(pw.get('battery_kw', 0))} kW from solar surplus"
+            if pw.get("battery_kw", 0) < -0.05
+            else (f"discharging {pw.get('battery_kw', 0)} kW to power home" if pw.get("battery_kw", 0) > 0.05 else "idle (0.0 kW)")
+        ),
         "battery_kw": pw.get("battery_kw", 0.0),
         "solar_kw": pw.get("solar_kw"),
         "home_kw": pw.get("home_kw"),
