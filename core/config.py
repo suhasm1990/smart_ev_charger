@@ -126,31 +126,55 @@ def _interval_minutes(value) -> int:
     return max(1, min(60, int(value)))
 
 
+def _opt_float(value):
+    if value is None or str(value).strip().lower() in ("", "none", "null"):
+        return None
+    return float(value)
+
+
+def _opt_int(value):
+    if value is None or str(value).strip().lower() in ("", "none", "null"):
+        return None
+    return int(value)
+
+
+def _opt_str(value):
+    if value is None or str(value).strip().lower() in ("", "none", "null"):
+        return None
+    return str(value)
+
+
 DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
-    "CHECK_INTERVAL_MINUTES":    (_interval_minutes, "15"),
-    "BATTERY_START_PCT":         (float, "40"),
-    "BATTERY_STOP_PCT":          (float, "25"),
-    "BATTERY_LOW_RESERVE_PCT":   (float, "15"),
-    "NIGHT_BLACKOUT_START_HOUR": (int,   "16"),
-    "NIGHT_BLACKOUT_END_HOUR":   (int,   "9"),
-    "ALLOWED_CHARGE_START_HOUR": (int,   "0"),
-    "ALLOWED_CHARGE_END_HOUR":   (int,   "24"),
-    "MANUAL_MODE_OVERRIDE":      (str,   "default"),  # 'manual', 'auto', or 'default'
-    "EV_MILES_PER_KWH":          (float, "3.53"),
-    "LLM_PROVIDER":              (str,   "gemini"),
-    "LLM_MODEL":                 (str,   "gemini-2.5-flash"),
+    "CHECK_INTERVAL_MINUTES":        (_interval_minutes, "15"),
+    "BATTERY_START_PCT":             (float, "40"),
+    "BATTERY_STOP_PCT":              (float, "25"),
+    "BATTERY_LOW_RESERVE_PCT":       (float, "15"),
+    "NIGHT_BLACKOUT_START_HOUR":     (int,   "16"),
+    "NIGHT_BLACKOUT_END_HOUR":       (int,   "9"),
+    "ALLOWED_CHARGE_START_HOUR":     (int,   "0"),
+    "ALLOWED_CHARGE_END_HOUR":       (int,   "24"),
+    "MANUAL_MODE_OVERRIDE":          (str,   "default"),  # 'manual', 'auto', or 'default'
+    "MANUAL_GUARD_STOP_BATTERY_PCT": (_opt_float, "None"),
+    "MANUAL_GUARD_STOP_AT_HOUR":      (_opt_int,   "None"),
+    "MANUAL_GUARD_STOP_TIME":         (_opt_str,   "None"),
+    "EV_MILES_PER_KWH":              (float, "3.53"),
+    "LLM_PROVIDER":                  (str,   "gemini"),
+    "LLM_MODEL":                     (str,   "gemini-2.5-flash"),
 }
 
 # Statically declared so linters and readers can see every dynamic key; the
 # authoritative values are (re)applied through _apply()/update() under the lock.
-BATTERY_START_PCT         = _env_float("BATTERY_START_PCT", "40")
-BATTERY_STOP_PCT          = _env_float("BATTERY_STOP_PCT", "25")
-BATTERY_LOW_RESERVE_PCT   = _env_float("BATTERY_LOW_RESERVE_PCT", "15")
-NIGHT_BLACKOUT_START_HOUR = _env_int("NIGHT_BLACKOUT_START_HOUR", "16")
-NIGHT_BLACKOUT_END_HOUR   = _env_int("NIGHT_BLACKOUT_END_HOUR", "9")
-ALLOWED_CHARGE_START_HOUR = _env_int("ALLOWED_CHARGE_START_HOUR", "0")
-ALLOWED_CHARGE_END_HOUR   = _env_int("ALLOWED_CHARGE_END_HOUR", "24")
-MANUAL_MODE_OVERRIDE      = _env("MANUAL_MODE_OVERRIDE", "default")  # 'manual', 'auto', or 'default'
+BATTERY_START_PCT             = _env_float("BATTERY_START_PCT", "40")
+BATTERY_STOP_PCT              = _env_float("BATTERY_STOP_PCT", "25")
+BATTERY_LOW_RESERVE_PCT       = _env_float("BATTERY_LOW_RESERVE_PCT", "15")
+NIGHT_BLACKOUT_START_HOUR     = _env_int("NIGHT_BLACKOUT_START_HOUR", "16")
+NIGHT_BLACKOUT_END_HOUR       = _env_int("NIGHT_BLACKOUT_END_HOUR", "9")
+ALLOWED_CHARGE_START_HOUR     = _env_int("ALLOWED_CHARGE_START_HOUR", "0")
+ALLOWED_CHARGE_END_HOUR       = _env_int("ALLOWED_CHARGE_END_HOUR", "24")
+MANUAL_MODE_OVERRIDE          = _env("MANUAL_MODE_OVERRIDE", "default")  # 'manual', 'auto', or 'default'
+MANUAL_GUARD_STOP_BATTERY_PCT = None
+MANUAL_GUARD_STOP_AT_HOUR     = None
+MANUAL_GUARD_STOP_TIME        = None
 
 # Guards every read-modify-write of the dynamic keys above. Static env-derived
 # keys are written once at import and need no locking.
@@ -168,6 +192,9 @@ class ConfigSnapshot:
     ALLOWED_CHARGE_START_HOUR: int
     ALLOWED_CHARGE_END_HOUR: int
     MANUAL_MODE_OVERRIDE: str
+    MANUAL_GUARD_STOP_BATTERY_PCT: float | None
+    MANUAL_GUARD_STOP_AT_HOUR: int | None
+    MANUAL_GUARD_STOP_TIME: str | None
     EV_MILES_PER_KWH: float
     LLM_PROVIDER: str
     LLM_MODEL: str
@@ -219,9 +246,9 @@ def _apply(source: dict):
     with _dynamic_lock:
         g = globals()
         for key, (cast, _) in DYNAMIC_CONFIG_SCHEMA.items():
-            value = source.get(key)
-            if value is None:
+            if key not in source:
                 continue
+            value = source[key]
             try:
                 g[key] = cast(value)
             except (ValueError, TypeError):
@@ -262,6 +289,12 @@ def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
                     json.dump(data, f, indent=4)
             except OSError:
                 pass
+
+        try:
+            from core.state import state
+            state.restore_guards_from_config()
+        except Exception:
+            pass
 
 
 def save_dynamic_config(blocking: bool = True):
