@@ -67,6 +67,10 @@ class StateStore:
     def __init__(self):
         object.__setattr__(self, "_lock", threading.RLock())
         object.__setattr__(self, "_data", _defaults())
+        try:
+            self.restore_guards_from_config()
+        except Exception:
+            pass
 
     # ── Locked attribute access ─────────────────────────────────────────────
 
@@ -161,6 +165,14 @@ class StateStore:
                 manual_guard_stop_at_hour=stop_at_hour,
                 manual_guard_stop_time=stop_time,
             )
+        try:
+            config.update(
+                MANUAL_GUARD_STOP_BATTERY_PCT=stop_battery_pct,
+                MANUAL_GUARD_STOP_AT_HOUR=stop_at_hour,
+                MANUAL_GUARD_STOP_TIME=stop_time.isoformat() if stop_time else None,
+            )
+        except Exception:
+            pass
 
     def clear_manual_guards(self):
         with self._lock:
@@ -169,6 +181,32 @@ class StateStore:
                 manual_guard_stop_at_hour=None,
                 manual_guard_stop_time=None,
                 active_amperage=config.DEFAULT_CHARGER_AMPERAGE,
+            )
+        try:
+            config.update(
+                MANUAL_GUARD_STOP_BATTERY_PCT=None,
+                MANUAL_GUARD_STOP_AT_HOUR=None,
+                MANUAL_GUARD_STOP_TIME=None,
+            )
+        except Exception:
+            pass
+
+    def restore_guards_from_config(self):
+        """Restores persisted guardrails from config into active state."""
+        with self._lock:
+            pct = getattr(config, "MANUAL_GUARD_STOP_BATTERY_PCT", None)
+            hr = getattr(config, "MANUAL_GUARD_STOP_AT_HOUR", None)
+            st_raw = getattr(config, "MANUAL_GUARD_STOP_TIME", None)
+            st = None
+            if st_raw and isinstance(st_raw, str):
+                try:
+                    st = datetime.fromisoformat(st_raw)
+                except Exception:
+                    pass
+            self._data.update(
+                manual_guard_stop_battery_pct=float(pct) if pct is not None else None,
+                manual_guard_stop_at_hour=int(hr) if hr is not None else None,
+                manual_guard_stop_time=st,
             )
 
     def reset_daily(self) -> tuple[int, int]:
