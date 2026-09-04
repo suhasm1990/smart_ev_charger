@@ -1,5 +1,5 @@
-"""NetZero Energy API client for live Tesla Powerwall telemetry."""
 import time
+from datetime import datetime
 
 import requests
 
@@ -28,7 +28,7 @@ def _fetch() -> dict:
     return response.json()
 
 
-def get_powerwall_stats() -> dict:
+def get_powerwall_stats(now: datetime = None) -> dict:
     """Fetches live solar, home, grid, and battery figures for the site.
 
     Transient failures (network errors, 5xx) are retried so one blip does not
@@ -56,12 +56,30 @@ def get_powerwall_stats() -> dict:
     if missing:
         raise ValueError(f"NetZero live_status is missing fields: {', '.join(missing)}")
 
+    now = now or datetime.now(config.TZ)
+    is_night = (
+        now.hour >= getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_START", 21)
+        or now.hour < getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_END", 6)
+    )
+
     solar_kw = max(0.0, round(live["solar_power"] / 1000, 2))
-    if solar_kw < _SOLAR_NOISE_FLOOR_KW:
+    if (is_night and solar_kw <= 0.25) or solar_kw < _SOLAR_NOISE_FLOOR_KW:
         solar_kw = 0.0
     home_kw = max(0.0, round(live["load_power"] / 1000, 2))
     grid_kw = round(live["grid_power"] / 1000, 2)
     battery_kw = round(live["battery_power"] / 1000, 2)
+
+    # Filter phantom negative grid export at night (inverter tare noise)
+    if is_night and solar_kw == 0.0 and battery_kw >= -0.05 and -0.25 <= grid_kw < 0.0:
+        grid_kw = 0.0
+
+    # Apply overnight baseline floor when Powerwall is idle/resting at night
+    if is_night and solar_kw == 0.0 and abs(battery_kw) < 0.05:
+        baseline = getattr(config, "OVERNIGHT_BASELINE_KW", 0.5)
+        if home_kw < baseline:
+            home_kw = baseline
+        if grid_kw < baseline:
+            grid_kw = baseline
     battery_activity = "charging" if battery_kw < -0.05 else ("discharging" if battery_kw > 0.05 else "idle")
     battery_flow_desc = (
         f"charging at {abs(battery_kw)} kW from solar surplus"

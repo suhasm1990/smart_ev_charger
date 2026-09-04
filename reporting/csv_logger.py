@@ -10,6 +10,7 @@ from core import config
 from core.state import get_session_minutes, state
 from core.tou import (
     ON_PEAK_HOURS,
+    calculate_mid_bill_components,
     get_tou_period,
     get_tou_rate,
     is_expensive_period,
@@ -134,13 +135,36 @@ def _readings(rows: list[dict], start: date = None, end: date = None):
             period = str(row.get("tou_period", ""))
 
         charging = _is_ev_charging_row(row)
+
+        # Nighttime sensor noise clamp and baseline preservation
+        is_night = (
+            hour >= getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_START", 21)
+            or hour < getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_END", 6)
+        )
+        solar_val = max(0.0, _num(row.get("solar_kw")))
+        if is_night and solar_val <= 0.25:
+            solar_val = 0.0
+
+        grid_val = _num(row.get("grid_kw"))
+        bat_val = _num(row.get("battery_kw"))
+        if is_night and solar_val == 0.0 and bat_val >= -0.05 and -0.25 <= grid_val < 0.0:
+            grid_val = 0.0
+
+        home_val = max(0.0, _num(row.get("home_kw")))
+        if is_night and solar_val == 0.0 and abs(bat_val) < 0.05:
+            baseline = getattr(config, "OVERNIGHT_BASELINE_KW", 0.5)
+            if home_val < baseline:
+                home_val = baseline
+            if grid_val < baseline:
+                grid_val = baseline
+
         yield Reading(
             day=day,
             hour=hour,
             rate=rate,
-            solar_kw=max(0.0, _num(row.get("solar_kw"))),
-            home_kw=max(0.0, _num(row.get("home_kw"))),
-            grid_kw=_num(row.get("grid_kw")),
+            solar_kw=solar_val,
+            home_kw=home_val,
+            grid_kw=grid_val,
             charging=charging,
             ev_power_kw=state.charger_power_kw(_row_amperage(row)) if charging else 0.0,
             session_minutes=_num(row.get("session_active_minutes")),
@@ -427,10 +451,16 @@ def get_daily_charging_cost(period: str = "today") -> dict:
 
 
 def _fixed_fee(days: int) -> float:
+    if getattr(config, "_IS_MID", True):
+        if days >= 28:
+            return config.UTILITY_FIXED_MONTHLY_FEE
+        return round(config.UTILITY_FIXED_MONTHLY_FEE / 30.0 * days, 2)
     return config.UTILITY_FIXED_MONTHLY_FEE / 30.0 * days * config.UTILITY_TAX_MULTIPLIER
 
 
 def _export_credit_rate() -> float:
+    if getattr(config, "_IS_MID", True):
+        return config.UTILITY_SOLAR_EXPORT_CREDIT_RATE
     return config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER
 
 
@@ -596,7 +626,8 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         return {"error": "No log data available for monthly report."}
 
     fields = ("home_kwh", "solar_kwh", "grid_import_kwh", "solar_export_kwh",
-              "variable_grid_cost", "solar_export_credit", "ev_grid_kwh", "ev_grid_cost")
+              "variable_grid_cost", "solar_export_credit", "ev_grid_kwh", "ev_grid_cost",
+              "on_peak_grid_kwh", "partial_peak_grid_kwh", "off_peak_grid_kwh")
 
     daily = {}
     day = start
@@ -623,6 +654,12 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
             entry["variable_grid_cost"] += r.grid_import_kw * h * r.rate
             entry["ev_grid_kwh"] += r.ev_grid_kw * h
             entry["ev_grid_cost"] += r.ev_grid_kw * h * r.rate
+            if r.tou_period == "on_peak":
+                entry["on_peak_grid_kwh"] += r.grid_import_kw * h
+            elif r.tou_period == "partial_peak":
+                entry["partial_peak_grid_kwh"] += r.grid_import_kw * h
+            else:
+                entry["off_peak_grid_kwh"] += r.grid_import_kw * h
         else:
             entry["solar_export_kwh"] += r.grid_export_kw * h
             entry["solar_export_credit"] += r.grid_export_kw * h * _export_credit_rate()
@@ -630,15 +667,25 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
     expected = int(24 * 60 / max(1, config.CHECK_INTERVAL_MINUTES))
     records, totals = [], dict.fromkeys(fields, 0.0)
 
+    # Scale up days that missed intervals (restarts, updates, downtime)
+    # so a gap does not read as artificially zero consumption.
+    valid_days = [d for d in daily if daily[d]["readings_count"] > 0]
+    avg_per_day = {
+        f: (sum(daily[d][f] for d in valid_days) / len(valid_days)) if valid_days else 0.0
+        for f in fields
+    }
+
     for day in sorted(daily):
         entry = daily[day]
         count = entry["readings_count"]
-        # Scale up days that missed a few intervals (restarts, updates) so a
-        # short gap does not read as genuinely lower consumption.
-        if 0 < count < expected and expected - count <= 12:
+        if 0 < count < expected:
             scale = expected / count
             for f in fields:
                 entry[f] *= scale
+        elif count == 0 and valid_days:
+            for f in fields:
+                entry[f] = avg_per_day[f]
+
         for f in fields:
             totals[f] += entry[f]
             entry[f] = round(entry[f], 2)
@@ -647,6 +694,26 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
 
     days_count = (end - start).days + 1
     fixed = _fixed_fee(days_count)
+
+    # Use exact MID tariff line-item reconciliation when configured for MID
+    if getattr(config, "_IS_MID", True):
+        bill_comp = calculate_mid_bill_components(
+            on_peak_kwh=totals["on_peak_grid_kwh"],
+            partial_peak_kwh=totals["partial_peak_grid_kwh"],
+            off_peak_kwh=totals["off_peak_grid_kwh"],
+            export_kwh=totals["solar_export_kwh"],
+            month=start.month,
+            days=days_count,
+        )
+        fixed_fee = bill_comp["fixed_fee"]
+        total_var_cost = round(bill_comp["energy_cost"] + bill_comp["volumetric_adjustments"] + bill_comp["local_surcharge"], 2)
+        export_credit = bill_comp["export_credit"]
+        net_bill = bill_comp["net_bill"]
+    else:
+        fixed_fee = round(fixed, 2)
+        total_var_cost = round(totals["variable_grid_cost"], 2)
+        export_credit = round(totals["solar_export_credit"], 2)
+        net_bill = round(max(0.0, fixed + totals["variable_grid_cost"] - totals["solar_export_credit"]), 2)
 
     return {
         "month_label": start.strftime("%B %Y"),
@@ -657,14 +724,13 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         "total_solar_kwh": round(totals["solar_kwh"], 2),
         "total_grid_import_kwh": round(totals["grid_import_kwh"], 2),
         "total_solar_export_kwh": round(totals["solar_export_kwh"], 2),
-        "total_variable_grid_cost_dollars": round(totals["variable_grid_cost"], 2),
-        "total_solar_export_credit_dollars": round(totals["solar_export_credit"], 2),
-        "fixed_service_fee_dollars": round(fixed, 2),
-        "estimated_net_bill_dollars": round(
-            max(0.0, fixed + totals["variable_grid_cost"] - totals["solar_export_credit"]), 2),
+        "total_variable_grid_cost_dollars": total_var_cost,
+        "total_solar_export_credit_dollars": export_credit,
+        "fixed_service_fee_dollars": fixed_fee,
+        "estimated_net_bill_dollars": net_bill,
         "ev_charging_kwh": round(totals["ev_grid_kwh"], 2),
         "ev_charging_cost_dollars": round(totals["ev_grid_cost"], 2),
-        "home_appliances_cost_dollars": round(max(0.0, totals["variable_grid_cost"] - totals["ev_grid_cost"]), 2),
+        "home_appliances_cost_dollars": round(max(0.0, total_var_cost - totals["ev_grid_cost"]), 2),
         "self_powered_percentage": _self_powered_pct(totals["home_kwh"], totals["grid_import_kwh"]),
         "utility_rate_plan": provider_label(),
         "daily_records": records,

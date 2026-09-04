@@ -450,3 +450,52 @@ class TestMeteredEnergyColumn(unittest.TestCase):
         from reporting.csv_logger import _num
         legacy_row = {"date": "2026-01-01"}
         self.assertEqual(_num(legacy_row.get("cp_session_energy_kwh")), 0.0)
+
+
+class TestNighttimeNoiseAndGapScaling(unittest.TestCase):
+    """Guards nighttime noise clamp and proportional downtime scaling."""
+
+    def test_nighttime_tare_noise_is_clamped_in_readings(self):
+        from reporting.csv_logger import _readings
+        # Row at 02:00 with 150W tare noise and -150W grid noise
+        night_row = {
+            "timestamp": "2026-08-15T02:00:00-07:00",
+            "date": "2026-08-15",
+            "time": "02:00",
+            "solar_kw": "0.15",
+            "grid_kw": "-0.15",
+            "battery_kw": "0.0",
+            "home_kw": "0.0",
+        }
+        readings = list(_readings([night_row]))
+        self.assertEqual(len(readings), 1)
+        r = readings[0]
+        self.assertEqual(r.solar_kw, 0.0, "150W solar tare noise clamped to 0 at night")
+        self.assertGreaterEqual(r.grid_kw, 0.0, "Negative grid noise clamped to prevent fake export")
+        self.assertGreaterEqual(r.home_kw, 0.5, "Overnight baseline floor applied when battery idle")
+
+    def test_netzero_get_powerwall_stats_clamps_night_noise(self):
+        from datetime import datetime
+        from unittest.mock import patch
+
+        import services.netzero as netzero
+        from core import config
+
+        night_time = datetime(2026, 8, 15, 2, 0, tzinfo=config.TZ)
+        mock_payload = {
+            "percentage_charged": 20.0,
+            "live_status": {
+                "solar_power": 150,
+                "load_power": 0,
+                "grid_power": -150,
+                "battery_power": 0,
+                "percentage_charged": 20.0,
+            }
+        }
+        with patch.object(netzero, "_fetch", return_value=mock_payload):
+            stats = netzero.get_powerwall_stats(now=night_time)
+            self.assertEqual(stats["solar_kw"], 0.0)
+            self.assertEqual(stats["grid_export_kw"], 0.0)
+            self.assertEqual(stats["home_kw"], 0.5)
+            self.assertEqual(stats["grid_kw"], 0.5)
+

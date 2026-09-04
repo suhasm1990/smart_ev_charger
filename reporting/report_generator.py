@@ -131,14 +131,14 @@ def generate_monthly_report_image(period: str = "last_month", data: dict = None)
     )
 
     col2_text = (
-        f"• Appliance Grid Energy Cost: ${data['home_appliances_cost_dollars']:.2f}\n"
+        f"• Appliance Grid Cost: ${data['home_appliances_cost_dollars']:.2f}\n"
         f"• EV Charging Grid Cost: ${data['ev_charging_cost_dollars']:.2f}\n"
         f"• Solar Export Credit: -${data['total_solar_export_credit_dollars']:.2f}"
     )
 
     col3_text = (
-        f"• Variable Grid Energy: ${data['total_variable_grid_cost_dollars']:.2f}\n"
-        f"• Fixed Service Fee ({data['days_count']}d): +${data['fixed_service_fee_dollars']:.2f}\n"
+        f"• Grid Energy & Surcharges: ${data['total_variable_grid_cost_dollars']:.2f}\n"
+        f"• Fixed Customer Fee: +${data['fixed_service_fee_dollars']:.2f}\n"
         f"• ESTIMATED NET BILL: ${data['estimated_net_bill_dollars']:.2f}"
     )
 

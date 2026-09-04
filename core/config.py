@@ -80,9 +80,18 @@ CHECK_INTERVAL_MINUTES = _env_int("CHECK_INTERVAL_MINUTES", "15")
 UTILITY_PROVIDER = _env("UTILITY_PROVIDER", "MID").upper().strip()
 _IS_MID = UTILITY_PROVIDER == "MID"
 UTILITY_FIXED_MONTHLY_FEE        = _env_float("UTILITY_FIXED_MONTHLY_FEE", "32.00" if _IS_MID else "0.00")
+UTILITY_EEA_RATE                 = _env_float("UTILITY_EEA_RATE", "0.0120" if _IS_MID else "0.0000")
+UTILITY_CIA_RATE                 = _env_float("UTILITY_CIA_RATE", "0.0028" if _IS_MID else "0.0000")
+UTILITY_STATE_SURCHARGE_RATE     = _env_float("UTILITY_STATE_SURCHARGE_RATE", "0.0003" if _IS_MID else "0.0000")
 UTILITY_VOLUMETRIC_ADDER         = _env_float("UTILITY_VOLUMETRIC_ADDER", "0.0151" if _IS_MID else "0.0000")
+UTILITY_LOCAL_SURCHARGE_PCT      = _env_float("UTILITY_LOCAL_SURCHARGE_PCT", "0.065" if _IS_MID else "0.000")
 UTILITY_TAX_MULTIPLIER           = _env_float("UTILITY_TAX_MULTIPLIER", "1.065" if _IS_MID else "1.000")
 UTILITY_SOLAR_EXPORT_CREDIT_RATE = _env_float("UTILITY_SOLAR_EXPORT_CREDIT_RATE", "0.076" if _IS_MID else "0.080")
+
+# ── Baseline & Night Clamps ─────────────────────────────────────────────────
+SOLAR_NIGHT_CUTOFF_HOUR_START    = _env_int("SOLAR_NIGHT_CUTOFF_HOUR_START", "21")  # 9:00 PM
+SOLAR_NIGHT_CUTOFF_HOUR_END      = _env_int("SOLAR_NIGHT_CUTOFF_HOUR_END", "6")     # 6:00 AM
+OVERNIGHT_BASELINE_KW            = _env_float("OVERNIGHT_BASELINE_KW", "0.5")       # 500W idle baseline when battery rests
 
 # ── Charger & vehicle ───────────────────────────────────────────────────────
 MIN_CHARGE_MINUTES       = _env_int("MIN_CHARGE_MINUTES", "15")

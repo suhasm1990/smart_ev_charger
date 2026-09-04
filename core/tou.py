@@ -123,3 +123,71 @@ def is_in_night_blackout(now: datetime) -> bool:
     if start > end:  # Window wraps past midnight.
         return now.hour >= start or now.hour < end
     return start <= now.hour < end
+
+
+def calculate_mid_bill_components(
+    on_peak_kwh: float,
+    partial_peak_kwh: float,
+    off_peak_kwh: float,
+    export_kwh: float,
+    month: int = 8,
+    days: int = 31,
+) -> dict:
+    """Calculates exact line-item components for Modesto Irrigation District Rate N2-EVD.
+
+    Matches the official MID billing statement:
+      - Fixed customer service fee ($32.00 flat per monthly billing cycle)
+      - Energy charges: On-Peak, Partial-Peak, Off-Peak
+      - Mandated volumetric adjustments: EEA ($0.0120/kWh), CIA ($0.0028/kWh), State Surcharge ($0.0003/kWh)
+      - Mountain House Surcharge: 6.5% on pre-tax subtotal
+      - Excess generation solar export credit: $0.076/kWh flat
+    """
+    season = "summer" if 5 <= month <= 9 else "winter"
+    schedule = RATE_SCHEDULES.get(provider(), RATE_SCHEDULES["MID"])[season]
+
+    # Fixed fee: flat monthly fee (prorated only if short cycle < 28 days)
+    fixed_fee = config.UTILITY_FIXED_MONTHLY_FEE
+    if days < 28:
+        fixed_fee = round(config.UTILITY_FIXED_MONTHLY_FEE / 30.0 * days, 2)
+
+    total_delivered_kwh = on_peak_kwh + partial_peak_kwh + off_peak_kwh
+
+    on_peak_cost = round(on_peak_kwh * schedule["on_peak"], 2)
+    partial_peak_cost = round(partial_peak_kwh * schedule["partial_peak"], 2)
+    off_peak_cost = round(off_peak_kwh * schedule["off_peak"], 2)
+    energy_cost = round(on_peak_cost + partial_peak_cost + off_peak_cost, 2)
+
+    eea_cost = round(total_delivered_kwh * getattr(config, "UTILITY_EEA_RATE", 0.0120), 2)
+    cia_cost = round(total_delivered_kwh * getattr(config, "UTILITY_CIA_RATE", 0.0028), 2)
+    state_surcharge = round(total_delivered_kwh * getattr(config, "UTILITY_STATE_SURCHARGE_RATE", 0.0003), 2)
+    volumetric_adjustments = round(eea_cost + cia_cost + state_surcharge, 2)
+
+    # Mountain House Surcharge applies to MID utility charges (excludes State surcharge)
+    mid_subtotal = round(fixed_fee + energy_cost + eea_cost + cia_cost, 2)
+    local_surcharge_rate = getattr(config, "UTILITY_LOCAL_SURCHARGE_PCT", 0.065)
+    local_surcharge = round(mid_subtotal * local_surcharge_rate, 2)
+
+    export_credit_rate = getattr(config, "UTILITY_SOLAR_EXPORT_CREDIT_RATE", 0.076)
+    export_credit = round(export_kwh * export_credit_rate, 2)
+
+    net_bill = round(max(0.0, mid_subtotal + local_surcharge + state_surcharge - export_credit), 2)
+
+    return {
+        "fixed_fee": fixed_fee,
+        "on_peak_cost": on_peak_cost,
+        "partial_peak_cost": partial_peak_cost,
+        "off_peak_cost": off_peak_cost,
+        "energy_cost": energy_cost,
+        "eea_cost": eea_cost,
+        "cia_cost": cia_cost,
+        "state_surcharge": state_surcharge,
+        "volumetric_adjustments": volumetric_adjustments,
+        "subtotal_pre_tax": mid_subtotal,
+        "local_surcharge": local_surcharge,
+        "export_credit": export_credit,
+        "export_credit_rate": export_credit_rate,
+        "net_bill": net_bill,
+        "total_delivered_kwh": round(total_delivered_kwh, 2),
+        "total_export_kwh": round(export_kwh, 2),
+    }
+

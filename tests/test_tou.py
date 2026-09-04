@@ -84,5 +84,29 @@ class TestNightBlackoutWindow(unittest.TestCase):
             self.assertFalse(tou.is_in_night_blackout(SUMMER_PEAK.replace(hour=hour)))
 
 
+class TestCalculateMidBillComponents(unittest.TestCase):
+    def test_reconciles_real_mid_bill_to_the_penny(self):
+        # Actual values from August 2026 MID Bill (Account 8097355887):
+        # On-Peak: 15 kWh, Partial-Peak: 57 kWh, Off-Peak: 467 kWh, Export: 110 kWh
+        bill = tou.calculate_mid_bill_components(
+            on_peak_kwh=15,
+            partial_peak_kwh=57,
+            off_peak_kwh=467,
+            export_kwh=110,
+            month=8,
+            days=31,
+        )
+        self.assertEqual(bill["fixed_fee"], 32.00)
+        self.assertEqual(bill["on_peak_cost"], 4.69)
+        self.assertEqual(bill["partial_peak_cost"], 11.51)
+        self.assertEqual(bill["off_peak_cost"], 67.78)
+        self.assertEqual(bill["eea_cost"], 6.47)
+        self.assertEqual(bill["cia_cost"], 1.51)
+        self.assertEqual(bill["state_surcharge"], 0.16)
+        self.assertEqual(bill["local_surcharge"], 8.06)
+        self.assertEqual(bill["export_credit"], 8.36)
+        self.assertEqual(bill["net_bill"], 123.82)
+
+
 if __name__ == "__main__":
     unittest.main()
