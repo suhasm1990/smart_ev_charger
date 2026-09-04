@@ -492,7 +492,9 @@ class TestNighttimeNoiseAndGapScaling(unittest.TestCase):
                 "percentage_charged": 20.0,
             }
         }
-        with patch.object(netzero, "_fetch", return_value=mock_payload):
+        with patch.object(netzero, "_fetch", return_value=mock_payload), \
+             patch.object(config, "NETZERO_SITE_ID", "mock_site"), \
+             patch.object(config, "NETZERO_API_TOKEN", "mock_token"):
             stats = netzero.get_powerwall_stats(now=night_time)
             self.assertEqual(stats["solar_kw"], 0.0)
             self.assertEqual(stats["grid_export_kw"], 0.0)
