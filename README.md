@@ -18,6 +18,7 @@ An intelligent, model-agnostic Python daemon that automatically charges your Ele
   - **`Settings` Tab**: Real-time cloud sync for user instructions and dynamic configurations.
   - **Non-Blocking Writes**: telemetry, system logs, and settings are queued onto background workers, so a slow Google API call never stalls the charging control loop.
   - **Zero-Bloat Caching**: 15-minute worksheet handle cache, 60-second settings and telemetry read caches, tail-only range reads, and chunked auto-trimming keep the app far below Google API rate limits.
+- 🖥️ **Web Dashboard**: Open `http://<host>:8080` for the car's charging today (or its last session), Powerwall %, solar generated vs. home consumed, grid import/export, today's estimated cost, and hourly charts. It reads the readings the control loop already fetched, so refreshing never calls NetZero or ChargePoint. Set `DASHBOARD_TOKEN` to require `?token=...`, or `DASHBOARD_PORT=0` to disable. On your phone, use *Add to Home Screen* to install it as a full-screen app.
 - 📋 **Remote Log Inspection (`/logs`)**: Inspect live system events, AI plans, and errors directly on your phone via Telegram (`/logs 30`) without needing to fetch NAS log files.
 - 🚗 **Miles & Range Tracking**: Calculates driving range added per session, day, week, or month using configurable vehicle efficiency (`EV_MILES_PER_KWH`).
 - 🛠️ **Autonomous Dev Agent & Instant Updates**: Instruct the bot to investigate logs, inspect source code, or open GitHub Pull Requests. Deploy updates instantly with `/update`.

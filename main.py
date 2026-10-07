@@ -20,6 +20,7 @@ from core import (
     is_weekend,
     state,
 )
+from dashboard import record_live, start_dashboard_server
 from reporting import (
     log,
     log_chargepoint,
@@ -207,6 +208,7 @@ def run_cycle():
         except Exception as e:
             log_chargepoint.warning(f"Failed to get charger status: {e}")
             cp_status = {}
+        record_live(stats, cp_status, now)
 
         if check_manual_mode():
             try:
@@ -443,6 +445,7 @@ def main():
 
     if config.TELEGRAM_BOT_TOKEN:
         start_telegram_bot(run_cycle_safe)
+    start_dashboard_server()
 
     run_cycle_safe()
 

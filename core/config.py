@@ -44,6 +44,11 @@ GRID_EXPORT_ALERT_THRESHOLD_KW = _env_float("GRID_EXPORT_ALERT_THRESHOLD_KW", "1
 
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
 
+# ── Web dashboard ───────────────────────────────────────────────────────────
+DASHBOARD_HOST  = _env("DASHBOARD_HOST", "0.0.0.0")
+DASHBOARD_PORT  = _env_int("DASHBOARD_PORT", "8080")  # 0 disables the dashboard
+DASHBOARD_TOKEN = _env("DASHBOARD_TOKEN")             # optional: require ?token=...
+
 
 def _telegram_user_id() -> int | None:
     """Parses the allowlisted Telegram user ID, or None if unset or invalid.

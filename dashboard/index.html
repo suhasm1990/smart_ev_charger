@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Home Energy</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Energy">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M9 1 3 9h4l-1 6 6-8H8z' fill='%23eb6834'/></svg>">
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --track: #e1e0d9;
+  --home: #2a78d6;      /* series 1 */
+  --solar: #eb6834;     /* series 2 */
+  --battery: #1baf7a;   /* series 3 */
+  --grid-src: #4a3aa7;  /* series 7 */
+  --good: #0ca30c;
+  --good-text: #006300;
+  --warning: #fab219;
+  --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255,255,255,0.10);
+    --track: #2c2c2a;
+    --home: #3987e5;
+    --solar: #d95926;
+    --battery: #199e70;
+    --grid-src: #9085e9;
+    --good-text: #0ca30c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --track: #2c2c2a;
+  --home: #3987e5; --solar: #d95926; --battery: #199e70; --grid-src: #9085e9; --good-text: #0ca30c;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main {
+  max-width: 1120px; margin: 0 auto;
+  /* Full-screen on iPhone draws under the status bar and home indicator. */
+  padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+           calc(48px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; margin-bottom: 20px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+  font-size: 13px; color: var(--ink-2); white-space: nowrap;
+}
+.chip b { color: var(--ink); font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+.banner { display: none; gap: 8px; align-items: center; padding: 10px 14px; margin-bottom: 16px;
+  border-radius: 10px; border: 1px solid var(--border); background: var(--surface); font-size: 14px; }
+.banner.show { display: flex; }
+
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; min-width: 0; }
+.span-2 { grid-column: span 2; }
+.span-3 { grid-column: 1 / -1; }
+@media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } .span-2 { grid-column: auto; } }
+
+.label { font-size: 13px; color: var(--ink-2); margin: 0 0 6px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.card-head h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.headline { font-size: 26px; font-weight: 600; margin: 2px 0 14px; line-height: 1.2; }
+.hero { font-size: 56px; font-weight: 600; line-height: 1; margin: 4px 0 6px; }
+.hero small { font-size: 24px; color: var(--ink-2); font-weight: 500; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 14px 18px; }
+.stat .v { font-size: 22px; font-weight: 600; }
+.stat .v small { font-size: 14px; color: var(--ink-2); font-weight: 500; margin-left: 2px; }
+.stat .k { font-size: 13px; color: var(--ink-2); }
+.stat .k small.fine { display: block; font-size: 12px; color: var(--muted); }
+.stat .k small.fine span { white-space: nowrap; }
+.note { font-size: 13px; color: var(--ink-2); margin-top: 14px; }
+.divider { border-top: 1px solid var(--grid); margin: 16px 0; }
+
+/* Powerwall meter */
+.meter { position: relative; height: 10px; border-radius: 5px; background: var(--track); margin: 14px 0 26px; }
+.meter .fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--battery); }
+.tick { position: absolute; top: -4px; width: 2px; height: 18px; background: var(--ink-2); font-style: normal; }
+.tick span { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; }
+/* Stop and start sit close together, so their labels lean away from each other. */
+.tick.end span { left: auto; right: 0; transform: none; }
+.tick.start span { left: 0; transform: none; }
+
+/* EV energy source split */
+.split { display: flex; height: 10px; gap: 2px; margin: 8px 0 8px; }
+.split div { border-radius: 2px; min-width: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key { width: 10px; height: 10px; border-radius: 2px; }
+.key.line { height: 2px; width: 14px; border-radius: 1px; }
+
+/* Charts */
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  white-space: nowrap; opacity: 0; transition: opacity .1s; }
+.tooltip b { display: block; margin-bottom: 4px; }
+.tooltip div { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+.tooltip div strong { color: var(--ink); margin-left: auto; padding-left: 12px; font-weight: 600; }
+.empty { color: var(--muted); font-size: 14px; padding: 24px 0; text-align: center; }
+
+dl.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 18px; margin: 0; }
+dl.settings dt { font-size: 13px; color: var(--ink-2); }
+dl.settings dd { margin: 0; font-weight: 600; }
+.err { color: var(--critical); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Home Energy</h1>
+      <div class="sub" id="today">Loading…</div>
+    </div>
+    <div class="chips">
+      <span class="chip" id="chip-mode"></span>
+      <span class="chip" id="chip-tou"></span>
+      <span class="chip" id="chip-updated"></span>
+    </div>
+  </header>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="grid">
+    <section class="card span-2" id="ev-card">
+      <div class="card-head"><h2>Car</h2><span class="chip" id="ev-chip"></span></div>
+      <div id="ev-body"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Powerwall</h2><span class="chip" id="pw-chip"></span></div>
+      <div class="hero" id="pw-pct">–</div>
+      <div class="sub" id="pw-kwh"></div>
+      <div class="meter" id="pw-meter"><div class="fill"></div></div>
+      <div class="sub" id="pw-note"></div>
+    </section>
+
+    <section class="card span-3">
+      <div class="card-head"><h2>Today</h2></div>
+      <div class="stats" id="energy-stats"></div>
+    </section>
+
+    <section class="card span-3">
+      <div class="card-head"><h2>Right now</h2><span class="sub" id="now-sub"></span></div>
+      <div class="stats" id="now-stats"></div>
+    </section>
+
+    <section class="card span-2">
+      <div class="card-head"><h2>Solar vs home use today</h2><span class="sub">hourly average, kW</span></div>
+      <div class="legend" style="margin-bottom:8px">
+        <span><i class="key line" style="background:var(--solar)"></i>Solar</span>
+        <span><i class="key line" style="background:var(--home)"></i>Home</span>
+      </div>
+      <div class="chart" id="power-chart"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Powerwall charge today</h2><span class="sub">%</span></div>
+      <div class="chart" id="battery-chart"></div>
+    </section>
+
+    <section class="card span-3">
+      <div class="card-head"><h2>Automation</h2></div>
+      <dl class="settings" id="settings"></dl>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const token = new URLSearchParams(location.search).get("token");
+const apiUrl = "api/dashboard" + (token ? "?token=" + encodeURIComponent(token) : "");
+let data = null;
+
+const fmt = (v, d = 1) => (v === null || v === undefined || isNaN(v)) ? "–" : Number(v).toFixed(d);
+const money = (v) => (v === null || v === undefined) ? "–" : "$" + Number(v).toFixed(2);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+function duration(min) {
+  min = Math.round(min || 0);
+  if (min < 60) return min + " min";
+  const h = Math.floor(min / 60), m = min % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+function ago(iso) {
+  if (!iso) return "never";
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return min + " min ago";
+  return duration(min) + " ago";
+}
+function hourLabel(h) { return h === 0 ? "12a" : h < 12 ? h + "a" : h === 12 ? "12p" : (h - 12) + "p"; }
+function hourRange(a, b) { return `${hourLabel(a % 24)}–${hourLabel(b % 24)}`; }
+function when(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso || "–";
+  const today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
+  const time = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+  if (d.toDateString() === today.toDateString()) return "today at " + time;
+  if (d.toDateString() === y.toDateString()) return "yesterday at " + time;
+  return d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}) + " at " + time;
+}
+const stat = (v, unit, k) => `<div class="stat"><div class="v">${v}${unit ? `<small>${unit}</small>` : ""}</div><div class="k">${k}</div></div>`;
+const chip = (el, color, html) => { el.innerHTML = (color ? `<i class="dot" style="background:${color}"></i>` : "") + `<span>${html}</span>`; };
+
+function renderHeader(d) {
+  const s = d.status;
+  $("today").textContent = new Date(d.generated_at).toLocaleDateString([], {weekday: "long", month: "long", day: "numeric"});
+  chip($("chip-mode"), s.mode === "manual" ? "var(--warning)" : "var(--good)", `<b>${s.mode === "manual" ? "Manual" : "Auto"}</b> mode`);
+  const tou = {on_peak: "On-peak", partial_peak: "Partial-peak", off_peak: "Off-peak"}[s.tou_period] || s.tou_period;
+  chip($("chip-tou"), null, `<b>${esc(tou)}</b> $${fmt(s.tou_rate, 3)}/kWh`);
+  renderUpdated();
+
+  const issues = [];
+  if (s.island_mode === "off_grid") issues.push("Powerwall is off-grid. Charging is paused to protect the home.");
+  if (s.storm_mode) issues.push("Storm Watch is active. Charging is paused to keep backup reserve.");
+  if (s.api_failures >= 3) issues.push(`The last ${s.api_failures} update cycles failed. Showing the most recent good data.`);
+  const stale = d.updated_at && (Date.now() - new Date(d.updated_at)) > 2.5 * d.interval_minutes * 60000;
+  if (stale) issues.push(`No fresh readings since ${when(d.updated_at)}. Is the charger service running?`);
+  $("banner").className = "banner" + (issues.length ? " show" : "");
+  $("banner").innerHTML = issues.length ? `<i class="dot" style="background:var(--critical)"></i><span><b>Heads up:</b> ${issues.join(" ")}</span>` : "";
+}
+
+function renderUpdated() {
+  if (!data) return;
+  const next = data.next_update_at ? Math.round((new Date(data.next_update_at) - Date.now()) / 60000) : null;
+  const tail = next === null ? "" : next > 0 ? ` · next in ${next} min` : " · refreshing soon";
+  chip($("chip-updated"), null, `Updated <b>${ago(data.updated_at)}</b>${tail}`);
+}
+
+function sourceSplit(t) {
+  const parts = [["Solar", t.solar_kwh, "var(--solar)"], ["Powerwall", t.battery_kwh, "var(--battery)"], ["Grid", t.grid_kwh, "var(--grid-src)"]];
+  const total = parts.reduce((a, p) => a + (p[1] || 0), 0);
+  if (!total) return "";
+  return `<div class="label" style="margin-top:16px">Where the car's energy came from today</div>
+    <div class="split">${parts.filter(p => p[1] > 0).map(p => `<div title="${p[0]}: ${fmt(p[1], 1)} kWh" style="flex:${p[1]};background:${p[2]}"></div>`).join("")}</div>
+    <div class="legend">${parts.map(p => `<span><i class="key" style="background:${p[2]}"></i>${p[0]} ${fmt(p[1], 1)} kWh</span>`).join("")}</div>`;
+}
+
+function renderEV(d) {
+  const ev = d.ev, t = ev.today, last = ev.last_session;
+  const plug = ev.plugged_in === null || ev.plugged_in === undefined ? null : ev.plugged_in;
+  if (ev.charging) chip($("ev-chip"), "var(--good)", "<b>Charging</b>");
+  else if (plug === true) chip($("ev-chip"), "var(--home)", "<b>Plugged in</b>, not charging");
+  else if (plug === false) chip($("ev-chip"), "var(--muted)", "<b>Not plugged in</b>");
+  else chip($("ev-chip"), "var(--muted)", "Charger status unknown");
+
+  let html = "";
+  if (ev.charging && ev.session) {
+    const s = ev.session;
+    html += `<div class="headline">Charging for ${duration(s.minutes)}</div>
+      <div class="stats">
+        ${stat("+" + fmt(s.miles, 0), "mi", "Range added this session")}
+        ${stat(fmt(s.energy_kwh, 1), "kWh", "Energy this session")}
+        ${stat(fmt(s.amperage, 0), "A", s.power_kw ? `Drawing ${fmt(s.power_kw, 1)} kW` : "Charge rate")}
+        ${s.start_time ? stat(new Date(s.start_time).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}), "", "Started") : ""}
+      </div>`;
+    if (t && t.sessions > 1) html += `<div class="note">Today in total: ${t.sessions} sessions, ${duration(t.minutes)}, about ${fmt(t.miles, 0)} mi.</div>`;
+  } else if (t && t.sessions > 0) {
+    html += `<div class="headline">Charged ${duration(t.minutes)} today, +${fmt(t.miles, 0)} mi</div>
+      <div class="stats">
+        ${stat("+" + fmt(t.miles, 0), "mi", "Range added today")}
+        ${stat(duration(t.minutes), "", "Time charging")}
+        ${stat(fmt(t.energy_kwh, 1), "kWh", "Energy added")}
+        ${stat(money(t.grid_cost), "", "Grid cost")}
+      </div>`;
+    if (last) html += `<div class="note">Last session ended ${when(last.end_time)}${last.stop_reason ? ": " + esc(last.stop_reason) : ""}.</div>`;
+  } else if (last) {
+    html += `<div class="headline">No charging today. Last charged ${when(last.start_time)}</div>
+      <div class="stats">
+        ${stat("+" + fmt(last.miles_added, 0), "mi", "Range added")}
+        ${stat(duration(last.max_duration_minutes), "", "Duration")}
+        ${stat(fmt(last.energy_kwh, 1), "kWh", "Energy added")}
+        ${stat(`${fmt(last.start_battery_pct, 0)}→${fmt(last.end_battery_pct, 0)}`, "%", "Powerwall during session")}
+      </div>
+      ${last.stop_reason ? `<div class="note">Stopped because: ${esc(last.stop_reason)}</div>` : ""}`;
+  } else {
+    html += `<div class="headline">No charging sessions in the recent log</div>`;
+  }
+  if (t && t.sessions > 0) html += sourceSplit(t);
+  $("ev-body").innerHTML = html;
+}
+
+function renderPowerwall(d) {
+  const p = d.power, pw = d.powerwall, pct = p.battery_pct;
+  $("pw-pct").innerHTML = pct === null || pct === undefined ? "–" : `${fmt(pct, 0)}<small>%</small>`;
+  $("pw-kwh").textContent = pct === null || pct === undefined ? "" : `About ${fmt(pct / 100 * pw.usable_kwh, 1)} of ${fmt(pw.usable_kwh, 1)} kWh stored`;
+  const kw = p.battery_kw || 0;
+  if (kw < -0.05) chip($("pw-chip"), "var(--good)", `<b>Charging</b> ${fmt(-kw, 1)} kW`);
+  else if (kw > 0.05) chip($("pw-chip"), "var(--solar)", `<b>Discharging</b> ${fmt(kw, 1)} kW`);
+  else chip($("pw-chip"), "var(--muted)", "<b>Idle</b>");
+
+  const meter = $("pw-meter");
+  meter.querySelector(".fill").style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+  meter.querySelectorAll(".tick").forEach((n) => n.remove());
+  // The reserve tick would crowd the stop label when they are close, so it yields.
+  const ticks = [[pw.stop_pct, "stop " + fmt(pw.stop_pct, 0) + "%", "end"], [pw.start_pct, "start " + fmt(pw.start_pct, 0) + "%", "start"]];
+  if (pw.stop_pct - pw.reserve_pct >= 25) ticks.unshift([pw.reserve_pct, "reserve", ""]);
+  ticks.forEach(([v, text, side]) => {
+    const t = document.createElement("i");
+    t.className = "tick " + side; t.style.left = `calc(${v}% - 1px)`;
+    t.innerHTML = `<span>${text}</span>`;
+    meter.appendChild(t);
+  });
+  let note;
+  if (pct === null || pct === undefined) note = "";
+  else if (pct >= pw.start_pct) note = `Above the ${fmt(pw.start_pct, 0)}% start threshold. Solar charging is allowed.`;
+  else if (pct > pw.stop_pct) note = `Between the stop (${fmt(pw.stop_pct, 0)}%) and start (${fmt(pw.start_pct, 0)}%) thresholds.`;
+  else note = `Below the ${fmt(pw.stop_pct, 0)}% stop threshold. Car charging is held.`;
+  $("pw-note").textContent = note;
+}
+
+function renderEnergy(d) {
+  const e = d.energy_today;
+  if (!e) { $("energy-stats").innerHTML = `<div class="empty">No readings logged yet today.</div>`; return; }
+  $("energy-stats").innerHTML =
+    stat(fmt(e.solar_kwh, 1), "kWh", "Solar generated") +
+    stat(fmt(e.home_kwh, 1), "kWh", "Home consumed") +
+    stat(fmt(e.grid_import_kwh, 1), "kWh", "From grid") +
+    stat(fmt(e.grid_export_kwh, 1), "kWh", "Exported to grid") +
+    stat(fmt(e.self_powered_pct, 0), "%", "Self-powered") +
+    (e.energy_cost === null || e.energy_cost === undefined ? "" :
+      stat(money(e.energy_cost), "", `Energy cost today <small class="fine"><span>(+${money(e.fixed_charges)} fixed charges,</span> <span>−${money(e.solar_credit)} solar credit)</span></small>`));
+}
+
+
+function renderNow(d) {
+  const p = d.power, g = p.grid_kw;
+  $("now-sub").textContent = d.updated_at ? "as of " + new Date(d.updated_at).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}) : "";
+  const gridLabel = g === null || g === undefined ? "Grid" : g > 0.05 ? "Pulling from grid" : g < -0.05 ? "Exporting to grid" : "Grid (balanced)";
+  $("now-stats").innerHTML =
+    stat(fmt(p.solar_kw, 1), "kW", "Solar") +
+    stat(fmt(p.home_kw, 1), "kW", "Home load") +
+    stat(fmt(g === null || g === undefined ? null : Math.abs(g), 1), "kW", gridLabel) +
+    stat(fmt(p.battery_kw === null || p.battery_kw === undefined ? null : Math.abs(p.battery_kw), 1), "kW",
+         (p.battery_kw || 0) < -0.05 ? "Into Powerwall" : (p.battery_kw || 0) > 0.05 ? "From Powerwall" : "Powerwall") +
+    stat(fmt(p.self_powered_pct, 0), "%", "Self-powered now");
+}
+
+function renderSettings(d) {
+  const s = d.settings, pw = d.powerwall, st = d.status;
+  const chargeWindow = s.charge_window[0] === 0 && s.charge_window[1] === 24 ? "Any time" : hourRange(s.charge_window[0], s.charge_window[1]);
+  const blackout = s.blackout[0] === s.blackout[1] ? "Off" : hourRange(s.blackout[0], s.blackout[1]) + " weekdays";
+  const rows = [
+    ["Start charging at", fmt(pw.start_pct, 0) + "% Powerwall"],
+    ["Stop charging at", fmt(pw.stop_pct, 0) + "% Powerwall"],
+    ["Allowed charge window", chargeWindow],
+    ["Peak blackout", blackout + (st.in_blackout ? " (active now)" : "")],
+    ["Default charge rate", s.default_amperage + " A"],
+    ["Grid draw events today", st.grid_draw_events],
+    ["Vehicle efficiency", fmt(s.miles_per_kwh, 2) + " mi/kWh"],
+    ["Update interval", d.interval_minutes + " min"],
+  ];
+  $("settings").innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
+}
+
+/* ── Charts: plain SVG, crosshair + tooltip ─────────────────────────────── */
+function lineChart(el, rows, series, {height = 200, yMax, yFormat = (v) => v}) {
+  if (!rows.length) { el.innerHTML = `<div class="empty">No readings yet today.</div>`; return; }
+  const W = Math.max(280, el.clientWidth), H = height;
+  const m = {t: 10, r: 12, b: 24, l: 34};
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const top = yMax ?? niceMax(Math.max(...rows.flatMap((r) => series.map((s) => r[s.key] || 0)), 1));
+  const x = (h) => m.l + (h / 23) * iw;
+  const y = (v) => m.t + ih - (v / top) * ih;
+  const ticks = [0, top / 2, top];
+  let svg = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img">`;
+  ticks.forEach((t) => {
+    svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(${t === 0 ? "--axis" : "--grid"})" />`;
+    svg += `<text x="${m.l - 6}" y="${y(t) + 4}" text-anchor="end">${yFormat(t)}</text>`;
+  });
+  [0, 6, 12, 18, 23].forEach((h) => svg += `<text x="${x(h)}" y="${H - 6}" text-anchor="middle">${hourLabel(h)}</text>`);
+  series.forEach((s) => {
+    if (s.area) {
+      const pts = rows.map((r) => `${x(r.hour)},${y(r[s.key])}`).join(" ");
+      svg += `<polygon points="${x(rows[0].hour)},${y(0)} ${pts} ${x(rows[rows.length - 1].hour)},${y(0)}" fill="var(${s.color})" opacity="0.1" />`;
+    }
+    const d = rows.map((r, i) => `${i ? "L" : "M"}${x(r.hour)},${y(r[s.key])}`).join("");
+    svg += `<path d="${d}" fill="none" stroke="var(${s.color})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`;
+    const lastRow = rows[rows.length - 1];
+    svg += `<circle cx="${x(lastRow.hour)}" cy="${y(lastRow[s.key])}" r="4" fill="var(${s.color})" stroke="var(--surface)" stroke-width="2" />`;
+  });
+  svg += `<line class="xh" y1="${m.t}" y2="${m.t + ih}" stroke="var(--axis)" visibility="hidden" />`;
+  series.forEach((s, i) => svg += `<circle class="hd hd${i}" r="4" fill="var(${s.color})" stroke="var(--surface)" stroke-width="2" visibility="hidden" />`);
+  svg += `<rect x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent" class="hit" /></svg><div class="tooltip"></div>`;
+  el.innerHTML = svg;
+
+  const hit = el.querySelector(".hit"), tip = el.querySelector(".tooltip"), xh = el.querySelector(".xh");
+  const svgEl = el.querySelector("svg");
+  const move = (clientX) => {
+    const box = svgEl.getBoundingClientRect();
+    const px = (clientX - box.left) * (W / box.width);
+    const r = rows.reduce((a, b) => Math.abs(x(b.hour) - px) < Math.abs(x(a.hour) - px) ? b : a);
+    xh.setAttribute("x1", x(r.hour)); xh.setAttribute("x2", x(r.hour)); xh.setAttribute("visibility", "visible");
+    series.forEach((s, i) => {
+      const c = el.querySelector(".hd" + i);
+      c.setAttribute("cx", x(r.hour)); c.setAttribute("cy", y(r[s.key])); c.setAttribute("visibility", "visible");
+    });
+    tip.innerHTML = `<b>${hourLabel(r.hour)}–${hourLabel((r.hour + 1) % 24)}</b>` +
+      series.map((s) => `<div><i class="key line" style="background:var(${s.color})"></i>${s.label}<strong>${s.format(r[s.key])}</strong></div>`).join("");
+    const left = x(r.hour) * (box.width / W);
+    tip.style.left = Math.min(Math.max(0, left + 12), box.width - tip.offsetWidth) + "px";
+    tip.style.top = "0px"; tip.style.opacity = 1;
+  };
+  const hide = () => { tip.style.opacity = 0; xh.setAttribute("visibility", "hidden"); el.querySelectorAll(".hd").forEach((c) => c.setAttribute("visibility", "hidden")); };
+  hit.addEventListener("pointermove", (e) => move(e.clientX));
+  hit.addEventListener("pointerleave", hide);
+}
+function niceMax(v) {
+  const step = Math.pow(10, Math.floor(Math.log10(v)));
+  return [1, 2, 2.5, 5, 10].map((n) => n * step).find((n) => n >= v);
+}
+
+function renderCharts(d) {
+  lineChart($("power-chart"), d.hourly, [
+    {key: "solar_kw", label: "Solar", color: "--solar", area: true, format: (v) => fmt(v, 1) + " kW"},
+    {key: "home_kw", label: "Home", color: "--home", format: (v) => fmt(v, 1) + " kW"},
+  ], {height: 220, yFormat: (v) => fmt(v, v < 10 && v % 1 ? 1 : 0)});
+  lineChart($("battery-chart"), d.hourly, [
+    {key: "battery_pct", label: "Powerwall", color: "--battery", area: true, format: (v) => fmt(v, 0) + "%"},
+  ], {height: 220, yMax: 100, yFormat: (v) => v + "%"});
+}
+
+function render() {
+  if (!data) return;
+  renderHeader(data); renderEV(data); renderPowerwall(data); renderEnergy(data);
+  renderNow(data); renderSettings(data); renderCharts(data);
+}
+
+async function load() {
+  try {
+    const res = await fetch(apiUrl, {cache: "no-store"});
+    if (!res.ok) throw new Error(res.status === 401 ? "Unauthorized: add ?token=… to the URL" : "HTTP " + res.status);
+    data = await res.json();
+    render();
+  } catch (e) {
+    $("today").innerHTML = `<span class="err">Could not load dashboard data (${esc(e.message)}).</span>`;
+  }
+}
+
+load();
+// The server answers from memory, so polling it costs no NetZero/ChargePoint calls.
+setInterval(load, 60000);
+setInterval(renderUpdated, 15000);
+// A home-screen app has no reload button and resumes from the background, so refetch on return.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") load(); });
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => data && renderCharts(data), 150); });
+</script>
+</body>
+</html>

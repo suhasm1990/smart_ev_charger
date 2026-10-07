@@ -177,7 +177,7 @@ def _readings(rows: list[dict], start: date = None, end: date = None):
 
 def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
     """Appends one telemetry row to the local CSV and queues it for the cloud."""
-    global _log_rows_cache
+    global _log_rows_cache, _rows_version
     rate = get_tou_rate(now)
     est_cost = round(max(0.0, _num(stats.get("grid_kw"))) * rate * (config.CHECK_INTERVAL_MINUTES / 60.0), 4)
     charging = state.charger_state == state.State.CHARGING
@@ -218,12 +218,20 @@ def log_to_csv(stats: dict, action: str, reason: str, now: datetime):
 
     with _log_rows_cache_lock:
         _log_rows_cache = None
+        _rows_version += 1
+
+
+def rows_version() -> int:
+    """Increments whenever a telemetry row is written, so derived caches know to rebuild."""
+    with _log_rows_cache_lock:
+        return _rows_version
 
 
 # ── Reading ─────────────────────────────────────────────────────────────────
 
 _log_rows_cache: list[dict] | None = None
 _log_rows_cache_time = 0.0
+_rows_version = 0
 # Guards the cache tuple; read from the cycle, bot, and agent threads.
 _log_rows_cache_lock = threading.Lock()
 LOG_CACHE_TTL = 60.0
@@ -274,6 +282,14 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
     def stamp(row):
         return row.get("timestamp") or f"{row.get('date', '')} {row.get('time', '')}".strip()
 
+    def finish(session):
+        # Prefer the ChargePoint meter; fall back to amperage x voltage x time.
+        estimate = session["max_duration_minutes"] / 60.0 * session.pop("_power_kw")
+        metered = session.pop("_metered_kwh")
+        session["energy_kwh"] = round(metered or estimate, 2)
+        session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
+        sessions.append(session)
+
     for r in _readings(get_all_log_rows(), start, end):
         row = r.row
         if r.charging:
@@ -284,21 +300,41 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
                     "solar_kw": row.get("solar_kw", "0"),
                     "max_duration_minutes": r.session_minutes,
                     "stop_reason": row.get("session_stop_reason") or row.get("reason", ""),
+                    "_power_kw": 0.0,
+                    "_metered_kwh": 0.0,
                 }
             current["end_time"] = stamp(row)
             current["end_battery_pct"] = row.get("battery_pct", "N/A")
             current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
+            current["_power_kw"] = max(current["_power_kw"], r.ev_power_kw)
+            current["_metered_kwh"] = max(current["_metered_kwh"], _num(row.get("cp_session_energy_kwh")))
             if row.get("session_stop_reason"):
                 current["stop_reason"] = row["session_stop_reason"]
         elif current is not None:
             current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
             current["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current["stop_reason"]
-            sessions.append(current)
+            finish(current)
             current = None
 
     if current is not None:
-        sessions.append(current)
+        finish(current)
     return sessions[-limit:][::-1] if limit else sessions[::-1]
+
+
+def get_hourly_profile(period: str = "today") -> list[dict]:
+    """Average solar, home load, and Powerwall charge per hour of a single day."""
+    day, _, _ = _resolve_date_range(period)
+    buckets: dict[int, list[tuple[float, float, float]]] = {}
+    for r in _readings(get_all_log_rows(), day, day):
+        buckets.setdefault(r.hour, []).append((r.solar_kw, r.home_kw, _num(r.row.get("battery_pct"))))
+
+    def avg(values, index):
+        return round(sum(v[index] for v in values) / len(values), 2)
+
+    return [
+        {"hour": hour, "solar_kw": avg(vals, 0), "home_kw": avg(vals, 1), "battery_pct": avg(vals, 2)}
+        for hour, vals in sorted(buckets.items())
+    ]
 
 
 # ── Period resolution ───────────────────────────────────────────────────────
@@ -534,6 +570,75 @@ def get_home_energy_summary(period: str = "today") -> dict:
     except Exception as e:
         log_csv.error(f"Error calculating home energy summary: {e}", exc_info=True)
         return {"error": f"Failed to calculate home energy summary: {e}"}
+
+
+_TOU_LABELS = (("on_peak", "On-peak"), ("partial_peak", "Partial-peak"), ("off_peak", "Off-peak"))
+
+
+def get_bill_breakdown(period: str = "today") -> dict:
+    """Itemised utility charges accrued so far in a period, grouped like the bill.
+
+    Unlike get_monthly_billing_data this never scales up missing intervals:
+    it reports what has actually been metered, so 'today' means 'so far today'.
+    """
+    start, end, label = _resolve_date_range(period)
+    days = (end - start).days + 1
+    rows = get_all_log_rows()
+    if not rows:
+        return {"error": "No log data found yet."}
+
+    grid_kwh = dict.fromkeys((key for key, _ in _TOU_LABELS), 0.0)
+    taxed_cost = dict.fromkeys(grid_kwh, 0.0)
+    export_kwh = 0.0
+    for r in _readings(rows, start, end):
+        h = r.interval_h
+        if r.grid_kw > 0:
+            bucket = r.tou_period if r.tou_period in grid_kwh else "off_peak"
+            grid_kwh[bucket] += r.grid_import_kw * h
+            taxed_cost[bucket] += r.grid_import_kw * h * r.rate
+        else:
+            export_kwh += r.grid_export_kw * h
+
+    def line(text, amount, detail=""):
+        return {"label": text, "detail": detail, "amount": round(amount, 2)}
+
+    def group(title, lines):
+        return {"title": title, "lines": lines, "subtotal": round(sum(item["amount"] for item in lines), 2)}
+
+    fee = config.UTILITY_FIXED_MONTHLY_FEE
+    fee_detail = f"${fee:.2f}/month, {days} day{'s' if days != 1 else ''}"
+    if getattr(config, "_IS_MID", True):
+        bill = calculate_mid_bill_components(
+            on_peak_kwh=grid_kwh["on_peak"], partial_peak_kwh=grid_kwh["partial_peak"],
+            off_peak_kwh=grid_kwh["off_peak"], export_kwh=export_kwh, month=start.month, days=days,
+        )
+        energy = [line(name, bill[f"{key}_cost"], f"{grid_kwh[key]:.1f} kWh") for key, name in _TOU_LABELS]
+        fixed = [
+            line("Customer service charge", bill["fixed_fee"], fee_detail),
+            line("Energy efficiency (EEA)", bill["eea_cost"], f"${config.UTILITY_EEA_RATE}/kWh"),
+            line("Climate initiative (CIA)", bill["cia_cost"], f"${config.UTILITY_CIA_RATE}/kWh"),
+            line("State surcharge", bill["state_surcharge"], f"${config.UTILITY_STATE_SURCHARGE_RATE}/kWh"),
+            line("Local surcharge", bill["local_surcharge"], f"{config.UTILITY_LOCAL_SURCHARGE_PCT * 100:g}% of MID charges"),
+        ]
+        credit_rate, total = bill["export_credit_rate"], bill["net_bill"]
+    else:
+        energy = [line(name, taxed_cost[key], f"{grid_kwh[key]:.1f} kWh, incl. taxes") for key, name in _TOU_LABELS]
+        fixed = [line("Customer service charge", _fixed_fee(days), fee_detail)]
+        credit_rate, total = _export_credit_rate(), None
+
+    credits = [line("Solar export credit", -export_kwh * credit_rate, f"{export_kwh:.1f} kWh × ${credit_rate:.3f}")]
+    groups = [group("Energy used", energy), group("Fixed charges & taxes", fixed), group("Credits", credits)]
+    if total is None:
+        total = max(0.0, sum(g["subtotal"] for g in groups))
+
+    return {
+        "period": label,
+        "days": days,
+        "rate_plan": provider_label(),
+        "grid_import_kwh": round(sum(grid_kwh.values()), 2),
+        "groups": groups,
+        "total_dollars": round(total, 2),
+    }
 
 
 EVENING_START_HOUR, EVENING_END_HOUR = 16, 22
