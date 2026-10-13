@@ -17,7 +17,6 @@ from core import (
     get_tou_period,
     get_tou_rate,
     is_in_night_blackout,
-    is_weekend,
     state,
 )
 from dashboard import record_live, start_dashboard_server
@@ -123,12 +122,6 @@ def _manual_guard_breach(stats: dict, now: datetime, cp_status: dict) -> tuple[s
          f"Reached scheduled stop hour ({stop_hour}:00)",
          f"🔴 <b>Manual Charging Stopped (Scheduled Cutoff)</b>\nReached the scheduled stop time "
          f"(<b>{now.strftime('%H:%M')}</b>).\nReturned to <b>Auto mode</b>."),
-        # Only fall back to the TOU blackout when no explicit stop hour was set.
-        (stop_hour is None and is_in_night_blackout(now) and not is_weekend(now),
-         f"Night blackout window ({config.NIGHT_BLACKOUT_START_HOUR}:00)",
-         f"🔴 <b>Manual Charging Stopped (TOU Peak Blackout)</b>\nReached the "
-         f"{config.NIGHT_BLACKOUT_START_HOUR}:00 blackout window before peak rates start.\n"
-         f"Returned to <b>Auto mode</b>."),
     ]
     return next(((reason, message) for tripped, reason, message in checks if tripped), None)
 
