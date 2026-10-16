@@ -45,6 +45,42 @@ class TestChargePointHelpers(unittest.TestCase):
         finally:
             cp._run = original
 
+    def _run_start(self, status: dict, amperage: int) -> list:
+        import asyncio
+        calls = []
+
+        class FakeClient:
+            async def set_amperage_limit(self, charger_id, amperage_limit):
+                calls.append(("amps", amperage_limit))
+
+            async def start_charging_session(self, device_id):
+                calls.append(("start",))
+                return type("Session", (), {"session_id": 1})()
+
+        async def fake_status():
+            return status
+
+        async def fake_client():
+            return FakeClient()
+
+        originals = cp._get_charger_status, cp._get_client
+        cp._get_charger_status, cp._get_client = fake_status, fake_client
+        try:
+            asyncio.run(cp._start_charger(amperage))
+        finally:
+            cp._get_charger_status, cp._get_client = originals
+        return calls
+
+    def test_amperage_is_reapplied_after_session_start(self):
+        """ChargePoint resets the limit on session start, so it must be set again afterwards."""
+        calls = self._run_start({"is_plugged_in": True, "charging_status": "AVAILABLE"}, 32)
+        self.assertEqual(calls, [("amps", 32), ("start",), ("amps", 32)])
+
+    def test_amperage_is_applied_when_already_charging(self):
+        calls = self._run_start({"is_plugged_in": True, "charging_status": "CHARGING",
+                                 "amperage_limit": 20}, 32)
+        self.assertEqual(calls, [("amps", 32)])
+
 
 class TestChargePointLive(unittest.TestCase):
     """Opt-in live check; skipped unless real credentials are configured."""

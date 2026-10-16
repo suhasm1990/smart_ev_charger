@@ -66,6 +66,13 @@ def _clean_error(e: Exception) -> str:
 
 # ── Coroutines ──────────────────────────────────────────────────────────────
 
+async def _apply_amperage(client, amperage_limit: int, stage: str):
+    try:
+        await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage_limit)
+    except Exception as e:
+        log_chargepoint.warning(f"Failed to set amperage limit {stage}: {_clean_error(e)}")
+
+
 async def _start_charger(amperage_limit: int):
     try:
         try:
@@ -74,6 +81,8 @@ async def _start_charger(amperage_limit: int):
                 raise ChargePointStartError("Vehicle is not plugged in. Please plug in the connector.")
             if status.get("charging_status") == "CHARGING":
                 log_chargepoint.info("Charger is already charging. Skipping redundant start request.")
+                if status.get("amperage_limit") != amperage_limit:
+                    await _apply_amperage(await _get_client(), amperage_limit, "on running session")
                 return
         except ChargePointStartError:
             raise
@@ -81,12 +90,13 @@ async def _start_charger(amperage_limit: int):
             log_chargepoint.warning(f"Charger pre-check failed, attempting start anyway: {_clean_error(e)}")
 
         client = await _get_client()
+        await _apply_amperage(client, amperage_limit, "before start")
         try:
-            await client.set_amperage_limit(charger_id=config.CHARGEPOINT_DEVICE_ID, amperage_limit=amperage_limit)
-        except Exception as e:
-            log_chargepoint.warning(f"Failed to set initial amperage limit: {_clean_error(e)}")
-
-        session = await client.start_charging_session(device_id=config.CHARGEPOINT_DEVICE_ID)
+            session = await client.start_charging_session(device_id=config.CHARGEPOINT_DEVICE_ID)
+        finally:
+            # ChargePoint resets the limit to the charger's default when a session
+            # starts, so the pre-start value does not stick on its own.
+            await _apply_amperage(client, amperage_limit, "after start")
         log_chargepoint.info(f"Session STARTED | session_id={session.session_id} | amperage={amperage_limit}A")
     except ChargePointStartError:
         raise

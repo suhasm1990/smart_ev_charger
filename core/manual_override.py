@@ -31,6 +31,13 @@ def check_manual_mode() -> bool:
         state.manual_mode = state.prev_manual_mode = False
         state.manual_mode_set_at = None
         state.clear_manual_guards()
+        # A manual session can outlive the reset; auto mode adopts it without
+        # sending a start, so restore the default limit here.
+        try:
+            from services.chargepoint import set_charger_amperage_limit  # avoids a core<->services import cycle
+            set_charger_amperage_limit(config.DEFAULT_CHARGER_AMPERAGE)
+        except Exception as e:
+            log_mode.warning(f"Could not restore default amperage: {e}")
         if config.MANUAL_MODE_OVERRIDE == "manual":
             config.update(MANUAL_MODE_OVERRIDE="default")
             notify(
