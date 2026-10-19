@@ -231,6 +231,7 @@ def rows_version() -> int:
 
 _log_rows_cache: list[dict] | None = None
 _log_rows_cache_time = 0.0
+_log_rows_cache_days = 0  # how many days the cached rows cover
 _rows_version = 0
 # Guards the cache tuple; read from the cycle, bot, and agent threads.
 _log_rows_cache_lock = threading.Lock()
@@ -243,9 +244,12 @@ def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
     Sheets is the source of truth because it survives container restarts; a
     60-second in-memory cache keeps repeated analytics off the network.
     """
-    global _log_rows_cache, _log_rows_cache_time
+    global _log_rows_cache, _log_rows_cache_time, _log_rows_cache_days
     with _log_rows_cache_lock:
-        if not force_refresh and _log_rows_cache is not None and (time.time() - _log_rows_cache_time) < LOG_CACHE_TTL:
+        # A cache covering fewer days than requested would silently truncate
+        # longer periods (e.g. "this month" answered from 7 days of rows).
+        if (not force_refresh and _log_rows_cache is not None and _log_rows_cache_days >= days
+                and (time.time() - _log_rows_cache_time) < LOG_CACHE_TTL):
             return _log_rows_cache
 
     rows = []
@@ -263,8 +267,15 @@ def get_all_log_rows(days: int = 7, force_refresh: bool = False) -> list[dict]:
             log_csv.warning(f"Error reading local CSV fallback: {e}")
 
     with _log_rows_cache_lock:
-        _log_rows_cache, _log_rows_cache_time = rows, time.time()
+        _log_rows_cache, _log_rows_cache_time, _log_rows_cache_days = rows, time.time(), days
     return rows
+
+
+def _rows_since(start: date | None) -> list[dict]:
+    """Log rows reaching back far enough to cover a period beginning on `start`."""
+    if start is None:
+        return get_all_log_rows()
+    return get_all_log_rows(days=max(7, (datetime.now(config.TZ).date() - start).days + 1))
 
 
 def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
@@ -290,7 +301,7 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
         session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
         sessions.append(session)
 
-    for r in _readings(get_all_log_rows(), start, end):
+    for r in _readings(_rows_since(start), start, end):
         row = r.row
         if r.charging:
             if current is None:
@@ -325,7 +336,7 @@ def get_hourly_profile(period: str = "today") -> list[dict]:
     """Average solar, home load, and Powerwall charge per hour of a single day."""
     day, _, _ = _resolve_date_range(period)
     buckets: dict[int, list[tuple[float, float, float]]] = {}
-    for r in _readings(get_all_log_rows(), day, day):
+    for r in _readings(_rows_since(day), day, day):
         buckets.setdefault(r.hour, []).append((r.solar_kw, r.home_kw, _num(r.row.get("battery_pct"))))
 
     def avg(values, index):
@@ -420,20 +431,28 @@ def get_daily_charging_cost(period: str = "today") -> dict:
     """Energy, cost, and driving range delivered to the EV over a period."""
     now = datetime.now(config.TZ)
     start, end, label = _resolve_date_range(period, now)
-    rows = get_all_log_rows()
+    rows = _rows_since(start)
     if not rows:
         return {"error": "No log data found yet."}
+
+    def minutes_into_day(r: Reading) -> float:
+        return r.hour * 60 + _num(str(r.row.get("time", "")).partition(":")[2])
 
     try:
         sessions, current = [], None
         grid_kwh = grid_cost = solar_kwh = 0.0
         intervals = 0
+        last = None
 
         for r in _readings(rows, start, end):
             if r.charging:
                 intervals += 1
                 if current is None:
-                    current = {"minutes": r.session_minutes, "power_kw": r.ev_power_kw}
+                    # session_minutes counts from the session's start, so a session
+                    # carried over from before midnight would credit the earlier
+                    # day's minutes to this period; those are subtracted here.
+                    current = {"minutes": r.session_minutes, "power_kw": r.ev_power_kw,
+                               "carried": max(0.0, r.session_minutes - minutes_into_day(r))}
                 else:
                     current["minutes"] = max(current["minutes"], r.session_minutes)
                     current["power_kw"] = max(current["power_kw"], r.ev_power_kw)
@@ -444,15 +463,20 @@ def get_daily_charging_cost(period: str = "today") -> dict:
                 current["minutes"] = max(current["minutes"], r.session_minutes)
                 sessions.append(current)
                 current = None
+            last = r
         if current is not None:
+            if last.day < now.date():
+                # Still charging when the period's last day ended: credit the time
+                # up to midnight (at most one interval) that the next day's rows hold.
+                current["minutes"] += min(config.CHECK_INTERVAL_MINUTES, 24 * 60 - minutes_into_day(last))
             sessions.append(current)
 
         default_power = state.charger_power_kw(config.DEFAULT_CHARGER_AMPERAGE)
-        total_minutes = round(sum(s["minutes"] for s in sessions), 1)
+        total_minutes = round(sum(s["minutes"] - s["carried"] for s in sessions), 1)
         if not total_minutes and intervals:
             total_minutes = round(intervals * config.CHECK_INTERVAL_MINUTES, 1)
 
-        total_kwh = round(sum(s["minutes"] / 60.0 * s["power_kw"] for s in sessions), 2)
+        total_kwh = round(sum((s["minutes"] - s["carried"]) / 60.0 * s["power_kw"] for s in sessions), 2)
         if not total_kwh and total_minutes:
             total_kwh = round(total_minutes / 60.0 * default_power, 2)
 
@@ -510,7 +534,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
     """Whole-home consumption, generation, and utility bill breakdown."""
     start, end, label = _resolve_date_range(period)
     days = (end - start).days + 1
-    rows = get_all_log_rows()
+    rows = _rows_since(start)
     if not rows:
         return {"error": "No log data found yet."}
 
@@ -583,7 +607,7 @@ def get_bill_breakdown(period: str = "today") -> dict:
     """
     start, end, label = _resolve_date_range(period)
     days = (end - start).days + 1
-    rows = get_all_log_rows()
+    rows = _rows_since(start)
     if not rows:
         return {"error": "No log data found yet."}
 

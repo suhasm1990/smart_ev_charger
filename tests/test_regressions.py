@@ -612,3 +612,58 @@ class TestLLMFallback(unittest.TestCase):
         reply, _ = llm_client.chat_with_tools([], "start charging", [start_charger])
         self.assertTrue(reply.startswith("Error interacting with the AI model"))
         self.assertEqual(actions, ["start"])
+
+
+class TestChargingAcrossMidnight(unittest.TestCase):
+    """A session spanning 00:00 is split between the two local days, not double counted."""
+
+    def setUp(self):
+        from datetime import datetime, timedelta
+        self._rows, self._datetime = csv_logger.get_all_log_rows, csv_logger.datetime
+        start = datetime(2026, 10, 18, 23, 0, tzinfo=config.TZ)
+        rows = []
+        for i in range(9):  # charging 23:00 -> 01:00, stop row at 01:00
+            t = start + timedelta(minutes=15 * i)
+            rows.append({"timestamp": t.isoformat(), "date": t.strftime("%Y-%m-%d"), "time": t.strftime("%H:%M"),
+                         "charger_state": "CHARGING" if i < 8 else "IDLE", "action": "hold" if i < 8 else "stop",
+                         "session_active_minutes": str(15 * i), "charger_amperage": "20",
+                         "solar_kw": "0", "home_kw": "5.3", "grid_kw": "5.3"})
+        csv_logger.get_all_log_rows = lambda days=7, force_refresh=False: rows
+
+        class FrozenNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 19, 2, 0, tzinfo=config.TZ)
+        csv_logger.datetime = FrozenNow
+
+    def tearDown(self):
+        csv_logger.get_all_log_rows, csv_logger.datetime = self._rows, self._datetime
+
+    def test_each_day_gets_its_own_hour(self):
+        for period in ("yesterday", "today"):
+            result = csv_logger.get_daily_charging_cost(period)
+            self.assertEqual(result["total_charging_minutes"], 60.0, period)
+            self.assertEqual(result["total_kwh_added"], 4.8, period)
+
+
+class TestLogRowsCoverPeriod(unittest.TestCase):
+    """Long periods fetch enough Sheets history, and a short cached fetch is not reused for them."""
+
+    def setUp(self):
+        self._fetch = sheets_db.get_recent_logs
+        self.requested = []
+        sheets_db.get_recent_logs = lambda days=7: self.requested.append(days) or [{"date": "2026-10-01"}]
+        csv_logger._log_rows_cache = None
+
+    def tearDown(self):
+        sheets_db.get_recent_logs = self._fetch
+        csv_logger._log_rows_cache = None
+
+    def test_month_query_refetches_beyond_cached_week(self):
+        from datetime import date
+        csv_logger.get_all_log_rows()                      # caches 7 days
+        csv_logger._rows_since(date(2000, 1, 1))           # needs far more
+        self.assertEqual(len(self.requested), 2)
+        self.assertGreater(self.requested[1], 7)
+        csv_logger.get_all_log_rows()                      # wider cache serves the short request
+        self.assertEqual(len(self.requested), 2)
