@@ -261,7 +261,7 @@ _MODEL_ALIASES = {
     "gemini-pro": ("gemini", "gemini-2.5-pro"), "gemini_pro": ("gemini", "gemini-2.5-pro"),
     "gemini-2.5-pro": ("gemini", "gemini-2.5-pro"), "pro": ("gemini", "gemini-2.5-pro"),
     "nvidia": ("nvidia", None), "nemotron": ("nvidia", None), "llama": ("nvidia", None),
-    "nemotron-super": ("nvidia", "nvidia/nemotron-3-super-120b-a12b"),
+    "nemotron-super": ("nvidia", "nvidia/nemotron-3.5-super-vl-120b-a12b"),
     "nemotron-ultra": ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
     "nemotron-nano": ("nvidia", "nvidia/nemotron-3-nano-30b-a3b"),
     "openai": ("openai", None), "chatgpt": ("openai", None), "gpt": ("openai", None),
@@ -643,9 +643,9 @@ _history_lock = threading.Lock()
 def handle_message_with_llm(text: str) -> str:
     """Runs one assistant turn against the shared conversation history."""
     global _history
-    if not llm_client.resolve_llm_config().get("api_key"):
-        provider_name = llm_client.resolve_llm_config().get("provider")
-        return f"LLM API key is not configured for provider '{provider_name}'. Please set the environment variables."
+    cfg = llm_client.resolve_llm_config()
+    if not cfg.get("api_key"):
+        return f"LLM API key is not configured for provider '{cfg.get('provider')}'. Please set the environment variables."
 
     if text.strip().lower() in ("/clear", "/reset"):
         with _history_lock:
@@ -661,7 +661,9 @@ def handle_message_with_llm(text: str) -> str:
 
     with _history_lock:
         _history = llm_client.trim_history(updated, MAX_HISTORY_MESSAGES)
-    return reply
+    # The label names the model that actually answered (the fallback, if used).
+    # An empty reply stays empty so the caller's status fallback still triggers.
+    return f"{reply}\n\n{llm_client.model_label()}" if reply.strip() else reply
 
 
 # ── Polling loop ────────────────────────────────────────────────────────────

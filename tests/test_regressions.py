@@ -501,3 +501,114 @@ class TestNighttimeNoiseAndGapScaling(unittest.TestCase):
             self.assertEqual(stats["home_kw"], 0.5)
             self.assertEqual(stats["grid_kw"], 0.5)
 
+
+
+class TestModelLabel(unittest.TestCase):
+    """Chat replies name the model that produced them."""
+
+    def setUp(self):
+        from agent import telegram_bot
+        self.bot = telegram_bot
+        self._chat, self._resolve = llm_client.chat_with_tools, llm_client.resolve_llm_config
+        llm_client.resolve_llm_config = lambda: {"provider": "nvidia", "model": "nvidia/model<x>",
+                                                 "api_key": "k", "base_url": None}
+
+    def tearDown(self):
+        llm_client.chat_with_tools, llm_client.resolve_llm_config = self._chat, self._resolve
+
+    def test_label_is_html_escaped(self):
+        self.assertEqual(llm_client.model_label(), "🤖 <i>Model: nvidia/model&lt;x&gt;</i>")
+
+    def test_chat_reply_carries_model_footer(self):
+        def chat(history, user_text, tools, system_instruction):
+            llm_client._last_used.cfg = llm_client.resolve_llm_config()
+            return "Battery is 62%.", []
+        llm_client.chat_with_tools = chat
+        reply = self.bot.handle_message_with_llm("battery?")
+        self.assertTrue(reply.startswith("Battery is 62%."))
+        self.assertTrue(reply.endswith("Model: nvidia/model&lt;x&gt;</i>"))
+
+    def test_empty_reply_stays_empty_for_status_fallback(self):
+        llm_client.chat_with_tools = lambda history, user_text, tools, system_instruction: ("", [])
+        self.assertEqual(self.bot.handle_message_with_llm("status"), "")
+
+
+class TestLLMFallback(unittest.TestCase):
+    """The backup model takes over only on transient failures, and never replays tool actions."""
+
+    PRIMARY = {"provider": "nvidia", "model": "nvidia/primary", "api_key": "k", "base_url": None}
+
+    def setUp(self):
+        self._saved = (llm_client.resolve_llm_config, llm_client._complete, llm_client._generate_json_with,
+                       config.LLM_FALLBACK_PROVIDER, config.LLM_FALLBACK_MODEL, config.GEMINI_API_KEY)
+        llm_client.resolve_llm_config = lambda: dict(self.PRIMARY)
+        config.LLM_FALLBACK_PROVIDER, config.LLM_FALLBACK_MODEL, config.GEMINI_API_KEY = "gemini", "", "g"
+
+    def tearDown(self):
+        (llm_client.resolve_llm_config, llm_client._complete, llm_client._generate_json_with,
+         config.LLM_FALLBACK_PROVIDER, config.LLM_FALLBACK_MODEL, config.GEMINI_API_KEY) = self._saved
+
+    @staticmethod
+    def _response(content="", tool_calls=None):
+        from types import SimpleNamespace
+        message = SimpleNamespace(content=content, tool_calls=tool_calls)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    def test_fallback_config_skips_same_model_or_missing_key(self):
+        self.assertEqual(llm_client.resolve_fallback_config(self.PRIMARY)["provider"], "gemini")
+        config.GEMINI_API_KEY = ""
+        self.assertIsNone(llm_client.resolve_fallback_config(self.PRIMARY))
+        config.GEMINI_API_KEY = "g"
+        same = {"provider": "gemini", "model": llm_client.PROVIDER_MODELS["gemini"]}
+        self.assertIsNone(llm_client.resolve_fallback_config(same))
+
+    def test_json_falls_back_on_transient_error_and_labels_it(self):
+        def generate(cfg, messages):
+            if not cfg.get("fallback"):
+                raise RuntimeError("Request timed out")
+            return {"ok": True}
+        llm_client._generate_json_with = generate
+        self.assertEqual(llm_client.generate_json("plan"), {"ok": True})
+        self.assertIn("(fallback)", llm_client.model_label())
+
+    def test_json_does_not_fall_back_on_permanent_error(self):
+        def generate(cfg, messages):
+            raise ValueError("bad request")
+        llm_client._generate_json_with = generate
+        with self.assertRaises(ValueError):
+            llm_client.generate_json("plan")
+
+    def test_chat_falls_back_when_no_tool_has_run(self):
+        def complete(**kwargs):
+            if "gemini" not in kwargs["model"]:
+                raise RuntimeError("503 overloaded")
+            return self._response("All good.")
+        llm_client._complete = complete
+        reply, _ = llm_client.chat_with_tools([], "status?", [])
+        self.assertEqual(reply, "All good.")
+        self.assertIn("(fallback)", llm_client.model_label())
+
+    def test_chat_never_replays_a_turn_after_a_tool_ran(self):
+        from types import SimpleNamespace
+        actions = []
+
+        def start_charger() -> str:
+            """Starts charging."""
+            actions.append("start")
+            return "started"
+
+        call = SimpleNamespace(id="1", function=SimpleNamespace(name="start_charger", arguments="{}"),
+                               model_dump=lambda: {"id": "1"})
+        responses = iter([self._response(tool_calls=[call])])
+
+        def complete(**kwargs):
+            if "gemini" in kwargs["model"]:
+                return self._response("replayed")
+            try:
+                return next(responses)
+            except StopIteration:
+                raise RuntimeError("Request timed out")
+        llm_client._complete = complete
+        reply, _ = llm_client.chat_with_tools([], "start charging", [start_charger])
+        self.assertTrue(reply.startswith("Error interacting with the AI model"))
+        self.assertEqual(actions, ["start"])

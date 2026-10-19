@@ -118,6 +118,7 @@ smart_ev_charger/
 | `CHARGEPOINT_DEVICE_ID` | ChargePoint Home Flex charger device ID | Required |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_USER_ID` | Telegram bot token and authorized chat ID | Required |
 | `LLM_PROVIDER` / `LLM_MODEL` | Active AI provider (`gemini`, `nvidia`, `openai`, `anthropic`) | `gemini` / `gemini-2.5-flash` |
+| `LLM_FALLBACK_PROVIDER` / `LLM_FALLBACK_MODEL` | Backup used after the primary's retries fail on timeouts, 5xx or rate limits (empty provider disables it) | `gemini` / provider default |
 | `EV_MILES_PER_KWH` | Vehicle efficiency in miles per kWh | `3.53` |
 | `UTILITY_PROVIDER` | Rate schedule plan (`MID`, `PGE`, or `CUSTOM`) | `MID` |
 | `BATTERY_START_PCT` / `BATTERY_STOP_PCT` | Solar charging battery start/stop thresholds | `40` / `25` |
@@ -128,6 +129,7 @@ smart_ev_charger/
 | `CHECK_INTERVAL_MINUTES` | Control loop evaluation interval (clamped 1–60) | `15` |
 | `MIN_CHARGE_MINUTES` | Minimum session length, to prevent short-cycling | `15` |
 | `POWERWALL_USABLE_KWH` | Usable Powerwall capacity, for evening reserve planning | `13.5` |
+| `SITE_LATITUDE` / `SITE_LONGITUDE` | Site location for the planner's Open-Meteo solar forecast (set empty to skip the forecast) | `37.78` / `-121.54` (Mountain House, CA) |
 | `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`) | `INFO` |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | Rotating log file size and retained backups | `8388608` / `3` |
 | `GOOGLE_CREDENTIALS_FILE` | Path to the Google service account JSON | `service_account.json` |

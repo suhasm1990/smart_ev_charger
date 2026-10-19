@@ -107,12 +107,21 @@ CHARGER_VOLTAGE          = _env_float("CHARGER_VOLTAGE", "240.0")
 EV_MILES_PER_KWH         = _env_float("EV_MILES_PER_KWH", "3.53")
 POWERWALL_USABLE_KWH     = _env_float("POWERWALL_USABLE_KWH", "13.5")
 
+# ── Site location for the planner's Open-Meteo solar forecast ───────────────
+# Defaults to Mountain House, CA; set either to an empty string to skip the forecast.
+SITE_LATITUDE  = _env("SITE_LATITUDE", "37.78")
+SITE_LONGITUDE = _env("SITE_LONGITUDE", "-121.54")
+
 # ── LLM (model-agnostic via litellm) ────────────────────────────────────────
 LLM_PROVIDER        = _env("LLM_PROVIDER").lower().strip()
 LLM_MODEL           = _env("LLM_MODEL") or _env("GEMINI_MODEL")
 LLM_API_KEY         = _env("LLM_API_KEY")
 LLM_BASE_URL        = _env("LLM_BASE_URL")
 LLM_THINKING_BUDGET = _env_int("LLM_THINKING_BUDGET", "8192")
+# Backup used when the primary provider keeps failing (timeouts, 5xx, rate limits).
+# Set LLM_FALLBACK_PROVIDER to an empty string to disable it.
+LLM_FALLBACK_PROVIDER = _env("LLM_FALLBACK_PROVIDER", "gemini").lower().strip()
+LLM_FALLBACK_MODEL    = _env("LLM_FALLBACK_MODEL")  # empty -> that provider's default
 
 NVIDIA_API_KEY    = _env("NVIDIA_API_KEY")
 OPENAI_API_KEY    = _env("OPENAI_API_KEY")

@@ -654,13 +654,14 @@ def get_energy_saving_advice() -> dict:
     since = (now - timedelta(days=7)).date()
 
     try:
-        hourly_surplus: dict[int, list[float]] = {h: [] for h in range(24)}
+        # (solar kW, house kW excluding the charger) per interval, by hour.
+        hourly: dict[int, list[tuple[float, float]]] = {h: [] for h in range(24)}
         on_peak_cost = ev_grid_cost = 0.0
         evening: dict[date, list[float]] = {}
 
         for r in _readings(rows, start=since):
             h = r.interval_h
-            hourly_surplus[r.hour].append(max(0.0, r.solar_kw - r.home_kw))
+            hourly[r.hour].append((r.solar_kw, max(0.0, r.home_kw - r.ev_power_kw)))
 
             if r.tou_period == "on_peak":
                 on_peak_cost += r.grid_import_kw * h * r.rate
@@ -684,7 +685,15 @@ def get_energy_saving_advice() -> dict:
         # Reserve enough Powerwall to cover the evening deficit, plus 10% buffer.
         reserve_pct = round(min(60.0, max(25.0, deficit_kwh / config.POWERWALL_USABLE_KWH * 100.0 + 10.0)), 1)
 
-        best_hours = [h for h, vals in hourly_surplus.items() if vals and sum(vals) / len(vals) >= 1.0]
+        profile = [
+            {
+                "hour": hour,
+                "solar_kw": round(sum(v[0] for v in vals) / len(vals), 2),
+                "house_kw": round(sum(v[1] for v in vals) / len(vals), 2),
+            }
+            for hour, vals in hourly.items() if vals
+        ]
+        best_hours = [p["hour"] for p in profile if p["solar_kw"] - p["house_kw"] >= 1.0]
         window = f"{min(best_hours)}:00 - {max(best_hours) + 1}:00" if best_hours else "10:00 - 15:00"
 
         peak_start, peak_end = ON_PEAK_HOURS
@@ -694,7 +703,7 @@ def get_energy_saving_advice() -> dict:
 
         return {
             "optimal_solar_appliance_window": window,
-            "cheapest_ev_charging_window": f"{window} (Off-Peak solar surplus)",
+            "cheapest_ev_charging_window": f"{window} (solar surplus)",
             "hours_to_avoid_heavy_loads": avoid_window,
             "avg_evening_appliance_load_kwh": round(appliance_kwh, 2),
             "avg_evening_solar_generation_kwh": round(evening_solar_kwh, 2),
@@ -702,6 +711,7 @@ def get_energy_saving_advice() -> dict:
             "recommended_evening_battery_reserve_pct": reserve_pct,
             "on_peak_grid_cost_last_7_days": round(on_peak_cost, 2),
             "ev_grid_charging_cost_last_7_days": round(ev_grid_cost, 2),
+            "hourly_profile_7_days": profile,
             "actionable_recommendations": [
                 f"Run heavy appliances (AC, washer, dishwasher, dryer) during {window} when solar generation peaks.",
                 f"Avoid heavy appliances between {peak_start}:00 and {peak_end}:00, "

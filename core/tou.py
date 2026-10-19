@@ -100,10 +100,13 @@ def weekday_schedule_description() -> dict:
     }
 
 
+def season(month: int) -> str:
+    return "summer" if 5 <= month <= 9 else "winter"
+
+
 def get_base_tou_rate(now: datetime) -> float:
-    season = "summer" if 5 <= now.month <= 9 else "winter"
     schedule = RATE_SCHEDULES.get(provider(), RATE_SCHEDULES["MID"])
-    return schedule[season][get_tou_period(now)]
+    return schedule[season(now.month)][get_tou_period(now)]
 
 
 def get_tou_rate(now: datetime) -> float:
@@ -142,8 +145,7 @@ def calculate_mid_bill_components(
       - Mountain House Surcharge: 6.5% on pre-tax subtotal
       - Excess generation solar export credit: $0.076/kWh flat
     """
-    season = "summer" if 5 <= month <= 9 else "winter"
-    schedule = RATE_SCHEDULES.get(provider(), RATE_SCHEDULES["MID"])[season]
+    schedule = RATE_SCHEDULES.get(provider(), RATE_SCHEDULES["MID"])[season(month)]
 
     # Fixed fee: flat monthly fee (prorated only if short cycle < 28 days)
     fixed_fee = config.UTILITY_FIXED_MONTHLY_FEE

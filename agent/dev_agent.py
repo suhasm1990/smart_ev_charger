@@ -224,7 +224,8 @@ def dispatch_dev_task_background(task_description: str, pr_number: int = None):
                     return
 
             summary = run_dev_agent_loop(task_description, pr_number)
-            notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(summary[-2500:])}</pre>")
+            notify(f"✅ <b>Dev Agent Finished</b>\n\n<pre>{html.escape(summary[-2500:])}</pre>\n\n"
+                   f"{llm_client.model_label()}")
         except Exception as e:
             log.error(f"Dev agent error: {e}", exc_info=True)
             notify(f"❌ <b>Dev Agent Error</b>\n{html.escape(str(e))}")
