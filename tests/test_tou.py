@@ -1,5 +1,7 @@
 """Direct coverage for the TOU rate math and blackout-window logic."""
 import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
+
+# isort: split
 import unittest
 from datetime import datetime
 from unittest import mock

@@ -1,5 +1,7 @@
 """Tests for the locked dynamic-config layer (update/snapshot/precedence)."""
 import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
+
+# isort: split
 import json
 import os
 import threading

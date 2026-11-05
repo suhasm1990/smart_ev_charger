@@ -1,5 +1,7 @@
 """Startup notice: planned restart vs unexpected stop vs first run."""
 import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
+
+# isort: split
 import os
 import tempfile
 import unittest

@@ -1,5 +1,7 @@
 """Morning planner and miles goals: prompt context, threshold validation, and goal maths."""
 import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
+
+# isort: split
 import json
 import unittest
 from datetime import datetime, timedelta

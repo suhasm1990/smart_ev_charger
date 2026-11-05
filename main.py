@@ -9,8 +9,6 @@ import schedule
 
 from agent import check_alerts, check_recent_log_errors, run_daily_agent, start_telegram_bot
 from agent.telegram_bot import send_monthly_telegram_report
-from core import goal as charge_goal
-from core import lifecycle
 from core import (
     check_manual_mode,
     config,
@@ -19,8 +17,10 @@ from core import (
     get_tou_period,
     get_tou_rate,
     is_in_night_blackout,
+    lifecycle,
     state,
 )
+from core import goal as charge_goal
 from dashboard import record_live, start_dashboard_server
 from reporting import (
     log,
