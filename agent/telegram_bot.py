@@ -586,11 +586,11 @@ def restart_and_update_application() -> str:
     """Restarts the container so it pulls the latest code from GitHub and reloads.
     Use this whenever the user asks to restart, update, pull the latest code, or reload after merging a PR.
     """
-    _schedule_exit()
+    _schedule_exit("restart requested in chat")
     return "🔄 Restarting now. The container will pull the latest code from GitHub and be back in ~5-10 seconds."
 
 
-def _schedule_exit(delay: float = 2.0):
+def _schedule_exit(reason: str = "Telegram /update", delay: float = 2.0):
     """Exits after a short delay so the acknowledgement reaches Telegram first, ensuring all Sheets writes flush."""
     def worker():
         time.sleep(delay)
@@ -606,6 +606,8 @@ def _schedule_exit(delay: float = 2.0):
         except Exception:
             pass
         log.info("RESTART | Exiting to trigger a container restart and git pull.")
+        from core.lifecycle import record_exit
+        record_exit(reason)
         os._exit(0)
     threading.Thread(target=worker, daemon=True, name="Restart").start()
 
@@ -817,7 +819,7 @@ def _bot_polling_loop():
     def _restart(message):
         bot.reply_to(message, "🔄 <b>Restarting...</b>\nPulling the latest code. Back online in ~5-10s.",
                      parse_mode="HTML")
-        _schedule_exit()
+        _schedule_exit(f"Telegram {message.text.split()[0]}")
 
     @command("daily_agent", "plan", "daily_plan")
     def _daily_agent(message):

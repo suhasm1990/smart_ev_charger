@@ -10,6 +10,7 @@ import schedule
 from agent import check_alerts, check_recent_log_errors, run_daily_agent, start_telegram_bot
 from agent.telegram_bot import send_monthly_telegram_report
 from core import goal as charge_goal
+from core import lifecycle
 from core import (
     check_manual_mode,
     config,
@@ -406,6 +407,7 @@ def handle_shutdown(signum, frame):
     whatever the main thread happened to be doing when the signal arrived.
     """
     log.info("SHUTDOWN | Signal received — leaving charger state untouched")
+    lifecycle.record_exit(f"stop signal {signal.Signals(signum).name}, e.g. docker stop/restart")
     try:
         from services import flush
         flush(timeout=10.0)  # docker stop_grace_period is 20s
@@ -450,6 +452,12 @@ def main():
     log.info(f"STARTUP | Amperage: default={config.DEFAULT_CHARGER_AMPERAGE}A max={config.MAX_CHARGER_AMPERAGE}A")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
     log.info("=" * 70)
+
+    # Read the previous run's exit marker and heartbeat before this run overwrites them.
+    try:
+        notify(lifecycle.startup_message())
+    except Exception as e:
+        log.warning(f"Could not send the startup notice: {e}")
 
     # 2. Reconcile manual mode and adopt current hardware charging state
     check_manual_mode()

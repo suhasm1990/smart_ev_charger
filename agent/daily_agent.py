@@ -361,7 +361,7 @@ def run_daily_agent():
             )
 
         notify(
-            f"🤖 <b>Daily AI Agent Update ({config.DAILY_AGENT_TIME})</b>\n\n{summary}"
+            f"🤖 <b>Daily AI Agent Update ({datetime.now(config.TZ):%H:%M})</b>\n\n{summary}"
             f"⚙️ <b>Today's Charging Strategy</b>:\n"
             f"• <b>Battery Start/Stop</b>: {config.BATTERY_START_PCT}% / {config.BATTERY_STOP_PCT}%\n"
             f"• <b>Charge Window</b>: {config.ALLOWED_CHARGE_START_HOUR}:00 - {config.ALLOWED_CHARGE_END_HOUR}:00\n"
