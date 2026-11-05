@@ -1,3 +1,4 @@
+import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
 import os
 import sys
 import unittest

@@ -3,6 +3,7 @@
 Each test pins one previously-observed failure mode: cycle wedges, state
 mutated before hardware confirmation, blocking notifications, silent drops.
 """
+import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
 import asyncio
 import queue
 import socket

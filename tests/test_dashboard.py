@@ -1,3 +1,4 @@
+import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
 import json
 import threading
 import unittest

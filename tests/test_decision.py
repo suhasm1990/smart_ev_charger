@@ -3,6 +3,7 @@
 Unlike the control-loop tests, nothing is stubbed here: the real
 is_in_night_blackout runs, driven by config, including the midnight wrap.
 """
+import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
 import unittest
 from datetime import datetime, timedelta
 

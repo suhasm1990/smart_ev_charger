@@ -1,4 +1,5 @@
 """Regression coverage for defects found and fixed during the refactor."""
+import tests  # noqa: F401  -- must stay first: isolates Sheets and log files (see tests/__init__.py)
 import logging
 import os
 import time
