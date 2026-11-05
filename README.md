@@ -129,7 +129,8 @@ smart_ev_charger/
 | `CHECK_INTERVAL_MINUTES` | Control loop evaluation interval (clamped 1–60) | `15` |
 | `MIN_CHARGE_MINUTES` | Minimum session length, to prevent short-cycling | `15` |
 | `POWERWALL_USABLE_KWH` | Usable Powerwall capacity, for evening reserve planning | `13.5` |
-| `SITE_LATITUDE` / `SITE_LONGITUDE` | Site location for the planner's Open-Meteo solar forecast (set empty to skip the forecast) | `37.78` / `-121.54` (Mountain House, CA) |
+| `SOLAR_START_SURPLUS_KW` | Live solar left over after the house needed to start charging (with the Powerwall at or above the start %) | `1.0` |
+| `SOLAR_MIN_KW` | Solar output below which an active solar charge stops | `0.5` |
 | `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`) | `INFO` |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | Rotating log file size and retained backups | `8388608` / `3` |
 | `GOOGLE_CREDENTIALS_FILE` | Path to the Google service account JSON | `service_account.json` |

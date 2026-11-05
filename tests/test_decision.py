@@ -15,8 +15,10 @@ WEDNESDAY_23H = datetime(2026, 8, 26, 23, 0, tzinfo=config.TZ)
 SATURDAY_23H = datetime(2026, 8, 29, 23, 0, tzinfo=config.TZ)
 
 
-def stats(battery_pct=50.0, plugged_in=True):
-    return {"battery_pct": battery_pct, "is_plugged_in": plugged_in}
+def stats(battery_pct=50.0, plugged_in=True, solar_kw=4.0, surplus_kw=3.0, goal_night_kwh=0.0):
+    """Live readings; defaults to a sunny noon with 3 kW of solar left over after the house."""
+    return {"battery_pct": battery_pct, "is_plugged_in": plugged_in, "solar_kw": solar_kw,
+            "solar_surplus_kw": surplus_kw, "goal_night_kwh": goal_night_kwh}
 
 
 class DecisionCase(unittest.TestCase):
@@ -112,12 +114,70 @@ class TestBatteryThresholds(DecisionCase):
         self.charging()
         action, reason = evaluate(stats(30.0), WEDNESDAY_NOON)
         self.assertEqual(action, "hold")
-        self.assertIn("Continuing", reason)
+        self.assertIn("Solar charging", reason)
 
         state.reset_for_tests()
         action, reason = evaluate(stats(30.0), WEDNESDAY_NOON)
         self.assertEqual(action, "hold")
         self.assertIn("Idle", reason)
+
+
+class TestLiveSolar(DecisionCase):
+    """Starts and stops follow this cycle's solar and Powerwall readings, not the clock."""
+
+    def test_no_solar_never_starts_even_with_a_full_powerwall(self):
+        action, reason = evaluate(stats(100.0, solar_kw=0.0, surplus_kw=-0.4), WEDNESDAY_23H)
+        self.assertEqual(action, "hold")
+        self.assertIn("Idle", reason)
+
+    def test_small_surplus_waits_for_a_healthy_battery(self):
+        action, _ = evaluate(stats(30.0, surplus_kw=1.5), WEDNESDAY_NOON)
+        self.assertEqual(action, "hold")
+
+    def test_surplus_covering_the_charger_starts_below_start_pct(self):
+        action, reason = evaluate(stats(30.0, solar_kw=6.0, surplus_kw=5.5), WEDNESDAY_NOON)
+        self.assertEqual(action, "start")
+        self.assertIn("covers the charger", reason)
+
+    def test_faded_solar_stops_a_charge(self):
+        self.charging()
+        action, reason = evaluate(stats(80.0, solar_kw=0.2, surplus_kw=-4.6), WEDNESDAY_NOON.replace(hour=17))
+        self.assertEqual(action, "stop")
+        self.assertIn("Solar has faded", reason)
+
+    def test_faded_solar_respects_min_session(self):
+        self.charging(minutes_ago=5)
+        action, _ = evaluate(stats(80.0, solar_kw=0.2, surplus_kw=-4.6), WEDNESDAY_NOON.replace(hour=17))
+        self.assertEqual(action, "hold")
+
+
+class TestMilesGoalNightCharging(DecisionCase):
+    """A goal that solar can't cover charges only at the day's cheapest rate."""
+
+    def test_goal_starts_at_the_cheapest_rate(self):
+        action, reason = evaluate(stats(60.0, solar_kw=0.0, surplus_kw=-0.4, goal_night_kwh=12.0), WEDNESDAY_23H)
+        self.assertEqual(action, "start")
+        self.assertIn("Miles goal", reason)
+
+    def test_goal_keeps_charging_overnight(self):
+        self.charging()
+        action, reason = evaluate(stats(60.0, solar_kw=0.0, surplus_kw=-5.2, goal_night_kwh=12.0), WEDNESDAY_23H)
+        self.assertEqual(action, "hold")
+        self.assertIn("Miles goal", reason)
+
+    def test_goal_never_charges_on_peak(self):
+        action, _ = evaluate(stats(60.0, solar_kw=0.0, surplus_kw=-0.4, goal_night_kwh=12.0),
+                             WEDNESDAY_NOON.replace(hour=18))
+        self.assertEqual(action, "hold")
+
+    def test_goal_stops_when_the_powerwall_drains_to_stop_pct(self):
+        self.charging()
+        action, _ = evaluate(stats(20.0, solar_kw=0.0, surplus_kw=-5.2, goal_night_kwh=12.0), WEDNESDAY_23H)
+        self.assertEqual(action, "stop")
+
+    def test_no_goal_no_night_charging(self):
+        action, _ = evaluate(stats(90.0, solar_kw=0.0, surplus_kw=-0.4), WEDNESDAY_23H)
+        self.assertEqual(action, "hold")
 
 
 class TestChargeWindow(DecisionCase):

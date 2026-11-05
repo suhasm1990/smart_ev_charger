@@ -9,6 +9,7 @@ import schedule
 
 from agent import check_alerts, check_recent_log_errors, run_daily_agent, start_telegram_bot
 from agent.telegram_bot import send_monthly_telegram_report
+from core import goal as charge_goal
 from core import (
     check_manual_mode,
     config,
@@ -236,6 +237,7 @@ def run_cycle():
             _touch_heartbeat()
             return
 
+        stats["goal_night_kwh"] = _goal_night_kwh(now)
         action, reason = evaluate(stats, now)
         log.info(
             f"CYCLE | action={action} | state={state.charger_state} | tou={tou} | "
@@ -291,6 +293,30 @@ def run_cycle():
     except Exception as e:
         log.error(f"CYCLE ERROR | {type(e).__name__}: {e}", exc_info=True)
         _note_api_failure(f"Encountered repeated cycle errors ({type(e).__name__})")
+
+
+def _goal_night_kwh(now: datetime) -> float:
+    """Tracks the miles goal: clears it once met or expired, else returns the kWh
+    it still needs beyond expected solar (which the decision may charge at night)."""
+    try:
+        goal = charge_goal.get_goal()
+        if goal is None:
+            return 0.0
+        prog = charge_goal.progress(goal)
+        if prog["remaining_kwh"] <= 0:
+            charge_goal.clear_goal()
+            log.info(f"GOAL MET | {charge_goal.describe(goal, prog)}")
+            notify(f"🎯 <b>Miles goal reached</b>\nAdded {prog['added_miles']:.0f} of {goal['miles']:.0f} miles.")
+            return 0.0
+        if now >= goal["deadline"]:
+            charge_goal.clear_goal()
+            log.info(f"GOAL EXPIRED | {charge_goal.describe(goal, prog)}")
+            notify(f"⏰ <b>Miles goal deadline passed</b>\n{charge_goal.describe(goal, prog)}.")
+            return 0.0
+        return charge_goal.night_kwh_needed(now, goal, prog["remaining_kwh"])
+    except Exception as e:
+        log.warning(f"Miles goal check failed: {e}")
+        return 0.0
 
 
 def _note_api_failure(description: str):

@@ -14,6 +14,7 @@ from telebot.handler_backends import BaseMiddleware, CancelUpdate
 from agent import llm_client
 from agent.alerts import add_alert, list_alerts, remove_alert
 from core import config, state
+from core import goal as charge_goal
 from core.tou import RATE_SCHEDULES, get_tou_rate, provider, provider_label, weekday_schedule_description
 from reporting.csv_logger import (
     get_daily_charging_cost as calc_cost,
@@ -68,6 +69,14 @@ def _clamp_amperage(value, default=None) -> int:
 
 # ── LLM tools ───────────────────────────────────────────────────────────────
 
+def _goal_summary() -> str:
+    try:
+        goal = charge_goal.get_goal()
+        return charge_goal.describe(goal, charge_goal.progress(goal)) if goal else "none"
+    except Exception as e:
+        return f"unavailable ({e})"
+
+
 def get_system_status() -> str:
     """Gets the current EV charger state, battery percentage, solar generation, house usage, current grid import, and active thresholds."""
     try:
@@ -119,12 +128,15 @@ def get_system_status() -> str:
         "config_battery_stop_pct": config.BATTERY_STOP_PCT,
         "config_blackout_start_hour": config.NIGHT_BLACKOUT_START_HOUR,
         "config_blackout_end_hour": config.NIGHT_BLACKOUT_END_HOUR,
+        "miles_goal": _goal_summary(),
         "manual_mode_override": config.MANUAL_MODE_OVERRIDE,
         "mode_behavior": (
             "MANUAL_MODE: Automatic solar and battery stop thresholds (e.g. stop at 35%) and charge windows are PAUSED. "
             "Charging continues until the user manually stops it, switches back to auto, or morning reset at 09:00."
             if is_manual else
-            "AUTO_MODE: Solar automation and battery stop thresholds are active."
+            "AUTO_MODE: Charging starts on live solar surplus (with the Powerwall above its start %) and stops "
+            "when solar fades or the Powerwall drops below its stop %. Night charging happens only for a miles goal, "
+            "at the cheapest rate."
         ),
         "manual_guard_stop_battery_pct": state.manual_guard_stop_battery_pct,
         "manual_guard_stop_at_hour": state.manual_guard_stop_at_hour,
@@ -493,6 +505,56 @@ def add_agent_instruction(text: str) -> str:
     return "Error: Failed to save the instruction. Please check the Google Sheets integration."
 
 
+def set_miles_goal(miles: float, deadline: str) -> str:
+    """Sets a goal to add a number of miles to the car by a deadline, e.g. "add 100 miles by tomorrow".
+    The charger uses solar first and charges at the cheapest night rate only for what solar can't cover in time.
+
+    Args:
+        miles: Miles of range to add.
+        deadline: Local deadline as 'YYYY-MM-DD HH:MM' (24-hour). For a day with no time (e.g. 'by tomorrow', 'within 2 days') use 23:59 of that day.
+    """
+    now = datetime.now(config.TZ)
+    text = (deadline or "").strip()
+    try:
+        if len(text) == 10:  # date only -> end of that day
+            parsed = datetime.strptime(text, "%Y-%m-%d").replace(hour=23, minute=59)
+        else:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M")
+        goal = charge_goal.set_goal(float(miles), parsed.replace(tzinfo=config.TZ), now)
+    except (TypeError, ValueError) as e:
+        return f"Error: {e}. Current local time is {now:%Y-%m-%d %H:%M %A}; pass deadline as 'YYYY-MM-DD HH:MM'."
+    _trigger_cycle()
+    kwh = goal["miles"] / config.EV_MILES_PER_KWH
+    return (f"Success: Goal set to add {goal['miles']:.0f} miles (~{kwh:.1f} kWh) by "
+            f"{goal['deadline']:%A %b %d %H:%M}. Solar is used first; night charging at the cheapest rate "
+            f"only covers what solar is not expected to provide in time.")
+
+
+def get_miles_goal() -> str:
+    """Shows the active miles goal: miles added so far, miles remaining, the deadline, and how much may be charged at night."""
+    goal = charge_goal.get_goal()
+    if goal is None:
+        return "No miles goal is active."
+    prog = charge_goal.progress(goal)
+    night = charge_goal.night_kwh_needed(datetime.now(config.TZ), goal, prog["remaining_kwh"])
+    return json.dumps({
+        "summary": charge_goal.describe(goal, prog),
+        "deadline": goal["deadline"].strftime("%Y-%m-%d %H:%M"),
+        **prog,
+        "kwh_needed_beyond_expected_solar": night,
+    })
+
+
+def clear_miles_goal() -> str:
+    """Cancels the active miles goal, so night charging stops and only solar charging continues."""
+    if charge_goal.get_goal() is None:
+        return "No miles goal was active."
+    if not charge_goal.clear_goal():
+        return "Error: Failed to clear the goal. Please check the Google Sheets integration."
+    _trigger_cycle()
+    return "Success: Miles goal cancelled."
+
+
 def trigger_daily_agent() -> str:
     """Runs the Daily AI Agent planner to analyse recent solar generation, optimise the charge window, and update battery thresholds.
     Use this whenever the user asks to run the daily agent or plan today's charging.
@@ -614,6 +676,7 @@ TOOLS = [
     set_battery_thresholds, set_blackout_hours, set_override_mode,
     start_charging, stop_charging, set_charger_amperage, manage_custom_alert,
     switch_llm_model, trigger_daily_agent, add_agent_instruction,
+    set_miles_goal, get_miles_goal, clear_miles_goal,
     run_antigravity_dev_task, restart_and_update_application,
 ]
 
@@ -625,6 +688,7 @@ SYSTEM_INSTRUCTION = (
     "- Advice & TOU rates: Call 'get_energy_saving_advice' or 'get_tou_schedule'.\n"
     "- Charger control: Call 'start_charging' (use 32A for full/maximum power, 20A otherwise) or 'stop_charging'. Only pass stop_battery_pct, stop_at_hour, or duration_hours if explicitly asked.\n"
     "- Thresholds & blackout: Call 'set_battery_thresholds', 'set_blackout_hours', or 'set_override_mode'.\n"
+    "- Miles goals: when the user asks to add miles/range by a time (e.g. 'add 100 miles by tomorrow', 'within 2 days'), call 'set_miles_goal'; use 'get_miles_goal' for progress and 'clear_miles_goal' to cancel. Work out the deadline from the current local time given at the start of each message.\n"
     "- Alerts & models: Call 'manage_custom_alert' or 'switch_llm_model'.\n"
     "- Daily planner & system: Call 'trigger_daily_agent', 'generate_monthly_report', 'read_application_logs', 'read_source_code', or 'restart_and_update_application'.\n\n"
     "CRITICAL OPERATIONAL RULES:\n"
@@ -655,8 +719,10 @@ def handle_message_with_llm(text: str) -> str:
     with _history_lock:
         history = list(_history)
 
+    # The bot has no clock of its own; relative dates like "tomorrow" need one.
+    stamped = f"[Current local time: {datetime.now(config.TZ):%A %Y-%m-%d %H:%M %Z}]\n{text}"
     reply, updated = llm_client.chat_with_tools(
-        history=history, user_text=text, tools=TOOLS, system_instruction=SYSTEM_INSTRUCTION,
+        history=history, user_text=stamped, tools=TOOLS, system_instruction=SYSTEM_INSTRUCTION,
     )
 
     with _history_lock:

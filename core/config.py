@@ -107,10 +107,11 @@ CHARGER_VOLTAGE          = _env_float("CHARGER_VOLTAGE", "240.0")
 EV_MILES_PER_KWH         = _env_float("EV_MILES_PER_KWH", "3.53")
 POWERWALL_USABLE_KWH     = _env_float("POWERWALL_USABLE_KWH", "13.5")
 
-# ── Site location for the planner's Open-Meteo solar forecast ───────────────
-# Defaults to Mountain House, CA; set either to an empty string to skip the forecast.
-SITE_LATITUDE  = _env("SITE_LATITUDE", "37.78")
-SITE_LONGITUDE = _env("SITE_LONGITUDE", "-121.54")
+# ── Live solar charging ─────────────────────────────────────────────────────
+# Charging starts on live readings: solar left over after the house (surplus)
+# and the Powerwall's current charge. Below SOLAR_MIN_KW solar has faded.
+SOLAR_START_SURPLUS_KW = _env_float("SOLAR_START_SURPLUS_KW", "1.0")
+SOLAR_MIN_KW           = _env_float("SOLAR_MIN_KW", "0.5")
 
 # ── LLM (model-agnostic via litellm) ────────────────────────────────────────
 LLM_PROVIDER        = _env("LLM_PROVIDER").lower().strip()

@@ -7,7 +7,7 @@ from datetime import datetime
 
 from core import config
 from core.state import StateSnapshot, state
-from core.tou import is_in_night_blackout, is_weekend
+from core.tou import is_cheapest_period, is_in_night_blackout, is_weekend
 from reporting.logger import log_decision
 
 
@@ -71,7 +71,7 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
             )
         return "hold", f"Battery {battery_pct}% < {cfg.BATTERY_STOP_PCT}% (need {cfg.BATTERY_START_PCT}% to restart)"
 
-    # ── 2. Charge window set by the morning planner ─────────────────────────
+    # ── 2. Optional charge window (the morning planner resets it to 0-24) ───
     start_hr, end_hr = cfg.ALLOWED_CHARGE_START_HOUR, cfg.ALLOWED_CHARGE_END_HOUR
     if not is_in_charge_window(now.hour, start_hr, end_hr):
         window = f"AI charge window ({start_hr}:00 - {end_hr}:00)"
@@ -81,15 +81,32 @@ def evaluate(stats: dict, now: datetime) -> tuple[str, str]:
             return _stop(f"Outside {window}", f"Outside AI window | {start_hr}:00 - {end_hr}:00")
         return "hold", f"Outside {window}"
 
-    # ── 3. Core solar/battery logic ─────────────────────────────────────────
-    if battery_pct >= cfg.BATTERY_START_PCT:
-        reason = f"Battery healthy ({battery_pct}% >= {cfg.BATTERY_START_PCT}%)"
-        if charging:
-            return "hold", reason
-        log_decision.info(f"START | {reason}")
-        return "start", reason
+    # ── 3. Live solar, or a miles goal at the cheapest rate ─────────────────
+    # Everything here runs on this cycle's readings: the Powerwall % (already
+    # above the stop threshold) and the solar left over after the house.
+    solar_kw = stats.get("solar_kw", 0.0)
+    surplus_kw = stats.get("solar_surplus_kw", 0.0)
+    goal_kwh = stats.get("goal_night_kwh", 0.0)
+    goal_night = goal_kwh > 0 and is_cheapest_period(now)
 
     if charging:
-        return "hold", f"Continuing charge (Battery {battery_pct}% > {cfg.BATTERY_STOP_PCT}%)"
+        if goal_night:
+            return "hold", f"Miles goal: charging at the cheapest rate ({goal_kwh:.1f} kWh needed beyond solar)"
+        if solar_kw >= config.SOLAR_MIN_KW:
+            return "hold", f"Solar charging (solar {solar_kw} kW, battery {battery_pct}%)"
+        if not min_charge_time_met(snap):
+            return "hold", "Solar has faded, but min session not met"
+        return _stop(f"Solar has faded ({solar_kw} kW) and no miles goal needs night charging",
+                     f"Solar faded | solar={solar_kw}kW | battery={battery_pct}%")
 
-    return "hold", f"Idle (Battery {battery_pct}% < {cfg.BATTERY_START_PCT}%)"
+    if goal_night:
+        reason = f"Miles goal needs {goal_kwh:.1f} kWh beyond expected solar; charging at the cheapest rate"
+    elif surplus_kw >= state.charger_power_kw(config.DEFAULT_CHARGER_AMPERAGE):
+        reason = f"Solar surplus {surplus_kw} kW covers the charger"
+    elif battery_pct >= cfg.BATTERY_START_PCT and surplus_kw >= config.SOLAR_START_SURPLUS_KW:
+        reason = f"Battery healthy ({battery_pct}% >= {cfg.BATTERY_START_PCT}%) with {surplus_kw} kW solar surplus"
+    else:
+        return "hold", (f"Idle (battery {battery_pct}%, solar surplus {surplus_kw} kW; starts with "
+                        f">= {config.SOLAR_START_SURPLUS_KW} kW surplus and battery >= {cfg.BATTERY_START_PCT}%)")
+    log_decision.info(f"START | {reason}")
+    return "start", reason

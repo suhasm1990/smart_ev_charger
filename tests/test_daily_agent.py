@@ -1,18 +1,21 @@
-"""Morning planner: prompt context, forecast scaling, and plan validation."""
+"""Morning planner and miles goals: prompt context, threshold validation, and goal maths."""
+import json
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
+import main
 from agent import daily_agent
 from core import config
+from core import goal as charge_goal
 
 WEEKDAY = datetime(2026, 10, 19, 7, 0, tzinfo=config.TZ)   # Monday
-SATURDAY = datetime(2026, 10, 17, 7, 0, tzinfo=config.TZ)
 
 PROFILE = [
     {"hour": 9, "solar_kw": 2.0, "house_kw": 0.8},
     {"hour": 12, "solar_kw": 6.0, "house_kw": 1.0},
     {"hour": 18, "solar_kw": 0.0, "house_kw": 2.5},
 ]
+NO_HISTORY = {"hourly_profile_7_days": PROFILE, "error": "No log data found yet."}
 
 
 class PlannerTestCase(unittest.TestCase):
@@ -24,7 +27,8 @@ class PlannerTestCase(unittest.TestCase):
         self._saved = {key: getattr(config, key) for key in self.KEYS}
         self._update = config.update
         config.update = lambda **changes: config._apply(changes)
-        config._apply({"NIGHT_BLACKOUT_START_HOUR": 16, "NIGHT_BLACKOUT_END_HOUR": 9,
+        config._apply({"NIGHT_BLACKOUT_START_HOUR": 0, "NIGHT_BLACKOUT_END_HOUR": 0,
+                       "ALLOWED_CHARGE_START_HOUR": 0, "ALLOWED_CHARGE_END_HOUR": 24,
                        "BATTERY_LOW_RESERVE_PCT": 15.0})
 
     def tearDown(self):
@@ -32,64 +36,111 @@ class PlannerTestCase(unittest.TestCase):
         config._apply(self._saved)
 
 
-class TestChargeableHours(PlannerTestCase):
-    def test_weekday_blackout_leaves_daytime_hours(self):
-        self.assertEqual(daily_agent._chargeable_hours(WEEKDAY), list(range(9, 16)))
+class TestPrompt(PlannerTestCase):
+    def test_prompt_lists_every_hour_and_marks_missing_history(self):
+        prompt = daily_agent.build_prompt(WEEKDAY, NO_HISTORY, {}, "")
+        self.assertIn("12:00 | off-peak", prompt)
+        self.assertIn("+5.0", prompt)  # 12:00 surplus
+        self.assertIn("evening history unavailable", prompt)
+        self.assertIn("Yesterday's totals unavailable", prompt)
+        self.assertIn("Monday 2026-10-19", prompt)
+        self.assertNotIn("forecast", prompt.lower())
 
-    def test_weekend_ignores_blackout(self):
-        self.assertEqual(daily_agent._chargeable_hours(SATURDAY), list(range(24)))
+    def test_prompt_includes_the_miles_goal(self):
+        prompt = daily_agent.build_prompt(WEEKDAY, NO_HISTORY, {}, "", goal="40 of 100 miles added")
+        self.assertIn("Miles goal: 40 of 100 miles added", prompt)
 
     def test_ranges_merge_contiguous_hours(self):
         self.assertEqual(daily_agent._format_ranges([9, 10, 11, 14]), "09:00-12:00, 14:00-15:00")
 
 
-class TestForecastScaling(unittest.TestCase):
-    def test_hours_scale_by_irradiance_ratio_with_cap(self):
-        forecast = {
-            "radiation_wm2": {9: 100.0, 12: 900.0, 18: 0.0},
-            "past_avg_radiation_wm2": {9: 200.0, 12: 500.0, 18: 0.0},
-            "cloud_cover_pct": {9: 80, 12: 10, 18: 0},
-        }
-        solar = daily_agent._forecast_solar(PROFILE, forecast)
-        self.assertEqual(solar[9], 1.0)    # half as bright
-        self.assertEqual(solar[12], 9.0)   # 1.8x, capped at 1.5x
-        self.assertEqual(solar[18], 0.0)   # dark hour uses the day ratio on 0 kW
-
-    def test_prompt_marks_forecast_unavailable(self):
-        advice = {"hourly_profile_7_days": PROFILE, "error": "No log data found yet."}
-        prompt = daily_agent.build_prompt(WEEKDAY, advice, {}, None, "")
-        self.assertIn("Solar forecast: unavailable", prompt)
-        self.assertIn("evening history unavailable", prompt)
-        self.assertIn("Yesterday's totals unavailable", prompt)
-        self.assertIn("Monday 2026-10-19", prompt)
-
-
 class TestApplyPlanValidation(PlannerTestCase):
-    def test_equal_window_hours_fall_back_to_full_day(self):
-        daily_agent._apply_plan({"charge_window_start_hour": 10, "charge_window_end_hour": 10}, WEEKDAY)
+    def test_leftover_window_and_manual_blackout_are_cleared(self):
+        config._apply({"NIGHT_BLACKOUT_START_HOUR": 0, "NIGHT_BLACKOUT_END_HOUR": 16,
+                       "ALLOWED_CHARGE_START_HOUR": 20, "ALLOWED_CHARGE_END_HOUR": 24})
+        applied = daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0})
+        self.assertEqual((config.NIGHT_BLACKOUT_START_HOUR, config.NIGHT_BLACKOUT_END_HOUR), (0, 0))
         self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR), (0, 24))
+        self.assertIn("NIGHT_BLACKOUT cleared (was 0:00-16:00)", applied)
+        self.assertIn("ALLOWED_CHARGE_WINDOW reset to 0-24 (was 20-24)", applied)
 
-    def test_window_inside_weekday_blackout_falls_back(self):
-        daily_agent._apply_plan({"charge_window_start_hour": 22, "charge_window_end_hour": 6}, WEEKDAY)
-        self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR), (0, 24))
-
-    def test_overnight_window_is_kept_on_weekends(self):
-        daily_agent._apply_plan({"charge_window_start_hour": 22, "charge_window_end_hour": 6}, SATURDAY)
-        self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR), (22, 6))
+    def test_open_window_and_disabled_blackout_are_left_alone(self):
+        applied = daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0})
+        self.assertEqual(applied, ["BATTERY_START_PCT=55.0", "BATTERY_STOP_PCT=40.0"])
 
     def test_thresholds_clamped_to_prompt_bounds_and_gap(self):
-        daily_agent._apply_plan({"battery_start_pct": 95.0, "battery_stop_pct": 5.0}, WEEKDAY)
+        daily_agent._apply_plan({"battery_start_pct": 95.0, "battery_stop_pct": 5.0})
         self.assertEqual(config.BATTERY_STOP_PCT, 20.0)
         self.assertEqual(config.BATTERY_START_PCT, 80.0)
 
     def test_stop_never_below_critical_reserve(self):
         config._apply({"BATTERY_LOW_RESERVE_PCT": 30.0})
-        daily_agent._apply_plan({"battery_start_pct": 60.0, "battery_stop_pct": 22.0}, WEEKDAY)
+        daily_agent._apply_plan({"battery_start_pct": 60.0, "battery_stop_pct": 22.0})
         self.assertEqual(config.BATTERY_STOP_PCT, 30.0)
 
     def test_start_too_close_to_stop_is_widened(self):
-        daily_agent._apply_plan({"battery_start_pct": 48.0, "battery_stop_pct": 45.0}, WEEKDAY)
+        daily_agent._apply_plan({"battery_start_pct": 48.0, "battery_stop_pct": 45.0})
         self.assertEqual(config.BATTERY_START_PCT, 55.0)
+
+
+class TestMilesGoal(unittest.TestCase):
+    NOW = datetime(2026, 11, 5, 20, 0, tzinfo=config.TZ)
+
+    def setUp(self):
+        import reporting.csv_logger as csv_logger
+        import services.sheets_db as sheets_db
+        self.store = {}
+        self.notes = []
+        self.added_kwh = 0.0
+        patches = [
+            (sheets_db, "get_settings", lambda force_refresh=False: dict(self.store)),
+            (sheets_db, "save_charge_goal", lambda raw: self.store.update(CHARGE_GOAL=raw) or True),
+            (sheets_db, "clear_charge_goal", lambda: self.store.pop("CHARGE_GOAL", None) is not None),
+            (csv_logger, "get_ev_kwh_since", lambda since: self.added_kwh),
+            (csv_logger, "get_energy_saving_advice", lambda: {"hourly_profile_7_days": PROFILE}),
+            (main, "notify", self.notes.append),
+        ]
+        self._originals = [(module, name, getattr(module, name)) for module, name, _ in patches]
+        for module, name, fake in patches:
+            setattr(module, name, fake)
+
+    def tearDown(self):
+        for module, name, original in self._originals:
+            setattr(module, name, original)
+
+    def test_rejects_past_and_far_deadlines(self):
+        with self.assertRaises(ValueError):
+            charge_goal.set_goal(100, self.NOW - timedelta(hours=1), self.NOW)
+        with self.assertRaises(ValueError):
+            charge_goal.set_goal(100, self.NOW + timedelta(days=8), self.NOW)
+
+    def test_round_trips_through_settings(self):
+        charge_goal.set_goal(100, self.NOW + timedelta(days=1), self.NOW)
+        self.assertEqual(json.loads(self.store["CHARGE_GOAL"])["miles"], 100)
+        self.assertEqual(charge_goal.get_goal()["deadline"], self.NOW + timedelta(days=1))
+
+    def test_expected_solar_counts_only_hours_before_the_deadline(self):
+        # 20:00 tonight to 23:59 tomorrow covers one 09:00 (+1.2) and one 12:00 (+5.0, capped at 4.8).
+        deadline = self.NOW.replace(hour=23, minute=59) + timedelta(days=1)
+        self.assertEqual(charge_goal.expected_solar_kwh(self.NOW, deadline, PROFILE, charger_kw=4.8), 6.0)
+
+    def test_night_need_is_what_solar_leaves_uncovered(self):
+        goal = charge_goal.set_goal(100, self.NOW.replace(hour=23, minute=59) + timedelta(days=1), self.NOW)
+        remaining = charge_goal.progress(goal)["remaining_kwh"]  # 100 mi / 3.53 mi/kWh = 28.33 kWh
+        self.assertAlmostEqual(charge_goal.night_kwh_needed(self.NOW, goal, remaining), 22.33, places=1)
+
+    def test_cycle_clears_a_met_goal_and_notifies(self):
+        charge_goal.set_goal(10, self.NOW + timedelta(days=1), self.NOW)
+        self.added_kwh = 5.0  # 17.6 miles >= 10
+        self.assertEqual(main._goal_night_kwh(self.NOW), 0.0)
+        self.assertNotIn("CHARGE_GOAL", self.store)
+        self.assertIn("Miles goal reached", self.notes[0])
+
+    def test_cycle_clears_an_expired_goal(self):
+        charge_goal.set_goal(100, self.NOW + timedelta(hours=1), self.NOW)
+        self.assertEqual(main._goal_night_kwh(self.NOW + timedelta(hours=2)), 0.0)
+        self.assertNotIn("CHARGE_GOAL", self.store)
+        self.assertIn("deadline passed", self.notes[0])
 
 
 if __name__ == "__main__":

@@ -407,3 +407,13 @@ def add_user_instruction(instruction: str) -> bool:
 def clear_user_instruction() -> bool:
     """Clears a processed instruction from the Settings tab."""
     return _write_settings({}, remove={"USER_INSTRUCTION"})
+
+
+def save_charge_goal(goal_json: str) -> bool:
+    """Stores the active miles goal (JSON) in the Settings tab."""
+    return _write_settings({"CHARGE_GOAL": goal_json})
+
+
+def clear_charge_goal() -> bool:
+    """Removes the miles goal once it is met, expired, or cancelled."""
+    return _write_settings({}, remove={"CHARGE_GOAL"})

@@ -332,6 +332,20 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
     return sessions[-limit:][::-1] if limit else sessions[::-1]
 
 
+def get_ev_kwh_since(since: datetime) -> float:
+    """EV energy logged from `since` onwards, summed over charging intervals."""
+    total = 0.0
+    for r in _readings(_rows_since(since.date()), start=since.date()):
+        try:
+            if datetime.fromisoformat(r.row["timestamp"]) < since:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        if r.charging:
+            total += r.ev_power_kw * r.interval_h
+    return round(total, 2)
+
+
 def get_hourly_profile(period: str = "today") -> list[dict]:
     """Average solar, home load, and Powerwall charge per hour of a single day."""
     day, _, _ = _resolve_date_range(period)

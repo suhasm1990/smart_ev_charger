@@ -117,6 +117,12 @@ def get_tou_rate(now: datetime) -> float:
     return round((base + adder) * tax, 5)
 
 
+def is_cheapest_period(now: datetime) -> bool:
+    """Whether `now` is billed at the lowest rate of its day (e.g. weekday off-peak)."""
+    cheapest = min(get_tou_rate(now.replace(hour=h, minute=0, second=0, microsecond=0)) for h in range(24))
+    return get_tou_rate(now) <= cheapest
+
+
 def is_expensive_period(now: datetime) -> bool:
     return get_tou_period(now) in ("on_peak", "partial_peak")
 

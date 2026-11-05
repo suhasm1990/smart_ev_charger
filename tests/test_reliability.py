@@ -52,7 +52,7 @@ class TestPureDecision(unittest.TestCase):
 
     def test_evaluate_start_leaves_state_untouched(self):
         from core.decision import evaluate
-        stats = {"battery_pct": 80.0, "is_plugged_in": True}
+        stats = {"battery_pct": 80.0, "is_plugged_in": True, "solar_kw": 4.0, "solar_surplus_kw": 3.0}
         action, _ = evaluate(stats, datetime.now(config.TZ))
         self.assertEqual(action, "start")
         self.assertEqual(state.charger_state, state.State.IDLE)
