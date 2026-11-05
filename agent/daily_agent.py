@@ -6,6 +6,7 @@ from core import config
 from core import goal as charge_goal
 from core.state import charger_power_kw
 from core.tou import (
+    ON_PEAK_HOURS,
     get_tou_period,
     get_tou_rate,
     is_utility_holiday,
@@ -25,6 +26,11 @@ PLAN_FIELDS = {
     "BATTERY_STOP_PCT":  ("battery_stop_pct", float, 20.0, 50.0),
 }
 MIN_HYSTERESIS_PCT = 10.0  # start must exceed stop by this much to avoid short-cycling
+# Daytime charge window bounds: never into on-peak, where the car would drain
+# the Powerwall the house needs for the evening.
+WINDOW_EARLIEST_HOUR = 6
+WINDOW_LATEST_END = ON_PEAK_HOURS[0]
+DEFAULT_WINDOW = (10, 15)
 
 PROMPT = """You are the AI Planner for a Smart EV Charger.
 Goal: minimise electricity cost. Charge the EV from solar, and keep enough Powerwall energy for the \
@@ -32,13 +38,13 @@ house's unavoidable evening use so it never buys on-peak grid power.
 
 Today: {today} ({day_type}, {season} rates)
 
-How charging is controlled (code applies these rules every 15 minutes to LIVE readings; you only set \
-today's two Powerwall thresholds):
-• Charging starts when the live solar surplus (solar minus house load) is at least {surplus_start:g} kW and \
-the Powerwall is at or above battery_start_pct, or as soon as the surplus alone covers the charger's \
-{charger_kw} kW draw.
-• It continues while solar produces at least {solar_min:g} kW, and stops when solar fades or the Powerwall \
-falls below battery_stop_pct (the car is then draining it).
+How charging is controlled (code checks the LIVE Powerwall % every 15 minutes; you set today's charge \
+window and the two Powerwall thresholds):
+• Inside the charge window, charging starts when the Powerwall is at or above battery_start_pct and runs \
+at {charger_kw} kW until the Powerwall falls below battery_stop_pct or the window ends. Solar readings do \
+not start or stop it: whatever the charger draws beyond the current solar surplus comes from the Powerwall.
+• Once stopped at battery_stop_pct, it restarts only after the Powerwall refills to battery_start_pct.
+• The window must be daytime, {earliest}:00 at the earliest, ending by {latest_end}:00 (on-peak starts then).
 • Night charging happens only for a user's miles goal, only at the day's cheapest rate, and it also stops \
 below battery_stop_pct.
 • Charging always stops below the {low_reserve}% critical Powerwall reserve.
@@ -72,11 +78,9 @@ Evening needs & history:
 Strategy Guidelines:
 1. 'battery_stop_pct' is the LOWER cutoff where EV charging must STOP to safeguard the evening home battery \
 reserve ({reserve_note}).
-2. 'battery_start_pct' is the Powerwall level from which a partial solar surplus may start charging, with \
-the Powerwall supplying the rest. Lower starts charging earlier; higher waits for a fuller Powerwall. Use the \
-energy budget: pick a start the Powerwall will actually reach today, so the car gets solar, while the \
-Powerwall can still refill to the evening reserve. A start above the projected Powerwall level means no \
-solar charging at all today.
+2. 'battery_start_pct' is the Powerwall level at which charging starts inside the window. Use the \
+energy budget: pick a start the Powerwall will actually reach during the window, or the car will not \
+charge today, while leaving the Powerwall able to refill to the evening reserve.
 3. CRITICAL CONSTRAINT: 'battery_start_pct' MUST be at least {gap:g} points higher than 'battery_stop_pct' \
 (e.g. stop 40.0 -> start 55.0).
 4. 'daily_suggestion': name specific shiftable loads (dishwasher, laundry, dryer, pre-cooling with AC, \
@@ -85,10 +89,15 @@ that would otherwise be exported for the credit. Advise keeping those loads out 
 Powerwall covers unavoidable evening use (cooking, lighting). Never recommend running heavy loads in the \
 evening or on the Powerwall.
 
-Recommend today's thresholds. Respond ONLY with a valid JSON object matching this schema \
+5. Charge window: cover the hours with the strongest solar surplus in the profile, so the Powerwall \
+refills while the car charges and the car draws as little stored energy as possible.
+
+Recommend today's charge window and thresholds. Respond ONLY with a valid JSON object matching this schema \
 (write the reasoning first, then the values):
 {{
   "reasoning": "<brief explanation of the chosen thresholds, citing the history and rates>",
+  "charge_window_start_hour": <int {earliest}-{latest_start}>,
+  "charge_window_end_hour": <int, after the start and at most {latest_end}>,
   "battery_start_pct": <float {start_lo:g}-{start_hi:g}, at least {gap:g} above battery_stop_pct>,
   "battery_stop_pct": <float {stop_lo:g}-{stop_hi:g}>,
   "daily_suggestion": "<concise 1-2 sentences: which loads to run in which solar hours, and what to avoid on-peak>"
@@ -224,9 +233,8 @@ def build_prompt(now: datetime, advice: dict, yesterday: dict, instruction: str,
         today=now.strftime("%A %Y-%m-%d"),
         day_type=_day_type(now),
         season=season(now.month),
-        surplus_start=config.SOLAR_START_SURPLUS_KW,
         charger_kw=charger_power_kw(config.DEFAULT_CHARGER_AMPERAGE),
-        solar_min=config.SOLAR_MIN_KW,
+        earliest=WINDOW_EARLIEST_HOUR, latest_start=WINDOW_LATEST_END - 1, latest_end=WINDOW_LATEST_END,
         low_reserve=config.BATTERY_LOW_RESERVE_PCT,
         goal=goal,
         rate_plan=provider_label(),
@@ -245,13 +253,25 @@ def build_prompt(now: datetime, advice: dict, yesterday: dict, instruction: str,
 
 # ── Plan validation ─────────────────────────────────────────────────────────
 
+def _valid_window(plan: dict) -> tuple[int, int]:
+    """The planned daytime window, clamped to the bounds; the default if unusable."""
+    try:
+        start = int(plan["charge_window_start_hour"])
+        end = int(plan["charge_window_end_hour"])
+    except (KeyError, TypeError, ValueError):
+        log.warning(f"Daily agent gave no usable charge window; using {DEFAULT_WINDOW[0]}-{DEFAULT_WINDOW[1]}")
+        return DEFAULT_WINDOW
+    start = min(WINDOW_LATEST_END - 1, max(WINDOW_EARLIEST_HOUR, start))
+    end = min(WINDOW_LATEST_END, max(start + 1, end))
+    return start, end
+
+
 def _apply_plan(plan: dict) -> list[str]:
     """Applies the returned thresholds, clamping each value into a safe range.
 
     Also enforces the start/stop hysteresis gap and keeps the stop above the
-    critical reserve. Charging hours are decided live from solar and the
-    Powerwall, so a leftover charge window or manual night blackout is
-    cleared rather than left to block today's solar.
+    critical reserve. Sets today's daytime charge window and clears any
+    manual night blackout so it cannot block that window.
     """
     applied = []
     changes = {}
@@ -282,10 +302,9 @@ def _apply_plan(plan: dict) -> list[str]:
         changes["BATTERY_START_PCT"] = corrected_start
         applied.append(f"BATTERY_START_PCT={corrected_start} (corrected)")
 
-    window = (config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR)
-    if window != (0, 24):
-        changes["ALLOWED_CHARGE_START_HOUR"], changes["ALLOWED_CHARGE_END_HOUR"] = 0, 24
-        applied.append(f"ALLOWED_CHARGE_WINDOW reset to 0-24 (was {window[0]}-{window[1]})")
+    start_hr, end_hr = _valid_window(plan)
+    changes["ALLOWED_CHARGE_START_HOUR"], changes["ALLOWED_CHARGE_END_HOUR"] = start_hr, end_hr
+    applied.append(f"ALLOWED_CHARGE_WINDOW={start_hr}-{end_hr}")
 
     blackout_start, blackout_end = config.NIGHT_BLACKOUT_START_HOUR, config.NIGHT_BLACKOUT_END_HOUR
     if blackout_start != blackout_end:
@@ -320,7 +339,7 @@ def run_daily_agent():
         blackout = (config.NIGHT_BLACKOUT_START_HOUR, config.NIGHT_BLACKOUT_END_HOUR)
         log.info(f"Daily agent applied: {', '.join(_apply_plan(plan)) or 'no changes'}")
         blackout_note = (
-            f"• <b>Night Blackout</b>: cleared (was {blackout[0]}:00 - {blackout[1]}:00) so live solar decides\n"
+            f"• <b>Night Blackout</b>: cleared (was {blackout[0]}:00 - {blackout[1]}:00) so it can't block the charge window\n"
             if blackout[0] != blackout[1] else ""
         )
         goal_note = f"• <b>Miles Goal</b>: {goal}\n" if goal not in ("none", "unavailable") else ""
@@ -345,8 +364,9 @@ def run_daily_agent():
             f"🤖 <b>Daily AI Agent Update ({config.DAILY_AGENT_TIME})</b>\n\n{summary}"
             f"⚙️ <b>Today's Charging Strategy</b>:\n"
             f"• <b>Battery Start/Stop</b>: {config.BATTERY_START_PCT}% / {config.BATTERY_STOP_PCT}%\n"
-            f"• <b>Charging</b>: live — starts on ≥{config.SOLAR_START_SURPLUS_KW:g} kW solar surplus with the "
-            f"Powerwall ≥{config.BATTERY_START_PCT}%; night charging only for a miles goal\n"
+            f"• <b>Charge Window</b>: {config.ALLOWED_CHARGE_START_HOUR}:00 - {config.ALLOWED_CHARGE_END_HOUR}:00\n"
+            f"• <b>Charging</b>: starts in the window when the Powerwall is ≥{config.BATTERY_START_PCT}%, "
+            f"stops below {config.BATTERY_STOP_PCT}% or when the window ends; night charging only for a miles goal\n"
             f"{goal_note}{blackout_note}\n"
             f"💡 <b>Energy Suggestion for Today</b>:\n<i>{plan.get('daily_suggestion', '')}</i>\n\n"
             f"<i>{plan.get('reasoning', '')}</i>\n\n"

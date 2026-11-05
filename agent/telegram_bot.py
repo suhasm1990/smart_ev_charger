@@ -134,9 +134,10 @@ def get_system_status() -> str:
             "MANUAL_MODE: Automatic solar and battery stop thresholds (e.g. stop at 35%) and charge windows are PAUSED. "
             "Charging continues until the user manually stops it, switches back to auto, or morning reset at 09:00."
             if is_manual else
-            "AUTO_MODE: Charging starts on live solar surplus (with the Powerwall above its start %) and stops "
-            "when solar fades or the Powerwall drops below its stop %. Night charging happens only for a miles goal, "
-            "at the cheapest rate."
+            f"AUTO_MODE: Inside the charge window ({config.ALLOWED_CHARGE_START_HOUR}:00-"
+            f"{config.ALLOWED_CHARGE_END_HOUR}:00), charging starts when the Powerwall is at or above "
+            f"{config.BATTERY_START_PCT}% and stops when it drops below {config.BATTERY_STOP_PCT}% or the window ends. "
+            "Solar readings do not start or stop it. Night charging happens only for a miles goal, at the cheapest rate."
         ),
         "manual_guard_stop_battery_pct": state.manual_guard_stop_battery_pct,
         "manual_guard_stop_at_hour": state.manual_guard_stop_at_hour,

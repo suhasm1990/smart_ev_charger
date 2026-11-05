@@ -46,6 +46,7 @@ class TestPrompt(PlannerTestCase):
         self.assertIn("Yesterday's totals unavailable", prompt)
         self.assertIn("Monday 2026-10-19", prompt)
         self.assertNotIn("forecast", prompt.lower())
+        self.assertIn("ending by 17:00", prompt)
 
     def test_prompt_includes_the_miles_goal(self):
         prompt = daily_agent.build_prompt(WEEKDAY, NO_HISTORY, {}, "", goal="40 of 100 miles added")
@@ -56,18 +57,24 @@ class TestPrompt(PlannerTestCase):
 
 
 class TestApplyPlanValidation(PlannerTestCase):
-    def test_leftover_window_and_manual_blackout_are_cleared(self):
-        config._apply({"NIGHT_BLACKOUT_START_HOUR": 0, "NIGHT_BLACKOUT_END_HOUR": 16,
-                       "ALLOWED_CHARGE_START_HOUR": 20, "ALLOWED_CHARGE_END_HOUR": 24})
-        applied = daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0})
+    def test_window_is_applied_and_manual_blackout_cleared(self):
+        config._apply({"NIGHT_BLACKOUT_START_HOUR": 0, "NIGHT_BLACKOUT_END_HOUR": 16})
+        applied = daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0,
+                                           "charge_window_start_hour": 10, "charge_window_end_hour": 15})
         self.assertEqual((config.NIGHT_BLACKOUT_START_HOUR, config.NIGHT_BLACKOUT_END_HOUR), (0, 0))
-        self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR), (0, 24))
+        self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR), (10, 15))
         self.assertIn("NIGHT_BLACKOUT cleared (was 0:00-16:00)", applied)
-        self.assertIn("ALLOWED_CHARGE_WINDOW reset to 0-24 (was 20-24)", applied)
+        self.assertIn("ALLOWED_CHARGE_WINDOW=10-15", applied)
 
-    def test_open_window_and_disabled_blackout_are_left_alone(self):
-        applied = daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0})
-        self.assertEqual(applied, ["BATTERY_START_PCT=55.0", "BATTERY_STOP_PCT=40.0"])
+    def test_window_never_reaches_into_on_peak_or_night(self):
+        daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0,
+                                 "charge_window_start_hour": 2, "charge_window_end_hour": 22})
+        self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR), (6, 17))
+
+    def test_missing_window_falls_back_to_midday(self):
+        daily_agent._apply_plan({"battery_start_pct": 55.0, "battery_stop_pct": 40.0})
+        self.assertEqual((config.ALLOWED_CHARGE_START_HOUR, config.ALLOWED_CHARGE_END_HOUR),
+                         daily_agent.DEFAULT_WINDOW)
 
     def test_thresholds_clamped_to_prompt_bounds_and_gap(self):
         daily_agent._apply_plan({"battery_start_pct": 95.0, "battery_stop_pct": 5.0})
