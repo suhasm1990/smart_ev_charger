@@ -3,6 +3,7 @@
 notify() enqueues and returns immediately so a slow notification service can
 never stall the control cycle; one daemon worker preserves delivery order.
 """
+import html
 import queue
 import re
 import threading
@@ -12,12 +13,13 @@ import requests
 
 from reporting.logger import log
 
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+# Only real tags: "< 35%" or "a < b" in a message must survive.
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?>")
 
 
 def strip_html(text: str) -> str:
     """Removes HTML tags, for plain-text fallbacks of Telegram-formatted messages."""
-    return _HTML_TAG_RE.sub("", text)
+    return html.unescape(_HTML_TAG_RE.sub("", text))
 
 
 _queue: queue.Queue = queue.Queue(maxsize=200)

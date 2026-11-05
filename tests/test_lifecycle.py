@@ -27,19 +27,20 @@ class TestStartupMessage(unittest.TestCase):
         os.utime(config.HEARTBEAT_FILE, (at.timestamp(), at.timestamp()))
 
     def test_first_run(self):
-        self.assertIn("first time", lifecycle.startup_message(NOW))
+        self.assertIn("first start", lifecycle.startup_message(NOW))
 
     def test_planned_restart_is_reported_and_marker_consumed(self):
         lifecycle.record_exit("Telegram /update")
         msg = lifecycle.startup_message(datetime.now(config.TZ))
-        self.assertIn("planned restart (Telegram /update)", msg)
+        self.assertIn("planned restart", msg)
+        self.assertIn("<code>Telegram /update</code>", msg)
         self.assertFalse(os.path.exists(lifecycle.EXIT_MARKER_FILE))
 
     def test_no_marker_after_a_previous_run_is_unexpected(self):
         self._heartbeat(NOW - timedelta(minutes=49))
         msg = lifecycle.startup_message(NOW)
         self.assertIn("UNEXPECTED stop", msg)
-        self.assertIn("down 49 min", msg)
+        self.assertIn("last cycle 11:11 · down 49 min", msg)
 
 
 if __name__ == "__main__":

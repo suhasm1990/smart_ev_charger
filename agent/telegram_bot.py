@@ -657,16 +657,30 @@ _UNSUPPORTED_TAGS = re.compile(
     r"</?(?:ul|ol|li|p|br|div|span|header|footer|section|h[1-6]|table|tr|td|th)[^>]*>", re.IGNORECASE)
 
 
+# Tags Telegram's HTML mode accepts; anything else in model text is escaped.
+_ALLOWED_TAG = re.compile(
+    r"(</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler)>|<a href=\"[^\"<>]*\">|</a>)",
+    re.IGNORECASE)
+
+
 def clean_telegram_html(text: str) -> str:
-    """Normalises model output into the small HTML subset Telegram accepts."""
+    """Normalises model output (HTML or Markdown) into the HTML subset Telegram accepts.
+
+    Stray "<", ">" and "&" (e.g. "stop below < 35%") are escaped: Telegram
+    rejects the whole message otherwise.
+    """
     if not text:
         return ""
+    text = _UNSUPPORTED_TAGS.sub("\n", text)
+    text = re.sub(r"^[ \t]*#{1,6}[ \t]+(.+?)[ \t#]*$", r"**\1**", text, flags=re.MULTILINE)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-    text = re.sub(r"(?<!\w)\*([^\*]+?)\*(?!\w)", r"<i>\1</i>", text)
-    text = re.sub(r"(?<!\w)_([^_]+?)_(?!\w)", r"<i>\1</i>", text)
+    text = re.sub(r"(?<!\w)\*([^\*\n]+?)\*(?!\w)", r"<i>\1</i>", text)
+    text = re.sub(r"(?<!\w)_([^_\n]+?)_(?!\w)", r"<i>\1</i>", text)
     text = re.sub(r"^[ \t]*[\*\-][ \t]+", "• ", text, flags=re.MULTILINE)
-    text = _UNSUPPORTED_TAGS.sub("\n", text)
+    parts = _ALLOWED_TAG.split(text)
+    text = "".join(part if i % 2 else html.escape(html.unescape(part), quote=False)
+                   for i, part in enumerate(parts))
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -868,7 +882,7 @@ def _bot_polling_loop():
                     bot.reply_to(message, cleaned, parse_mode="HTML")
                 except telebot.apihelper.ApiTelegramException as e:
                     log.warning(f"Telegram HTML parse error: {e}. Retrying as plain text.")
-                    plain = strip_html(raw).strip()
+                    plain = strip_html(cleaned).strip()
                     if plain:
                         bot.reply_to(message, plain, parse_mode=None)
             elif not getattr(_pending_image, "path", None):
