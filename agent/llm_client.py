@@ -27,7 +27,7 @@ PROVIDER_DEFAULTS = {
 
 PROVIDER_MODELS = {
     "gemini":    "gemini-2.5-flash",
-    "nvidia":    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "nvidia":    "nvidia/nemotron-3-ultra-550b-a55b",
     "openai":    "gpt-4o",
     "anthropic": "claude-sonnet-5",
 }

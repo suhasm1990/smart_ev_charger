@@ -1,5 +1,5 @@
 """Morning AI planner: sets today's Powerwall thresholds for the live charging rules."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from agent import llm_client
 from core import config
@@ -27,9 +27,8 @@ PLAN_FIELDS = {
 MIN_HYSTERESIS_PCT = 10.0  # start must exceed stop by this much to avoid short-cycling
 
 PROMPT = """You are the AI Planner for a Smart EV Charger.
-Goal: minimise electricity cost. Charge the EV from solar, and protect the home battery so heavy \
-evening loads (AC, induction stove, dishwasher between 16:00 and 22:00) run on battery instead of \
-on-peak grid power.
+Goal: minimise electricity cost. Charge the EV from solar, and keep enough Powerwall energy for the \
+house's unavoidable evening use so it never buys on-peak grid power.
 
 Today: {today} ({day_type}, {season} rates)
 
@@ -49,7 +48,17 @@ Miles goal: {goal}
 Utility rates today ({rate_plan}, delivered price incl. surcharges):
 {rate_table}
 • Solar export credit: ${export_rate:.3f}/kWh. Solar sent to the EV instead of the grid only gives up this \
-credit, so it is the cheapest energy. Powerwall energy used on the EV costs whatever grid power later replaces it.
+credit, so it is the cheapest energy.
+
+How the Powerwall's energy is valued:
+• Powerwall energy given to the EV costs nothing extra as long as the Powerwall still holds the evening \
+reserve by 16:00 (later solar refills it). It costs on-peak grid power only for the part that leaves the \
+Powerwall short in the evening.
+• Powerwall energy above the evening reserve has little other use, so it is better spent on the EV than left \
+idle. Do not invent other per-kWh costs.
+
+Energy budget today:
+{energy_budget}
 
 Hourly profile (7-day averages; house load excludes the EV; surplus = solar - house load):
 hour | rate period | avg solar kW | avg house kW | avg surplus kW
@@ -64,9 +73,17 @@ Strategy Guidelines:
 1. 'battery_stop_pct' is the LOWER cutoff where EV charging must STOP to safeguard the evening home battery \
 reserve ({reserve_note}).
 2. 'battery_start_pct' is the Powerwall level from which a partial solar surplus may start charging, with \
-the Powerwall supplying the rest. Lower starts charging earlier; higher waits for a fuller Powerwall.
+the Powerwall supplying the rest. Lower starts charging earlier; higher waits for a fuller Powerwall. Use the \
+energy budget: pick a start the Powerwall will actually reach today, so the car gets solar, while the \
+Powerwall can still refill to the evening reserve. A start above the projected Powerwall level means no \
+solar charging at all today.
 3. CRITICAL CONSTRAINT: 'battery_start_pct' MUST be at least {gap:g} points higher than 'battery_stop_pct' \
 (e.g. stop 40.0 -> start 55.0).
+4. 'daily_suggestion': name specific shiftable loads (dishwasher, laundry, dryer, pre-cooling with AC, \
+water heating) to run during today's strongest solar-surplus hours from the profile, where they use solar \
+that would otherwise be exported for the credit. Advise keeping those loads out of the on-peak hours so the \
+Powerwall covers unavoidable evening use (cooking, lighting). Never recommend running heavy loads in the \
+evening or on the Powerwall.
 
 Recommend today's thresholds. Respond ONLY with a valid JSON object matching this schema \
 (write the reasoning first, then the values):
@@ -74,7 +91,7 @@ Recommend today's thresholds. Respond ONLY with a valid JSON object matching thi
   "reasoning": "<brief explanation of the chosen thresholds, citing the history and rates>",
   "battery_start_pct": <float {start_lo:g}-{start_hi:g}, at least {gap:g} above battery_stop_pct>,
   "battery_stop_pct": <float {stop_lo:g}-{stop_hi:g}>,
-  "daily_suggestion": "<concise 1-2 sentence advice on appliance scheduling and peak cost avoidance>"
+  "daily_suggestion": "<concise 1-2 sentences: which loads to run in which solar hours, and what to avoid on-peak>"
 }}"""
 
 
@@ -156,6 +173,38 @@ def _history_section(advice: dict, yesterday: dict) -> str:
     return "\n".join(lines)
 
 
+def _latest_battery_pct(now: datetime) -> float | None:
+    """The Powerwall % from the most recent telemetry row in the last two hours."""
+    from reporting.csv_logger import get_all_log_rows
+    try:
+        for row in reversed(get_all_log_rows(days=1)):
+            ts = datetime.fromisoformat(row["timestamp"])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=config.TZ)
+            if now - ts > timedelta(hours=2):
+                return None
+            return float(row["battery_pct"])
+    except Exception as e:
+        log.warning(f"Daily agent could not read the current Powerwall level: {e}")
+    return None
+
+
+def _energy_budget(now: datetime, profile: list[dict], battery_pct: float | None) -> str:
+    """Powerwall size, current level and expected solar surplus to 16:00, as kWh and Powerwall %."""
+    usable = config.POWERWALL_USABLE_KWH
+    surplus = sum(max(0.0, p["solar_kw"] - p["house_kw"]) for p in profile if now.hour <= p["hour"] < 16)
+    surplus_pct = surplus / usable * 100
+    lines = [f"• Powerwall usable capacity: {usable:g} kWh (1% = {usable / 100:.3f} kWh)",
+             f"• Expected solar surplus from now to 16:00: {surplus:.1f} kWh (about {surplus_pct:.0f}% of the Powerwall)"]
+    if battery_pct is None:
+        lines.append("• Current Powerwall level: unavailable")
+    else:
+        lines += [f"• Current Powerwall level: {battery_pct:.0f}%",
+                  f"• If the EV takes none of that surplus, the Powerwall reaches about "
+                  f"{min(100.0, battery_pct + surplus_pct):.0f}% by 16:00"]
+    return "\n".join(lines)
+
+
 def _goal_text() -> str:
     try:
         goal = charge_goal.get_goal()
@@ -165,7 +214,8 @@ def _goal_text() -> str:
         return "unavailable"
 
 
-def build_prompt(now: datetime, advice: dict, yesterday: dict, instruction: str, goal: str = "none") -> str:
+def build_prompt(now: datetime, advice: dict, yesterday: dict, instruction: str, goal: str = "none",
+                 battery_pct: float | None = None) -> str:
     profile = advice.get("hourly_profile_7_days", [])
     reserve = advice.get("recommended_evening_battery_reserve_pct")
     start_lo, start_hi = PLAN_FIELDS["BATTERY_START_PCT"][2:]
@@ -183,6 +233,7 @@ def build_prompt(now: datetime, advice: dict, yesterday: dict, instruction: str,
         rate_table=_rate_table(now),
         export_rate=_export_credit_rate(),
         hourly_table=_hourly_table(now, profile),
+        energy_budget=_energy_budget(now, profile, battery_pct),
         history=_history_section(advice, yesterday),
         instruction=f"USER INSTRUCTION OVERRIDE: {instruction}" if instruction else "No special user instructions today.",
         reserve_note=f"around {reserve}% needed at 16:00" if reserve is not None
@@ -261,7 +312,7 @@ def run_daily_agent():
         yesterday = {}
     instruction = get_settings().get("USER_INSTRUCTION", "")
     goal = _goal_text()
-    prompt = build_prompt(now, advice, yesterday, instruction, goal)
+    prompt = build_prompt(now, advice, yesterday, instruction, goal, _latest_battery_pct(now))
 
     try:
         plan = llm_client.generate_json(prompt=prompt)
