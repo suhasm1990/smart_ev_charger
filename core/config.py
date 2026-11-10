@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -144,22 +146,13 @@ def _interval_minutes(value) -> int:
     return max(1, min(60, int(value)))
 
 
-def _opt_float(value):
-    if value is None or str(value).strip().lower() in ("", "none", "null"):
-        return None
-    return float(value)
-
-
-def _opt_int(value):
-    if value is None or str(value).strip().lower() in ("", "none", "null"):
-        return None
-    return int(value)
-
-
-def _opt_str(value):
-    if value is None or str(value).strip().lower() in ("", "none", "null"):
-        return None
-    return str(value)
+def _optional(cast):
+    """A cast that also accepts None / "" / "none" / "null" as "not set"."""
+    def convert(value):
+        if value is None or str(value).strip().lower() in ("", "none", "null"):
+            return None
+        return cast(value)
+    return convert
 
 
 DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
@@ -172,9 +165,8 @@ DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
     "ALLOWED_CHARGE_START_HOUR":     (int,   "0"),
     "ALLOWED_CHARGE_END_HOUR":       (int,   "24"),
     "MANUAL_MODE_OVERRIDE":          (str,   "default"),  # 'manual', 'auto', or 'default'
-    "MANUAL_GUARD_STOP_BATTERY_PCT": (_opt_float, "None"),
-    "MANUAL_GUARD_STOP_AT_HOUR":      (_opt_int,   "None"),
-    "MANUAL_GUARD_STOP_TIME":         (_opt_str,   "None"),
+    "MANUAL_GUARD_STOP_BATTERY_PCT": (_optional(float), "None"),
+    "MANUAL_GUARD_STOP_TIME":        (_optional(str),   "None"),  # ISO datetime
     "EV_MILES_PER_KWH":              (float, "3.53"),
     "LLM_PROVIDER":                  (str,   "gemini"),
     "LLM_MODEL":                     (str,   "gemini-2.5-flash"),
@@ -191,7 +183,6 @@ ALLOWED_CHARGE_START_HOUR     = _env_int("ALLOWED_CHARGE_START_HOUR", "0")
 ALLOWED_CHARGE_END_HOUR       = _env_int("ALLOWED_CHARGE_END_HOUR", "24")
 MANUAL_MODE_OVERRIDE          = _env("MANUAL_MODE_OVERRIDE", "default")  # 'manual', 'auto', or 'default'
 MANUAL_GUARD_STOP_BATTERY_PCT = None
-MANUAL_GUARD_STOP_AT_HOUR     = None
 MANUAL_GUARD_STOP_TIME        = None
 
 # Guards every read-modify-write of the dynamic keys above. Static env-derived
@@ -211,7 +202,6 @@ class ConfigSnapshot:
     ALLOWED_CHARGE_END_HOUR: int
     MANUAL_MODE_OVERRIDE: str
     MANUAL_GUARD_STOP_BATTERY_PCT: float | None
-    MANUAL_GUARD_STOP_AT_HOUR: int | None
     MANUAL_GUARD_STOP_TIME: str | None
     EV_MILES_PER_KWH: float
     LLM_PROVIDER: str
@@ -220,9 +210,7 @@ class ConfigSnapshot:
 
 def snapshot() -> ConfigSnapshot:
     """One consistent view of every dynamic key, for multi-field decisions."""
-    with _dynamic_lock:
-        g = globals()
-        return ConfigSnapshot(**{key: g[key] for key in DYNAMIC_CONFIG_SCHEMA})
+    return ConfigSnapshot(**_dynamic_values())
 
 
 def update(**changes):
@@ -251,8 +239,6 @@ _SYNC_WARNING_INTERVAL_S = 600.0
 
 def _warn_sync_failure(operation: str, error: Exception):
     global _last_sync_warning
-    import logging
-    import time
     now = time.monotonic()
     if _last_sync_warning is not None and now - _last_sync_warning < _SYNC_WARNING_INTERVAL_S:
         return
@@ -266,14 +252,28 @@ def _apply(source: dict):
         for key, (cast, _) in DYNAMIC_CONFIG_SCHEMA.items():
             if key not in source:
                 continue
-            value = source[key]
             try:
-                g[key] = cast(value)
+                g[key] = cast(source[key])
             except (ValueError, TypeError):
                 pass
         # Guard: start percentage must always be strictly greater than stop percentage
-        if g.get("BATTERY_START_PCT", 40.0) <= g.get("BATTERY_STOP_PCT", 25.0):
-            g["BATTERY_START_PCT"] = max(g.get("BATTERY_START_PCT", 40.0), g.get("BATTERY_STOP_PCT", 25.0) + 10.0)
+        if g["BATTERY_START_PCT"] <= g["BATTERY_STOP_PCT"]:
+            g["BATTERY_START_PCT"] = g["BATTERY_STOP_PCT"] + 10.0
+
+
+def _dynamic_values() -> dict:
+    with _dynamic_lock:
+        return {key: globals()[key] for key in DYNAMIC_CONFIG_SCHEMA}
+
+
+def _write_local(data: dict):
+    """Mirrors the runtime settings to the local JSON file (best effort)."""
+    try:
+        os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
+        with open(DYNAMIC_CONFIG_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except OSError:
+        pass
 
 
 def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
@@ -299,14 +299,7 @@ def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
 
         if sheets_data:
             _apply(sheets_data)
-            # Keep local config_dynamic.json in sync with Google Sheets
-            data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
-            try:
-                os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
-                with open(DYNAMIC_CONFIG_FILE, "w") as f:
-                    json.dump(data, f, indent=4)
-            except OSError:
-                pass
+            _write_local(_dynamic_values())  # keep the local mirror in sync with Sheets
 
         try:
             from core.state import state
@@ -317,20 +310,13 @@ def load_dynamic_config(remote: bool = True, force_refresh: bool = False):
 
 def save_dynamic_config(blocking: bool = True):
     """Persists runtime settings to Google Sheets (main source of truth) and mirrors to local JSON."""
-    with _dynamic_lock:
-        data = {key: globals().get(key) for key in DYNAMIC_CONFIG_SCHEMA}
+    data = _dynamic_values()
     try:
         from services.sheets_db import update_settings
         update_settings(data, blocking=blocking)
     except Exception as e:
         _warn_sync_failure("save", e)
-
-    try:
-        os.makedirs(os.path.dirname(DYNAMIC_CONFIG_FILE) or ".", exist_ok=True)
-        with open(DYNAMIC_CONFIG_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except OSError:
-        pass
+    _write_local(data)
 
 
 # Populate from environment and disk only; the cloud layer loads on first cycle or startup.

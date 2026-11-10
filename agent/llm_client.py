@@ -163,15 +163,8 @@ def extract_json_from_text(text: str) -> dict:
 
 def _is_transient_llm_error(e: Exception) -> bool:
     """Rate limits, provider 5xx, connection drops, and timeouts are retryable."""
-    transient_types = tuple(
-        t for t in (
-            getattr(litellm, "RateLimitError", None),
-            getattr(litellm, "InternalServerError", None),
-            getattr(litellm, "ServiceUnavailableError", None),
-            getattr(litellm, "APIConnectionError", None),
-            getattr(litellm, "Timeout", None),
-        ) if t is not None
-    )
+    names = ("RateLimitError", "InternalServerError", "ServiceUnavailableError", "APIConnectionError", "Timeout")
+    transient_types = tuple(t for t in (getattr(litellm, n, None) for n in names) if t is not None)
     if transient_types and isinstance(e, transient_types):
         return True
     msg = str(e).lower()
@@ -287,16 +280,21 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
     return result
 
 
-def _chat_turn(cfg: dict, messages: list, tool_map: dict, tool_schemas: list,
-               user_text: str, max_iterations: int) -> str:
+def _chat_turn(cfg: dict, messages: list, tool_map: dict, tool_schemas: list, max_iterations: int) -> str:
     """Runs the tool loop on one model, appending to `messages`; raises on API errors."""
     _, kwargs = _completion_kwargs(cfg)
+
+    def complete(**extra):
+        return _complete(messages=messages, temperature=0.1, request_timeout=CHAT_TIMEOUT,
+                         **kwargs, **extra).choices[0].message
+
+    def ask(prompt: str) -> str:
+        """Appends a user nudge and returns the model's plain-text answer."""
+        messages.append({"role": "user", "content": prompt})
+        return (complete().content or "").strip()
+
     for _ in range(max_iterations):
-        response = _complete(
-            messages=messages, tools=tool_schemas or None,
-            temperature=0.1, request_timeout=CHAT_TIMEOUT, **kwargs,
-        )
-        message = response.choices[0].message
+        message = complete(tools=tool_schemas or None)
         tool_calls = getattr(message, "tool_calls", None)
 
         entry = {"role": "assistant", "content": message.content or ""}
@@ -309,31 +307,12 @@ def _chat_turn(cfg: dict, messages: list, tool_map: dict, tool_schemas: list,
             if content:
                 return content
 
-            # If tools were executed previously, prompt for the final summary
+            # Empty reply after tools ran: ask once for the summary. An empty
+            # reply otherwise stays empty, and the caller shows the live status.
             if any(m.get("role") == "tool" for m in messages):
                 log.info("Model returned empty content after tools; prompting for summary...")
-                messages.append({"role": "user", "content": "Please summarise the results and current status in a friendly, concise response."})
-                followup = _complete(messages=messages, temperature=0.1, request_timeout=CHAT_TIMEOUT, **kwargs)
-                final_content = (followup.choices[0].message.content or "").strip()
-                if final_content:
-                    return final_content
-
-            # If still empty on the first turn without tools, recover gracefully
-            if not content and any(k in user_text.lower() for k in ("status", "charger", "battery", "solar", "state")):
-                log.info("Model returned empty content for status query; fetching get_system_status directly...")
-                status_str = _execute_tool(tool_map, "get_system_status", {})
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": "direct_status",
-                    "name": "get_system_status",
-                    "content": status_str,
-                })
-                messages.append({"role": "user", "content": "Summarise the current charger and energy status in friendly Telegram HTML."})
-                followup = _complete(messages=messages, temperature=0.1, request_timeout=CHAT_TIMEOUT, **kwargs)
-                final_content = (followup.choices[0].message.content or "").strip()
-                return final_content or status_str
-
-            return message.content or ""
+                return ask("Please summarise the results and current status in a friendly, concise response.")
+            return ""
 
         for call in tool_calls:
             name = call.function.name
@@ -348,9 +327,7 @@ def _chat_turn(cfg: dict, messages: list, tool_map: dict, tool_schemas: list,
             })
 
     # Iteration budget exhausted mid-tool-loop: ask for a closing summary.
-    messages.append({"role": "user", "content": "Summarise the actions taken and your conclusion."})
-    final = _complete(messages=messages, temperature=0.1, request_timeout=CHAT_TIMEOUT, **kwargs)
-    return final.choices[0].message.content or "Completed actions."
+    return ask("Summarise the actions taken and your conclusion.") or "Completed actions."
 
 
 def chat_with_tools(history: list, user_text: str, tools: list,
@@ -383,7 +360,7 @@ def chat_with_tools(history: list, user_text: str, tools: list,
     turn_start = len(messages)
     _last_used.cfg = cfg
     try:
-        reply = _chat_turn(cfg, messages, tool_map, tool_schemas, user_text, max_iterations)
+        reply = _chat_turn(cfg, messages, tool_map, tool_schemas, max_iterations)
     except Exception as e:
         tools_ran = any(m.get("role") == "tool" for m in messages[turn_start:])
         fallback = resolve_fallback_config(cfg) if _is_transient_llm_error(e) and not tools_ran else None
@@ -394,7 +371,7 @@ def chat_with_tools(history: list, user_text: str, tools: list,
                     f"retrying the turn on fallback '{fallback['model']}'")
         messages = fresh_messages()
         try:
-            reply = _chat_turn(fallback, messages, tool_map, tool_schemas, user_text, max_iterations)
+            reply = _chat_turn(fallback, messages, tool_map, tool_schemas, max_iterations)
         except Exception as fallback_error:
             log.error(f"Error in chat via fallback '{fallback['provider']}': {fallback_error}", exc_info=True)
             return f"Error interacting with the AI model: {fallback_error}", messages

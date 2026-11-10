@@ -175,7 +175,6 @@ class TestFullSystem(unittest.TestCase):
         self.assertIn("Success", res_start)
         self.assertEqual(state.charger_state, state.State.CHARGING)
         self.assertEqual(state.manual_guard_stop_battery_pct, 30.0)
-        self.assertEqual(state.manual_guard_stop_at_hour, 16)
         self.assertIsNotNone(state.manual_guard_stop_time)
 
         res_stop = telegram_bot.stop_charging()

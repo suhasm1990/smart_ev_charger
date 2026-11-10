@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from core import config
+from core.sensors import clamp_night_noise
 from core.state import get_session_minutes, state
 from core.tou import (
     ON_PEAK_HOURS,
@@ -136,27 +137,9 @@ def _readings(rows: list[dict], start: date = None, end: date = None):
 
         charging = _is_ev_charging_row(row)
 
-        # Nighttime sensor noise clamp and baseline preservation
-        is_night = (
-            hour >= getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_START", 21)
-            or hour < getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_END", 6)
-        )
-        solar_val = max(0.0, _num(row.get("solar_kw")))
-        if is_night and solar_val <= 0.25:
-            solar_val = 0.0
-
-        grid_val = _num(row.get("grid_kw"))
-        bat_val = _num(row.get("battery_kw"))
-        if is_night and solar_val == 0.0 and bat_val >= -0.05 and -0.25 <= grid_val < 0.0:
-            grid_val = 0.0
-
-        home_val = max(0.0, _num(row.get("home_kw")))
-        if is_night and solar_val == 0.0 and abs(bat_val) < 0.05:
-            baseline = getattr(config, "OVERNIGHT_BASELINE_KW", 0.5)
-            if home_val < baseline:
-                home_val = baseline
-            if grid_val < baseline:
-                grid_val = baseline
+        solar_val, home_val, grid_val = clamp_night_noise(
+            hour, max(0.0, _num(row.get("solar_kw"))), max(0.0, _num(row.get("home_kw"))),
+            _num(row.get("grid_kw")), _num(row.get("battery_kw")))
 
         yield Reading(
             day=day,
@@ -504,9 +487,7 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             "total_sessions_count": len(sessions),
             "total_charging_hours": round(total_minutes / 60.0, 1),
             "total_charging_minutes": total_minutes,
-            "charging_sessions_count": len(sessions),
             "charging_intervals_count": intervals,
-            "charging_15min_intervals_count": intervals,
             "ev_grid_kwh_pulled": from_grid,
             "solar_kwh_used": from_solar,
             "powerwall_battery_kwh_used": from_battery,
@@ -525,7 +506,7 @@ def get_daily_charging_cost(period: str = "today") -> dict:
 
 
 def _fixed_fee(days: int) -> float:
-    if getattr(config, "_IS_MID", True):
+    if config._IS_MID:
         if days >= 28:
             return config.UTILITY_FIXED_MONTHLY_FEE
         return round(config.UTILITY_FIXED_MONTHLY_FEE / 30.0 * days, 2)
@@ -533,7 +514,7 @@ def _fixed_fee(days: int) -> float:
 
 
 def _export_credit_rate() -> float:
-    if getattr(config, "_IS_MID", True):
+    if config._IS_MID:
         return config.UTILITY_SOLAR_EXPORT_CREDIT_RATE
     return config.UTILITY_SOLAR_EXPORT_CREDIT_RATE * config.UTILITY_TAX_MULTIPLIER
 
@@ -645,7 +626,7 @@ def get_bill_breakdown(period: str = "today") -> dict:
 
     fee = config.UTILITY_FIXED_MONTHLY_FEE
     fee_detail = f"${fee:.2f}/month, {days} day{'s' if days != 1 else ''}"
-    if getattr(config, "_IS_MID", True):
+    if config._IS_MID:
         bill = calculate_mid_bill_components(
             on_peak_kwh=grid_kwh["on_peak"], partial_peak_kwh=grid_kwh["partial_peak"],
             off_peak_kwh=grid_kwh["off_peak"], export_kwh=export_kwh, month=start.month, days=days,
@@ -807,12 +788,8 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
             entry["variable_grid_cost"] += r.grid_import_kw * h * r.rate
             entry["ev_grid_kwh"] += r.ev_grid_kw * h
             entry["ev_grid_cost"] += r.ev_grid_kw * h * r.rate
-            if r.tou_period == "on_peak":
-                entry["on_peak_grid_kwh"] += r.grid_import_kw * h
-            elif r.tou_period == "partial_peak":
-                entry["partial_peak_grid_kwh"] += r.grid_import_kw * h
-            else:
-                entry["off_peak_grid_kwh"] += r.grid_import_kw * h
+            bucket = r.tou_period if r.tou_period in ("on_peak", "partial_peak") else "off_peak"
+            entry[f"{bucket}_grid_kwh"] += r.grid_import_kw * h
         else:
             entry["solar_export_kwh"] += r.grid_export_kw * h
             entry["solar_export_credit"] += r.grid_export_kw * h * _export_credit_rate()
@@ -849,7 +826,7 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
     fixed = _fixed_fee(days_count)
 
     # Use exact MID tariff line-item reconciliation when configured for MID
-    if getattr(config, "_IS_MID", True):
+    if config._IS_MID:
         bill_comp = calculate_mid_bill_components(
             on_peak_kwh=totals["on_peak_grid_kwh"],
             partial_peak_kwh=totals["partial_peak_grid_kwh"],

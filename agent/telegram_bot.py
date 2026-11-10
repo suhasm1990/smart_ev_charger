@@ -13,33 +13,25 @@ from telebot.handler_backends import BaseMiddleware, CancelUpdate
 
 from agent import llm_client
 from agent.alerts import add_alert, list_alerts, remove_alert
-from core import config, state
+from core import config, lifecycle, state
 from core import goal as charge_goal
-from core.tou import RATE_SCHEDULES, get_tou_rate, provider, provider_label, weekday_schedule_description
-from reporting.csv_logger import (
-    get_daily_charging_cost as calc_cost,
+from core.tou import (
+    RATE_SCHEDULES,
+    get_tou_period,
+    get_tou_rate,
+    provider,
+    provider_label,
+    weekday_schedule_description,
 )
-from reporting.csv_logger import (
-    get_energy_saving_advice as calc_advice,
-)
-from reporting.csv_logger import (
-    get_home_energy_summary as calc_home_summary,
-)
-from reporting.csv_logger import (
-    get_monthly_billing_data,
-    get_recent_sessions,
-    get_session_minutes,
-)
+from reporting.csv_logger import get_daily_charging_cost as calc_cost
+from reporting.csv_logger import get_energy_saving_advice as calc_advice
+from reporting.csv_logger import get_home_energy_summary as calc_home_summary
+from reporting.csv_logger import get_monthly_billing_data, get_recent_sessions, get_session_minutes
 from reporting.logger import log, tail_lines
 from reporting.notifications import notify, strip_html
 from reporting.report_generator import generate_monthly_report_image
-from services.chargepoint import (
-    get_charger_status as get_cp_status,
-)
-from services.chargepoint import (
-    set_charger_amperage_limit,
-    start_charger,
-)
+from services.chargepoint import get_charger_status as get_cp_status
+from services.chargepoint import set_charger_amperage_limit, start_charger
 from services.charger_ops import stop_and_restore_defaults
 from services.netzero import get_powerwall_stats
 from services.sheets_db import add_user_instruction
@@ -100,12 +92,8 @@ def get_system_status() -> str:
         "is_charging": charging,
         "session_duration_minutes": round(get_session_minutes(), 1),
         "battery_pct": pw.get("battery_pct"),
-        "battery_activity": pw.get("battery_activity") or ("charging" if pw.get("battery_kw", 0) < -0.05 else ("discharging" if pw.get("battery_kw", 0) > 0.05 else "idle")),
-        "battery_flow": pw.get("battery_flow_desc") or (
-            f"charging at {abs(pw.get('battery_kw', 0))} kW from solar surplus"
-            if pw.get("battery_kw", 0) < -0.05
-            else (f"discharging {pw.get('battery_kw', 0)} kW to power home" if pw.get("battery_kw", 0) > 0.05 else "idle (0.0 kW)")
-        ),
+        "battery_activity": pw.get("battery_activity"),
+        "battery_flow": pw.get("battery_flow_desc"),
         "battery_kw": pw.get("battery_kw", 0.0),
         "solar_kw": pw.get("solar_kw"),
         "home_kw": pw.get("home_kw"),
@@ -132,7 +120,8 @@ def get_system_status() -> str:
         "manual_mode_override": config.MANUAL_MODE_OVERRIDE,
         "mode_behavior": (
             "MANUAL_MODE: Automatic solar and battery stop thresholds (e.g. stop at 35%) and charge windows are PAUSED. "
-            "Charging continues until the user manually stops it, switches back to auto, or morning reset at 09:00."
+            "Charging continues until the user manually stops it, switches back to auto, or the daily reset at "
+            f"{config.NIGHT_BLACKOUT_END_HOUR}:00."
             if is_manual else
             f"AUTO_MODE: Inside the charge window ({config.ALLOWED_CHARGE_START_HOUR}:00-"
             f"{config.ALLOWED_CHARGE_END_HOUR}:00), charging starts when the Powerwall is at or above "
@@ -140,7 +129,6 @@ def get_system_status() -> str:
             "Solar readings do not start or stop it. Night charging happens only for a miles goal, at the cheapest rate."
         ),
         "manual_guard_stop_battery_pct": state.manual_guard_stop_battery_pct,
-        "manual_guard_stop_at_hour": state.manual_guard_stop_at_hour,
         "manual_guard_stop_time": state.manual_guard_stop_time.isoformat() if state.manual_guard_stop_time else None,
     })
 
@@ -374,48 +362,45 @@ def start_charging(amperage: int = 20, stop_battery_pct: float = None,
     Args:
         amperage: Current limit in Amps (20 for normal, 32 for full power, range 8-32).
         stop_battery_pct: Optional battery percentage below which charging stops. Only pass if explicitly requested.
-        stop_at_hour: Optional hour (0-23) when charging stops. Only pass if explicitly requested.
+        stop_at_hour: Optional hour (0-23) when charging stops; the next time the clock reads that hour. Only pass if explicitly requested.
         duration_hours: Optional maximum duration in hours before stopping. Only pass if explicitly requested.
     """
+    def optional(value, cast):
+        try:
+            return cast(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    amperage = _clamp_amperage(amperage)
+    now = datetime.now(config.TZ)
+    hours, hour = optional(duration_hours, float), optional(stop_at_hour, int)
+    stop_times = [now + timedelta(hours=hours)] if hours else []
+    if hour is not None and 0 <= hour <= 23:
+        # The next time the clock reads that hour, so "until 6" set at 22:00 means tomorrow morning.
+        at = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        stop_times.append(at if at > now else at + timedelta(days=1))
+    state.set_manual_guards(optional(stop_battery_pct, float), min(stop_times, default=None))
     try:
-        amperage = _clamp_amperage(amperage)
-
-        def optional(value, cast):
-            if value is None:
-                return None
-            try:
-                return cast(value)
-            except (TypeError, ValueError):
-                return None
-
-        hours = optional(duration_hours, float)
-        state.set_manual_guards(
-            stop_battery_pct=optional(stop_battery_pct, float),
-            stop_at_hour=optional(stop_at_hour, int),
-            stop_time=datetime.now(config.TZ) + timedelta(hours=hours) if hours else None,
-        )
-
         start_charger(amperage)
-
-        state.begin_session(datetime.now(config.TZ), amperage)
-        config.update(MANUAL_MODE_OVERRIDE="manual")
-
-        guards = []
-        if state.manual_guard_stop_battery_pct is not None:
-            guards.append(f"stop if battery < {state.manual_guard_stop_battery_pct}%")
-        if state.manual_guard_stop_at_hour is not None:
-            guards.append(f"stop at {state.manual_guard_stop_at_hour}:00")
-        if state.manual_guard_stop_time is not None:
-            guards.append(f"stop at {state.manual_guard_stop_time.strftime('%H:%M')}")
-
-        notify(f"🟢 Charging started (Forced manually via Telegram at {amperage}A"
-               f"{f' — guards: {chr(44).join(guards)}' if guards else ''})")
-        _trigger_cycle()
-        return (f"Success: Sent start command at {amperage}A. "
-                f"Active guardrails: {', '.join(guards) if guards else 'default blackout/battery limits'}. "
-                f"Switched to Manual override.")
     except Exception as e:
+        state.clear_manual_guards()  # nothing started, so nothing to guard
         return f"Error starting charger: {e}"
+
+    state.begin_session(now, amperage)
+    config.update(MANUAL_MODE_OVERRIDE="manual")
+
+    guards = []
+    if state.manual_guard_stop_battery_pct is not None:
+        guards.append(f"stop if battery < {state.manual_guard_stop_battery_pct}%")
+    if state.manual_guard_stop_time is not None:
+        guards.append(f"stop at {state.manual_guard_stop_time:%a %H:%M}")
+
+    notify(f"🟢 Charging started (Forced manually via Telegram at {amperage}A"
+           f"{' — guards: ' + ', '.join(guards) if guards else ''})")
+    _trigger_cycle()
+    return (f"Success: Sent start command at {amperage}A. "
+            f"Active guardrails: {', '.join(guards) or 'none (runs until stopped or the daily reset)'}. "
+            f"Switched to Manual override.")
 
 
 def stop_charging() -> str:
@@ -594,20 +579,9 @@ def _schedule_exit(reason: str = "Telegram /update", delay: float = 2.0):
     """Exits after a short delay so the acknowledgement reaches Telegram first, ensuring all Sheets writes flush."""
     def worker():
         time.sleep(delay)
-        log.info("RESTART | Flushing all pending queues to Google Sheets before exit...")
-        try:
-            from services.sheets_db import flush
-            flush(timeout=10.0)
-        except Exception:
-            pass
-        try:
-            from reporting.notifications import notify_flush
-            notify_flush(2.0)
-        except Exception:
-            pass
-        log.info("RESTART | Exiting to trigger a container restart and git pull.")
-        from core.lifecycle import record_exit
-        record_exit(reason)
+        log.info("RESTART | Flushing pending writes, then exiting to trigger a container restart and git pull.")
+        lifecycle.flush_pending()
+        lifecycle.record_exit(reason)
         os._exit(0)
     threading.Thread(target=worker, daemon=True, name="Restart").start()
 
@@ -634,21 +608,59 @@ def generate_monthly_report(period: str = "last_month") -> str:
                        "note": "Monthly report PNG generated successfully."})
 
 
+def _send_report_photo(bot, chat_id, path: str) -> bool:
+    """Sends a generated bill infographic; False when there is no image to send."""
+    if not (path and os.path.exists(path)):
+        return False
+    with open(path, "rb") as f:
+        bot.send_photo(chat_id, photo=f, caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>",
+                       parse_mode="HTML")
+    return True
+
+
 def send_monthly_telegram_report(period: str = "last_month"):
     """Sends the monthly bill infographic to the configured Telegram user."""
     if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_ALLOWED_USER_ID):
         return
     try:
-        path = generate_monthly_report_image(period=period)
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                telebot.TeleBot(config.TELEGRAM_BOT_TOKEN).send_photo(
-                    config.TELEGRAM_ALLOWED_USER_ID, photo=f,
-                    caption="📊 <b>Monthly Utility & Energy Bill Briefing</b>", parse_mode="HTML",
-                )
+        if _send_report_photo(telebot.TeleBot(config.TELEGRAM_BOT_TOKEN), config.TELEGRAM_ALLOWED_USER_ID,
+                              generate_monthly_report_image(period=period)):
             log.info("Sent the monthly report image to Telegram.")
     except Exception as e:
         log.error(f"Failed to send the monthly report to Telegram: {e}")
+
+
+def status_text() -> str:
+    """A compact live status card built without the AI model, so it works when the model is down."""
+    s = json.loads(get_system_status())
+    now = datetime.now(config.TZ)
+
+    def kw(key):
+        return "–" if s.get(key) is None else f"{s[key]} kW"
+
+    if s["is_charging"]:
+        car = (f"Charging at {s['amperage_limit']}A · {s['session_duration_minutes']:.0f} min · "
+               f"{s['cp_session_energy_kwh']:.1f} kWh · ~{s['cp_miles_added']:.0f} mi")
+    else:
+        car = "Plugged in, not charging" if s["is_plugged_in"] else "Unplugged"
+    battery = "–" if s["battery_pct"] is None else f"{s['battery_pct']}% ({s['battery_activity']})"
+    lines = [
+        f"⚡ <b>Status</b> · {now:%H:%M} · {config.MANUAL_MODE_OVERRIDE.upper()} mode",
+        f"🚗 {car}",
+        f"🔋 Powerwall {battery}",
+        f"☀️ Solar {kw('solar_kw')} · 🏠 Home {kw('home_kw')} · 🔌 Grid {kw('grid_kw')}",
+        f"⚙️ Window {config.ALLOWED_CHARGE_START_HOUR}:00–{config.ALLOWED_CHARGE_END_HOUR}:00 · "
+        f"start ≥{config.BATTERY_START_PCT:g}% · stop &lt;{config.BATTERY_STOP_PCT:g}%",
+        f"💲 {get_tou_period(now).replace('_', '-')} ${get_tou_rate(now):.3f}/kWh",
+    ]
+    if s["miles_goal"] != "none":
+        lines.append(f"🎯 {html.escape(s['miles_goal'])}")
+    if s["manual_guard_stop_battery_pct"] is not None or state.manual_guard_stop_time:
+        guards = [f"battery &lt; {s['manual_guard_stop_battery_pct']}%"] if s["manual_guard_stop_battery_pct"] is not None else []
+        if state.manual_guard_stop_time:
+            guards.append(f"{state.manual_guard_stop_time:%a %H:%M}")
+        lines.append(f"🛑 Manual charge stops at: {' or '.join(guards)}")
+    return "\n".join(lines)
 
 
 # ── Response formatting ─────────────────────────────────────────────────────
@@ -709,7 +721,7 @@ SYSTEM_INSTRUCTION = (
     "- Alerts & models: Call 'manage_custom_alert' or 'switch_llm_model'.\n"
     "- Daily planner & system: Call 'trigger_daily_agent', 'generate_monthly_report', 'read_application_logs', 'read_source_code', or 'restart_and_update_application'.\n\n"
     "CRITICAL OPERATIONAL RULES:\n"
-    "1. When asked how many charging sessions happened (e.g. 'How many charging sessions happened today?'), report 'total_sessions_count' from 'get_daily_charging_cost'. NEVER report 'charging_15min_intervals_count' (which counts 15-minute polling rows, not sessions).\n"
+    "1. When asked how many charging sessions happened (e.g. 'How many charging sessions happened today?'), report 'total_sessions_count' from 'get_daily_charging_cost'. NEVER report 'charging_intervals_count' (which counts polling rows, not sessions).\n"
     "2. When the user asks for session details or history for a specific day (or asks 'Total charging session details' after asking about today/yesterday), ALWAYS pass date_or_period='today' (or the specified date) to 'get_recent_charging_sessions' so sessions from other days are excluded.\n"
     "3. Whenever the user asks about status, metrics, battery, solar, or costs, ALWAYS call the relevant tool to fetch fresh live data. Never guess or use stale numbers.\n"
     "4. In MANUAL mode, automatic solar optimization and battery-stop thresholds are paused until auto mode is restored.\n"
@@ -751,6 +763,19 @@ def handle_message_with_llm(text: str) -> str:
 
 # ── Polling loop ────────────────────────────────────────────────────────────
 
+# Shown in Telegram's command menu and in /help.
+COMMANDS = (
+    ("status", "Live charger, Powerwall and solar status"),
+    ("stop", "Stop charging now"),
+    ("auto", "Return to automatic charging"),
+    ("plan", "Run the AI planner now"),
+    ("bill", "Monthly bill infographic"),
+    ("logs", "Recent events, e.g. /logs 30 ERROR"),
+    ("model", "Show or switch the AI model"),
+    ("update", "Pull the latest code and restart"),
+    ("clear", "Forget the chat history"),
+)
+
 HELP_TEXT = (
     "🔋 <b>Welcome to the Smart EV Charger Assistant!</b>\n\n"
     "I'm powered by AI and can control your solar charger. Text me in natural language, for example:\n"
@@ -761,7 +786,7 @@ HELP_TEXT = (
     "• <i>'Charge with full power'</i>\n"
     "• <i>'Stop charging when battery goes below 40%'</i>\n"
     "• <i>'Turn on manual mode'</i>\n\n"
-    "<b>Commands:</b> /model, /logs, /daily_agent, /monthly_report, /update, /clear"
+    "<b>Instant commands (no AI needed):</b>\n" + "\n".join(f"/{name} – {text}" for name, text in COMMANDS)
 )
 
 
@@ -829,6 +854,19 @@ def _bot_polling_loop():
         bot.reply_to(message, switch_llm_model(parts[1], parts[2] if len(parts) > 2 else None),
                      parse_mode="HTML")
 
+    @command("status")
+    def _status(message):
+        bot.send_chat_action(message.chat.id, "typing")
+        bot.reply_to(message, status_text(), parse_mode="HTML")
+
+    @command("stop")
+    def _stop(message):
+        bot.reply_to(message, html.escape(stop_charging()))
+
+    @command("auto")
+    def _auto(message):
+        bot.reply_to(message, html.escape(set_override_mode("auto")))
+
     @command("restart", "update")
     def _restart(message):
         bot.reply_to(message, "🔄 <b>Restarting...</b>\nPulling the latest code. Back online in ~5-10s.",
@@ -851,12 +889,7 @@ def _bot_polling_loop():
         bot.send_chat_action(message.chat.id, "upload_photo")
         args = (message.text or "").split(maxsplit=1)
         period = args[1].strip() if len(args) > 1 else "last_month"
-        path = generate_monthly_report_image(period)
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                bot.send_photo(message.chat.id, photo=f,
-                               caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>", parse_mode="HTML")
-        else:
+        if not _send_report_photo(bot, message.chat.id, generate_monthly_report_image(period)):
             bot.reply_to(message, f"Error: could not generate a monthly report for '{period}'.")
 
     @command("logs", "log", "syslog")
@@ -869,53 +902,38 @@ def _bot_polling_loop():
         bot.reply_to(message, f"📋 <b>Recent System Logs</b>\n\n<pre>{html.escape(text[-TELEGRAM_MAX_CHARS:])}</pre>",
                      parse_mode="HTML")
 
+    def _reply(message, text: str):
+        """Replies in Telegram HTML; long or unparseable replies fall back to plain-text chunks."""
+        if len(text) <= TELEGRAM_MAX_CHARS:
+            try:
+                bot.reply_to(message, text, parse_mode="HTML")
+                return
+            except telebot.apihelper.ApiTelegramException as e:
+                log.warning(f"Telegram HTML parse error: {e}. Retrying as plain text.")
+        for chunk in telebot.util.smart_split(strip_html(text).strip(), TELEGRAM_MAX_CHARS):
+            bot.reply_to(message, chunk)
+
     @bot.message_handler(func=lambda message: True)
     def _chat(message):
         bot.send_chat_action(message.chat.id, "typing")
         _pending_image.path = None
         try:
-            raw = handle_message_with_llm(message.text)
-            cleaned = clean_telegram_html(raw)
-
+            cleaned = clean_telegram_html(handle_message_with_llm(message.text))
+            path, _pending_image.path = _pending_image.path, None
             if cleaned:
-                try:
-                    bot.reply_to(message, cleaned, parse_mode="HTML")
-                except telebot.apihelper.ApiTelegramException as e:
-                    log.warning(f"Telegram HTML parse error: {e}. Retrying as plain text.")
-                    plain = strip_html(cleaned).strip()
-                    if plain:
-                        bot.reply_to(message, plain, parse_mode=None)
-            elif not getattr(_pending_image, "path", None):
-                user_msg = (message.text or "").lower()
-                if any(k in user_msg for k in ("status", "charger", "battery", "solar", "state")):
-                    try:
-                        status_json = json.loads(get_system_status())
-                        status_reply = (
-                            f"⚡ <b>Charger State</b>: <code>{status_json.get('charger_state', 'IDLE')}</code>\n"
-                            f"🔋 <b>Battery</b>: {status_json.get('battery_pct', 0)}%\n"
-                            f"☀️ <b>Solar</b>: {status_json.get('solar_kw', 0)} kW | 🏠 <b>Home</b>: {status_json.get('home_kw', 0)} kW\n"
-                            f"🔌 <b>Plugged in</b>: {'Yes' if status_json.get('is_plugged_in') else 'No'}\n"
-                            f"⚙️ <b>Amperage</b>: {status_json.get('amperage_limit', 20)}A"
-                        )
-                        bot.reply_to(message, status_reply, parse_mode="HTML")
-                    except Exception:
-                        bot.reply_to(message, "✅ Request received. Check /logs for recent activity.", parse_mode=None)
-                else:
-                    bot.reply_to(message, "✅ Request received. Check /logs for recent activity.", parse_mode=None)
-
-            path = getattr(_pending_image, "path", None)
-            if path and os.path.exists(path):
-                try:
-                    with open(path, "rb") as f:
-                        bot.send_photo(message.chat.id, photo=f,
-                                       caption="⚡ <b>Monthly Electricity & Utility Bill Report</b>",
-                                       parse_mode="HTML")
-                except Exception as e:
-                    log.error(f"Failed to send the report photo: {e}")
-                _pending_image.path = None
+                _reply(message, cleaned)
+            elif not path:
+                # The model returned nothing; the live status is the most useful answer.
+                bot.reply_to(message, status_text(), parse_mode="HTML")
+            _send_report_photo(bot, message.chat.id, path)
         except Exception as e:
             log.error(f"Telegram bot error: {e}", exc_info=True)
             bot.reply_to(message, f"Sorry, I encountered an error: {e}")
+
+    try:
+        bot.set_my_commands([telebot.types.BotCommand(name, text) for name, text in COMMANDS])
+    except Exception as e:
+        log.warning(f"Could not register the Telegram command menu: {e}")
 
     log.info("Telegram bot polling started.")
     while True:

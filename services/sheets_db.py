@@ -332,6 +332,7 @@ _settings_cache: dict | None = None
 _settings_cache_time = 0.0
 # Guards only the cache tuple above — never held across a Sheets round-trip.
 _settings_lock = threading.Lock()
+_settings_write_lock = threading.Lock()
 
 
 def get_settings(force_refresh: bool = False) -> dict:
@@ -365,12 +366,15 @@ def _write_settings(patch: dict, remove: set = frozenset()) -> bool:
         ws = get_or_create_worksheet(SETTINGS_TAB, headers=["Key", "Value"], rows=100, cols=2)
         if not ws:
             return False
-        merged = {k: v for k, v in get_settings(force_refresh=True).items() if k not in remove}
-        merged.update({k: v for k, v in patch.items() if k not in remove})
-        ws.clear()
-        ws.update(range_name="A1", values=[["Key", "Value"]] + [[str(k), str(v)] for k, v in merged.items()])
-        with _settings_lock:
-            _settings_cache, _settings_cache_time = {k: str(v) for k, v in merged.items()}, time.time()
+        # One writer at a time: the settings worker and a blocking caller would
+        # otherwise each read the tab, then overwrite the other's key.
+        with _settings_write_lock:
+            merged = {k: v for k, v in get_settings(force_refresh=True).items() if k not in remove}
+            merged.update({k: v for k, v in patch.items() if k not in remove})
+            ws.clear()
+            ws.update(range_name="A1", values=[["Key", "Value"]] + [[str(k), str(v)] for k, v in merged.items()])
+            with _settings_lock:
+                _settings_cache, _settings_cache_time = {k: str(v) for k, v in merged.items()}, time.time()
         return True
     except Exception as e:
         log.error(f"Failed to update settings in Sheets: {e}")

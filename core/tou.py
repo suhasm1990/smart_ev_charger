@@ -30,7 +30,7 @@ PARTIAL_PEAK_HOURS = ((13, 17), (20, 23))
 
 
 def provider() -> str:
-    return getattr(config, "UTILITY_PROVIDER", "MID").upper()
+    return config.UTILITY_PROVIDER.upper()
 
 
 def provider_label() -> str:
@@ -112,8 +112,8 @@ def get_base_tou_rate(now: datetime) -> float:
 def get_tou_rate(now: datetime) -> float:
     """Effective delivered rate per kWh, including surcharges and local taxes."""
     base = get_base_tou_rate(now)
-    adder = getattr(config, "UTILITY_VOLUMETRIC_ADDER", 0.0151)
-    tax = getattr(config, "UTILITY_TAX_MULTIPLIER", 1.065)
+    adder = config.UTILITY_VOLUMETRIC_ADDER
+    tax = config.UTILITY_TAX_MULTIPLIER
     return round((base + adder) * tax, 5)
 
 
@@ -165,17 +165,17 @@ def calculate_mid_bill_components(
     off_peak_cost = round(off_peak_kwh * schedule["off_peak"], 2)
     energy_cost = round(on_peak_cost + partial_peak_cost + off_peak_cost, 2)
 
-    eea_cost = round(total_delivered_kwh * getattr(config, "UTILITY_EEA_RATE", 0.0120), 2)
-    cia_cost = round(total_delivered_kwh * getattr(config, "UTILITY_CIA_RATE", 0.0028), 2)
-    state_surcharge = round(total_delivered_kwh * getattr(config, "UTILITY_STATE_SURCHARGE_RATE", 0.0003), 2)
+    eea_cost = round(total_delivered_kwh * config.UTILITY_EEA_RATE, 2)
+    cia_cost = round(total_delivered_kwh * config.UTILITY_CIA_RATE, 2)
+    state_surcharge = round(total_delivered_kwh * config.UTILITY_STATE_SURCHARGE_RATE, 2)
     volumetric_adjustments = round(eea_cost + cia_cost + state_surcharge, 2)
 
     # Mountain House Surcharge applies to MID utility charges (excludes State surcharge)
     mid_subtotal = round(fixed_fee + energy_cost + eea_cost + cia_cost, 2)
-    local_surcharge_rate = getattr(config, "UTILITY_LOCAL_SURCHARGE_PCT", 0.065)
+    local_surcharge_rate = config.UTILITY_LOCAL_SURCHARGE_PCT
     local_surcharge = round(mid_subtotal * local_surcharge_rate, 2)
 
-    export_credit_rate = getattr(config, "UTILITY_SOLAR_EXPORT_CREDIT_RATE", 0.076)
+    export_credit_rate = config.UTILITY_SOLAR_EXPORT_CREDIT_RATE
     export_credit = round(export_kwh * export_credit_rate, 2)
 
     net_bill = round(max(0.0, mid_subtotal + local_surcharge + state_surcharge - export_credit), 2)
