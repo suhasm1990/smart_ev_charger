@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import unittest
+from datetime import datetime
 from unittest import mock
 
 from core import config
@@ -114,22 +115,23 @@ class TestManualGuardPersistence(ConfigTestCase):
         self._save_patch.stop()
         with mock.patch("services.sheets_db.update_settings", return_value=True):
             # Setting guards persists to config and JSON
-            state.set_manual_guards(stop_battery_pct=20.0, stop_at_hour=16, stop_time=None)
+            stop_at = datetime(2026, 8, 17, 16, 0, tzinfo=config.TZ)
+            state.set_manual_guards(stop_battery_pct=20.0, stop_time=stop_at)
             self.assertEqual(config.MANUAL_GUARD_STOP_BATTERY_PCT, 20.0)
-            self.assertEqual(config.MANUAL_GUARD_STOP_AT_HOUR, 16)
+            self.assertEqual(config.MANUAL_GUARD_STOP_TIME, stop_at.isoformat())
             self.assertEqual(state.manual_guard_stop_battery_pct, 20.0)
 
             # Simulate fresh app startup
             config.load_dynamic_config(remote=False)
             fresh_state = state.__class__()
             self.assertEqual(fresh_state.manual_guard_stop_battery_pct, 20.0)
-            self.assertEqual(fresh_state.manual_guard_stop_at_hour, 16)
+            self.assertEqual(fresh_state.manual_guard_stop_time, stop_at)
 
             # Clearing guards clears both in state and in config
             state.clear_manual_guards()
             self.assertIsNone(state.manual_guard_stop_battery_pct)
             self.assertIsNone(config.MANUAL_GUARD_STOP_BATTERY_PCT)
-            self.assertIsNone(config.MANUAL_GUARD_STOP_AT_HOUR)
+            self.assertIsNone(config.MANUAL_GUARD_STOP_TIME)
 
 
 if __name__ == "__main__":

@@ -315,6 +315,7 @@ function renderEV(d) {
     html += `<div class="headline">No charging sessions in the recent log</div>`;
   }
   if (t && t.sessions > 0) html += sourceSplit(t);
+  if (ev.goal) html += `<div class="note">🎯 Miles goal: ${esc(ev.goal)}.</div>`;
   $("ev-body").innerHTML = html;
 }
 

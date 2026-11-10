@@ -26,6 +26,20 @@ def record_exit(reason: str):
         log.warning(f"Could not write exit marker: {e}")
 
 
+def flush_pending(sheets_timeout: float = 10.0, notify_timeout: float = 2.0):
+    """Best-effort wait for queued Sheets writes and notifications before the process exits."""
+    try:
+        import services
+        services.flush(timeout=sheets_timeout)
+    except Exception:
+        pass
+    try:
+        from reporting.notifications import notify_flush
+        notify_flush(notify_timeout)
+    except Exception:
+        pass
+
+
 def _take_exit_marker() -> dict | None:
     try:
         with open(EXIT_MARKER_FILE) as f:

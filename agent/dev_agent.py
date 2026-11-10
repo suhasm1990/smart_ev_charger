@@ -46,6 +46,14 @@ def dev_write_file(file_path: str, content: str) -> str:
     except Exception as e:
         return f"Error writing file {file_path}: {e}"
 
+def _walk(directory: str):
+    """Yields file paths under `directory`, skipping hidden folders and caches."""
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules')]
+        for name in files:
+            yield os.path.join(root, name)
+
+
 def dev_list_files(directory: str = ".") -> str:
     """Lists code files in the repository.
 
@@ -53,16 +61,12 @@ def dev_list_files(directory: str = ".") -> str:
         directory: Directory path to list (default '.').
     """
     try:
-        items = []
-        for root, dirs, files in os.walk(directory):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules')]
-            for f in files:
-                if not f.startswith('.'):
-                    rel = os.path.relpath(os.path.join(root, f), directory)
-                    items.append(rel)
-        return "\n".join(sorted(items)[:100]) or "No files found."
+        items = sorted(os.path.relpath(path, directory) for path in _walk(directory)
+                       if not os.path.basename(path).startswith('.'))
+        return "\n".join(items[:100]) or "No files found."
     except Exception as e:
         return f"Error listing directory {directory}: {e}"
+
 
 def dev_search_code(pattern: str, directory: str = ".") -> str:
     """Searches for a keyword or regex pattern across codebase files.
@@ -74,23 +78,22 @@ def dev_search_code(pattern: str, directory: str = ".") -> str:
     matches = []
     try:
         regex = re.compile(pattern, re.IGNORECASE)
-        for root, dirs, files in os.walk(directory):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', 'node_modules')]
-            for f in files:
-                if f.endswith(('.py', '.json', '.sh', '.md', '.txt', 'Dockerfile', '.yml', '.yaml')):
-                    path = os.path.join(root, f)
-                    try:
-                        with open(path, 'r', encoding='utf-8', errors='replace') as fp:
-                            for idx, line in enumerate(fp, 1):
-                                if regex.search(line):
-                                    matches.append(f"{path}:{idx}: {line.strip()}")
-                                    if len(matches) >= 30:
-                                        return "\n".join(matches)
-                    except Exception:
-                        pass
+        for path in _walk(directory):
+            if not path.endswith(('.py', '.json', '.sh', '.md', '.txt', 'Dockerfile', '.yml', '.yaml')):
+                continue
+            try:
+                with open(path, encoding='utf-8', errors='replace') as fp:
+                    for idx, line in enumerate(fp, 1):
+                        if regex.search(line):
+                            matches.append(f"{path}:{idx}: {line.strip()}")
+                            if len(matches) >= 30:
+                                return "\n".join(matches)
+            except OSError:
+                pass
         return "\n".join(matches) or f"No matches found for '{pattern}'"
     except Exception as e:
         return f"Error searching code: {e}"
+
 
 def dev_run_command(command: str) -> str:
     """Executes a shell command (such as pytest, git, or gh CLI) in the workspace.
@@ -168,29 +171,12 @@ def run_dev_agent_loop(task_description: str, pr_number: int = None) -> str:
 
     if pr_number:
         user_prompt = (
-            f"Update GitHub PR #{pr_number} with these requested changes:\n"
-            f"{task_description}\n\n"
-            f"1. Run 'gh pr checkout {pr_number}'.\n"
-            f"2. Apply the required modifications using dev_write_file.\n"
-            f"3. Run tests.\n"
-            f"4. Commit and push updates using 'git push'.\n"
-            f"5. Output the PR link and a summary."
+            f"Update GitHub PR #{pr_number} with these requested changes:\n{task_description}\n\n"
+            f"Start with 'gh pr checkout {pr_number}', then modify, test, commit and 'git push'. "
+            f"Output the PR link and a summary."
         )
     else:
-        user_prompt = (
-            f"Investigate and resolve the following issue / feature request:\n"
-            f"{task_description}\n\n"
-            f"Workflow:\n"
-            f"1. Inspect relevant files using dev_read_file or dev_search_code.\n"
-            f"2. Apply necessary modifications using dev_write_file.\n"
-            f"3. When files are modified, you MUST run dev_run_command with:\n"
-            f"   git checkout -b <branch_name>\n"
-            f"   git add -A\n"
-            f"   git commit -m '<commit message>'\n"
-            f"   git push -u origin <branch_name>\n"
-            f"   gh pr create --title '<Title>' --body '<Summary>'\n"
-            f"4. If no code changes are required: provide a clear explanation of your findings."
-        )
+        user_prompt = f"Investigate and resolve the following issue / feature request:\n{task_description}"
 
     log.info(f"DEV AGENT | Starting autonomous loop for task: {task_description[:80]}...")
 

@@ -9,6 +9,7 @@ import threading
 from datetime import datetime, timedelta
 
 from core import config, state
+from core import goal as charge_goal
 from core.tou import get_tou_period, get_tou_rate, is_in_night_blackout, provider_label
 from reporting import csv_logger
 
@@ -64,6 +65,15 @@ def _cost_today(bill: dict) -> dict:
     }
 
 
+def _goal_text() -> str | None:
+    """The active miles goal as "40 of 100 miles added; ...", or None."""
+    try:
+        goal = charge_goal.get_goal()
+        return charge_goal.describe(goal, charge_goal.progress(goal)) if goal else None
+    except Exception:
+        return None
+
+
 def _build_summary() -> dict:
     """The day's totals and history; the only part that reads the telemetry log."""
     energy = csv_logger.get_home_energy_summary("today")
@@ -91,6 +101,7 @@ def _build_summary() -> dict:
         },
         "last_session": last[0] if last else None,
         "hourly": csv_logger.get_hourly_profile("today"),
+        "goal": _goal_text(),
     }
 
 
@@ -168,6 +179,7 @@ def get_dashboard_data() -> dict:
             "today": summary["ev_today"],
             "last_session": summary["last_session"],
             "last_stop_reason": snap.session_stop_reason,
+            "goal": summary["goal"],
         },
         "energy_today": summary["energy"],
         "hourly": summary["hourly"],

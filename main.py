@@ -100,7 +100,6 @@ def _manual_guard_breach(stats: dict, now: datetime, cp_status: dict) -> tuple[s
     """Returns (reason, notification) for the first tripped manual guardrail."""
     guard_stop_pct = state.manual_guard_stop_battery_pct
     battery = stats["battery_pct"]
-    stop_hour = state.manual_guard_stop_at_hour
 
     checks = [
         (not cp_status.get("is_plugged_in", True),
@@ -117,13 +116,9 @@ def _manual_guard_breach(stats: dict, now: datetime, cp_status: dict) -> tuple[s
          f"🔴 <b>Manual Charging Stopped (Guardrail Triggered)</b>\nPowerwall battery dropped to <b>{battery}%</b>, "
          f"below your <b>{guard_stop_pct}%</b> stop limit.\nReturned to <b>Auto mode</b>."),
         (state.manual_guard_stop_time is not None and now >= state.manual_guard_stop_time,
-         "Manual charging duration limit reached",
-         "🔴 <b>Manual Charging Stopped (Time Limit Reached)</b>\nTarget charging duration completed.\n"
-         "Returned to <b>Auto mode</b>."),
-        (stop_hour is not None and now.hour >= stop_hour,
-         f"Reached scheduled stop hour ({stop_hour}:00)",
-         f"🔴 <b>Manual Charging Stopped (Scheduled Cutoff)</b>\nReached the scheduled stop time "
-         f"(<b>{now.strftime('%H:%M')}</b>).\nReturned to <b>Auto mode</b>."),
+         "Manual charging time limit reached",
+         f"🔴 <b>Manual Charging Stopped (Time Limit Reached)</b>\nReached the scheduled stop time "
+         f"(<b>{now:%H:%M}</b>).\nReturned to <b>Auto mode</b>."),
     ]
     return next(((reason, message) for tripped, reason, message in checks if tripped), None)
 
@@ -162,15 +157,31 @@ def _run_manual_cycle(stats: dict, cp_status: dict, now: datetime, tou: str):
     log_to_csv(stats, "manual", "Manual override active — automation paused", now)
 
 
-def _handle_protective_stop(stats: dict, now: datetime, label: str, reason: str, csv_reason: str) -> bool:
-    """Stops charging for off-grid or storm conditions. Returns True if tripped."""
+def _protective_stop(stats: dict, now: datetime) -> bool:
+    """Stops charging while the Powerwall is off-grid or in storm mode. Returns True if tripped."""
+    if stats.get("island_mode") == "off_grid":
+        label, reason = "OFF-GRID DETECTED", "Powerwall off-grid — protecting home load"
+    elif stats.get("storm_mode"):
+        label, reason = "STORM MODE ACTIVE", "Storm mode active — preserving backup reserve"
+    else:
+        return False
     log.warning(f"{label} | Skipping cycle | battery={stats['battery_pct']}%")
     if state.charger_state == state.State.CHARGING:
         log.warning(f"{label} | Active session detected — stopping charger")
         stop_charger()
         state.end_session(reason)
-    log_to_csv(stats, "skipped", csv_reason, now)
+        notify(f"🔴 Charging stopped\n{reason}")
+    log_to_csv(stats, "skipped", reason, now)
     return True
+
+
+def _session_summary(cp_status: dict, minutes: float) -> str:
+    """"95 min · 6.3 kWh · ~22 mi" from the charger's own meter (time only if it reported none)."""
+    kwh = cp_status.get("energy_kwh") or 0.0
+    if not kwh:
+        return f"{minutes:.0f} min"
+    miles = cp_status.get("miles_added") or kwh * config.EV_MILES_PER_KWH
+    return f"{minutes:.0f} min · {kwh:.1f} kWh · ~{miles:.0f} mi"
 
 
 def _touch_heartbeat():
@@ -223,22 +234,11 @@ def run_cycle():
                 f"charger_state={state.charger_state}"
             )
 
-        if stats.get("island_mode") == "off_grid":
-            _handle_protective_stop(
-                stats, now, "OFF-GRID DETECTED",
-                "Powerwall went off-grid — stopping to protect home",
-                "Powerwall off-grid — protecting home load")
-            _touch_heartbeat()
-            return
-        if stats.get("storm_mode"):
-            _handle_protective_stop(
-                stats, now, "STORM MODE ACTIVE",
-                "Storm mode activated — stopping to preserve backup reserve",
-                "Storm mode active — preserving backup reserve")
+        if _protective_stop(stats, now):
             _touch_heartbeat()
             return
 
-        stats["goal_night_kwh"] = _goal_night_kwh(now)
+        stats["goal_night_kwh"] = _goal_night_kwh(now, plugged_in=stats.get("is_plugged_in", True))
         action, reason = evaluate(stats, now)
         log.info(
             f"CYCLE | action={action} | state={state.charger_state} | tou={tou} | "
@@ -276,8 +276,10 @@ def run_cycle():
             )
             notify(
                 f"🔴 Charging stopped\n{reason}\n"
-                f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW | Session: {duration:.0f} min"
+                f"Battery: {stats['battery_pct']}% | Solar: {stats['solar_kw']}kW\n"
+                f"Session: {_session_summary(cp_status, duration)}"
             )
+            # The session start is kept until the row is logged, so it records the duration.
             state.charger_state = state.State.IDLE
             state.session_stop_reason = reason
 
@@ -296,7 +298,7 @@ def run_cycle():
         _note_api_failure(f"Encountered repeated cycle errors ({type(e).__name__})")
 
 
-def _goal_night_kwh(now: datetime) -> float:
+def _goal_night_kwh(now: datetime, plugged_in: bool = True) -> float:
     """Tracks the miles goal: clears it once met or expired, else returns the kWh
     it still needs beyond expected solar (which the decision may charge at night)."""
     try:
@@ -304,16 +306,22 @@ def _goal_night_kwh(now: datetime) -> float:
         if goal is None:
             return 0.0
         prog = charge_goal.progress(goal)
+        summary = charge_goal.describe(goal, prog)
         if prog["remaining_kwh"] <= 0:
             charge_goal.clear_goal()
-            log.info(f"GOAL MET | {charge_goal.describe(goal, prog)}")
+            log.info(f"GOAL MET | {summary}")
             notify(f"🎯 <b>Miles goal reached</b>\nAdded {prog['added_miles']:.0f} of {goal['miles']:.0f} miles.")
             return 0.0
         if now >= goal["deadline"]:
             charge_goal.clear_goal()
-            log.info(f"GOAL EXPIRED | {charge_goal.describe(goal, prog)}")
-            notify(f"⏰ <b>Miles goal deadline passed</b>\n{charge_goal.describe(goal, prog)}.")
+            log.info(f"GOAL EXPIRED | {summary}")
+            notify(f"⏰ <b>Miles goal deadline passed</b>\n{summary}.")
             return 0.0
+        # A goal cannot progress with the car unplugged: say so once a day.
+        today = now.strftime("%Y-%m-%d")
+        if not plugged_in and state.last_goal_plug_alert_date != today:
+            state.last_goal_plug_alert_date = today
+            notify(f"🔌 <b>Plug in the car</b>\nYour miles goal can't progress while it is unplugged: {summary}.")
         return charge_goal.night_kwh_needed(now, goal, prog["remaining_kwh"])
     except Exception as e:
         log.warning(f"Miles goal check failed: {e}")
@@ -408,16 +416,7 @@ def handle_shutdown(signum, frame):
     """
     log.info("SHUTDOWN | Signal received — leaving charger state untouched")
     lifecycle.record_exit(f"stop signal {signal.Signals(signum).name}, e.g. docker stop/restart")
-    try:
-        from services import flush
-        flush(timeout=10.0)  # docker stop_grace_period is 20s
-    except Exception:
-        pass
-    try:
-        from reporting.notifications import notify_flush
-        notify_flush(2.0)
-    except Exception:
-        pass
+    lifecycle.flush_pending()  # docker stop_grace_period is 20s
     _shutdown_event.set()
 
 

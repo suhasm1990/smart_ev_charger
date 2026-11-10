@@ -4,6 +4,7 @@ from datetime import datetime
 import requests
 
 from core import config
+from core.sensors import clamp_night_noise
 from reporting.logger import log_netzero
 
 _SOLAR_NOISE_FLOOR_KW = 0.05  # Inverter idle noise reads as a few watts.
@@ -57,35 +58,20 @@ def get_powerwall_stats(now: datetime = None) -> dict:
         raise ValueError(f"NetZero live_status is missing fields: {', '.join(missing)}")
 
     now = now or datetime.now(config.TZ)
-    is_night = (
-        now.hour >= getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_START", 21)
-        or now.hour < getattr(config, "SOLAR_NIGHT_CUTOFF_HOUR_END", 6)
-    )
-
     solar_kw = max(0.0, round(live["solar_power"] / 1000, 2))
-    if (is_night and solar_kw <= 0.25) or solar_kw < _SOLAR_NOISE_FLOOR_KW:
+    if solar_kw < _SOLAR_NOISE_FLOOR_KW:
         solar_kw = 0.0
-    home_kw = max(0.0, round(live["load_power"] / 1000, 2))
-    grid_kw = round(live["grid_power"] / 1000, 2)
     battery_kw = round(live["battery_power"] / 1000, 2)
+    solar_kw, home_kw, grid_kw = clamp_night_noise(
+        now.hour, solar_kw, max(0.0, round(live["load_power"] / 1000, 2)),
+        round(live["grid_power"] / 1000, 2), battery_kw)
 
-    # Filter phantom negative grid export at night (inverter tare noise)
-    if is_night and solar_kw == 0.0 and battery_kw >= -0.05 and -0.25 <= grid_kw < 0.0:
-        grid_kw = 0.0
-
-    # Apply overnight baseline floor when Powerwall is idle/resting at night
-    if is_night and solar_kw == 0.0 and abs(battery_kw) < 0.05:
-        baseline = getattr(config, "OVERNIGHT_BASELINE_KW", 0.5)
-        if home_kw < baseline:
-            home_kw = baseline
-        if grid_kw < baseline:
-            grid_kw = baseline
-    battery_activity = "charging" if battery_kw < -0.05 else ("discharging" if battery_kw > 0.05 else "idle")
-    battery_flow_desc = (
-        f"charging at {abs(battery_kw)} kW from solar surplus"
-        if battery_kw < -0.05
-        else (f"discharging {battery_kw} kW to power home" if battery_kw > 0.05 else "idle (0.0 kW)")
-    )
+    if battery_kw < -0.05:
+        battery_activity, battery_flow_desc = "charging", f"charging at {abs(battery_kw)} kW from solar surplus"
+    elif battery_kw > 0.05:
+        battery_activity, battery_flow_desc = "discharging", f"discharging {battery_kw} kW to power home"
+    else:
+        battery_activity, battery_flow_desc = "idle", "idle (0.0 kW)"
 
     stats = {
         "battery_pct":        round(live.get("percentage_charged") or data.get("percentage_charged", 0), 1),
