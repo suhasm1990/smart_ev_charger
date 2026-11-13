@@ -25,12 +25,17 @@ PROVIDER_DEFAULTS = {
     "anthropic": ("ANTHROPIC_API_KEY", None, ""),
 }
 
+# Model used when switching to a provider without naming a model.
 PROVIDER_MODELS = {
-    "gemini":    "gemini-2.5-flash",
-    "nvidia":    "nvidia/nemotron-3-ultra-550b-a55b",
+    "gemini":    config.DEFAULT_LLM_MODEL,
+    "nvidia":    "nvidia/nemotron-3.5-super-vl-120b-a12b",
     "openai":    "gpt-4o",
     "anthropic": "claude-sonnet-5",
 }
+
+# Backup model per provider. Gemini's differs from the default primary so the
+# fallback isn't the very model that just failed.
+FALLBACK_MODELS = {**PROVIDER_MODELS, "gemini": "gemini-2.5-flash"}
 
 RETRY_ATTEMPTS = 3
 JSON_TIMEOUT = 120  # Max gap between streamed chunks; hosted reasoning models can pause ~25s+.
@@ -79,9 +84,28 @@ def function_to_openai_tool(fn: typing.Callable) -> dict:
 
 # ── Provider resolution ─────────────────────────────────────────────────────
 
+def infer_provider(model: str) -> str | None:
+    """The provider a model name belongs to, or None when the name doesn't say."""
+    name = (model or "").lower().strip()
+    if name.startswith(("gemini", "google/")):
+        return "gemini"
+    if name.startswith("nvidia/") or "nemotron" in name:
+        return "nvidia"
+    if name.startswith(("claude", "anthropic/")):
+        return "anthropic"
+    if name.startswith(("gpt", "chatgpt", "openai/")) or re.match(r"o[134](-|$)", name):
+        return "openai"
+    return None
+
+
 def resolve_llm_config() -> dict:
-    """Resolves the active provider, model, key, and base URL from config."""
-    provider = (config.LLM_PROVIDER or "").lower().strip()
+    """Resolves the active provider, model, key, and base URL from config.
+
+    The model name decides the provider; LLM_PROVIDER only matters for a name
+    that doesn't reveal one (e.g. a custom model behind LLM_BASE_URL).
+    """
+    model = (config.LLM_MODEL or "").strip() or config.DEFAULT_LLM_MODEL
+    provider = infer_provider(model) or (config.LLM_PROVIDER or "").lower().strip()
     if not provider:
         provider = next(
             (p for p, (key_attr, _, _) in PROVIDER_DEFAULTS.items() if getattr(config, key_attr, "")),
@@ -90,7 +114,7 @@ def resolve_llm_config() -> dict:
     key_attr, default_base_url, _ = PROVIDER_DEFAULTS.get(provider, ("", None, ""))
     return {
         "provider": provider,
-        "model": config.LLM_MODEL or PROVIDER_MODELS.get(provider, ""),
+        "model": model,
         "api_key": config.LLM_API_KEY or getattr(config, key_attr, ""),
         "base_url": config.LLM_BASE_URL or default_base_url,
     }
@@ -106,7 +130,7 @@ def resolve_fallback_config(primary: dict) -> dict | None:
     if provider not in PROVIDER_DEFAULTS:
         return None
     key_attr, default_base_url, _ = PROVIDER_DEFAULTS[provider]
-    model = config.LLM_FALLBACK_MODEL or PROVIDER_MODELS[provider]
+    model = config.LLM_FALLBACK_MODEL or FALLBACK_MODELS[provider]
     api_key = getattr(config, key_attr, "")
     if not api_key or (provider, model) == (primary["provider"], primary["model"]):
         return None

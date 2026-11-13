@@ -562,8 +562,11 @@ class TestLLMFallback(unittest.TestCase):
         config.GEMINI_API_KEY = ""
         self.assertIsNone(llm_client.resolve_fallback_config(self.PRIMARY))
         config.GEMINI_API_KEY = "g"
-        same = {"provider": "gemini", "model": llm_client.PROVIDER_MODELS["gemini"]}
+        same = {"provider": "gemini", "model": llm_client.FALLBACK_MODELS["gemini"]}
         self.assertIsNone(llm_client.resolve_fallback_config(same))
+        # The default Gemini primary still gets a different Gemini model as its backup.
+        default = {"provider": "gemini", "model": config.DEFAULT_LLM_MODEL}
+        self.assertNotEqual(llm_client.resolve_fallback_config(default)["model"], config.DEFAULT_LLM_MODEL)
 
     def test_json_falls_back_on_transient_error_and_labels_it(self):
         def generate(cfg, messages):
@@ -670,3 +673,49 @@ class TestLogRowsCoverPeriod(unittest.TestCase):
         self.assertGreater(self.requested[1], 7)
         csv_logger.get_all_log_rows()                      # wider cache serves the short request
         self.assertEqual(len(self.requested), 2)
+
+
+class TestModelNameDrivesProvider(unittest.TestCase):
+    """Changing the model name alone is enough to switch providers."""
+
+    def setUp(self):
+        from agent import llm_client
+        from core import config
+        self.llm_client, self.config = llm_client, config
+        self._saved = (config.LLM_PROVIDER, config.LLM_MODEL, config.GEMINI_API_KEY)
+
+    def tearDown(self):
+        self.config.LLM_PROVIDER, self.config.LLM_MODEL, self.config.GEMINI_API_KEY = self._saved
+
+    def test_infer_provider(self):
+        infer = self.llm_client.infer_provider
+        self.assertEqual(infer("gemini-4-hydrogen"), "gemini")
+        self.assertEqual(infer("nvidia/nemotron-3.5-super-vl-120b-a12b"), "nvidia")
+        self.assertEqual(infer("claude-sonnet-5"), "anthropic")
+        self.assertEqual(infer("gpt-4o"), "openai")
+        self.assertEqual(infer("o3-mini"), "openai")
+        self.assertIsNone(infer("my-custom-model"))
+
+    def test_model_name_wins_over_stale_provider(self):
+        self.config.LLM_PROVIDER, self.config.LLM_MODEL = "nvidia", "gemini-4-hydrogen"
+        self.assertEqual(self.llm_client.resolve_llm_config()["provider"], "gemini")
+
+    def test_empty_model_uses_code_default(self):
+        self.config.LLM_PROVIDER, self.config.LLM_MODEL = "", ""
+        cfg = self.llm_client.resolve_llm_config()
+        self.assertEqual((cfg["provider"], cfg["model"]), ("gemini", self.config.DEFAULT_LLM_MODEL))
+
+    def test_unknown_name_falls_back_to_explicit_provider(self):
+        self.config.LLM_PROVIDER, self.config.LLM_MODEL = "openai", "my-custom-model"
+        self.assertEqual(self.llm_client.resolve_llm_config()["provider"], "openai")
+
+    def test_switch_by_bare_name_and_reset_to_default(self):
+        from unittest.mock import patch
+
+        from agent import telegram_bot
+        self.config.GEMINI_API_KEY = "g"
+        with patch.object(self.config, "update") as update:
+            telegram_bot.switch_llm_model("gemini-2.5-pro")
+            update.assert_called_with(LLM_PROVIDER="gemini", LLM_MODEL="gemini-2.5-pro")
+            telegram_bot.switch_llm_model("default")
+            update.assert_called_with(LLM_PROVIDER="gemini", LLM_MODEL=self.config.DEFAULT_LLM_MODEL)

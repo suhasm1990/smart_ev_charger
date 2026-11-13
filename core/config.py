@@ -110,15 +110,22 @@ EV_MILES_PER_KWH         = _env_float("EV_MILES_PER_KWH", "3.53")
 POWERWALL_USABLE_KWH     = _env_float("POWERWALL_USABLE_KWH", "13.5")
 
 # ── LLM (model-agnostic via litellm) ────────────────────────────────────────
+# The one place to change the default AI model. The provider (gemini, nvidia,
+# openai, anthropic) is worked out from the model name, so this is all you edit.
+# Overridden, in order, by the LLM_MODEL env var and then the runtime setting in
+# Google Sheets (changed from Telegram with /model; "/model default" resets to this).
+DEFAULT_LLM_MODEL = "gemini-4-hydrogen"
+
+# Only needed for a model name that doesn't reveal its provider; normally leave empty.
 LLM_PROVIDER        = _env("LLM_PROVIDER").lower().strip()
-LLM_MODEL           = _env("LLM_MODEL") or _env("GEMINI_MODEL")
+LLM_MODEL           = _env("LLM_MODEL") or _env("GEMINI_MODEL") or DEFAULT_LLM_MODEL
 LLM_API_KEY         = _env("LLM_API_KEY")
 LLM_BASE_URL        = _env("LLM_BASE_URL")
 LLM_THINKING_BUDGET = _env_int("LLM_THINKING_BUDGET", "8192")
 # Backup used when the primary provider keeps failing (timeouts, 5xx, rate limits).
 # Set LLM_FALLBACK_PROVIDER to an empty string to disable it.
 LLM_FALLBACK_PROVIDER = _env("LLM_FALLBACK_PROVIDER", "gemini").lower().strip()
-LLM_FALLBACK_MODEL    = _env("LLM_FALLBACK_MODEL")  # empty -> that provider's default
+LLM_FALLBACK_MODEL    = _env("LLM_FALLBACK_MODEL")  # empty -> that provider's fallback default
 
 NVIDIA_API_KEY    = _env("NVIDIA_API_KEY")
 OPENAI_API_KEY    = _env("OPENAI_API_KEY")
@@ -168,8 +175,8 @@ DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
     "MANUAL_GUARD_STOP_BATTERY_PCT": (_optional(float), "None"),
     "MANUAL_GUARD_STOP_TIME":        (_optional(str),   "None"),  # ISO datetime
     "EV_MILES_PER_KWH":              (float, "3.53"),
-    "LLM_PROVIDER":                  (str,   "gemini"),
-    "LLM_MODEL":                     (str,   "gemini-2.5-flash"),
+    "LLM_PROVIDER":                  (str,   ""),  # empty -> inferred from LLM_MODEL
+    "LLM_MODEL":                     (str,   DEFAULT_LLM_MODEL),
 }
 
 # Statically declared so linters and readers can see every dynamic key; the

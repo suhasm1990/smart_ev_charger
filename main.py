@@ -446,7 +446,12 @@ def main():
     log.info(f"STARTUP | Mode: {config.MANUAL_MODE_OVERRIDE.upper()}")
     log.info(f"STARTUP | Thresholds: start={config.BATTERY_START_PCT}% | stop={config.BATTERY_STOP_PCT}%")
     log.info(f"STARTUP | Charge Window: {config.ALLOWED_CHARGE_START_HOUR}:00 - {config.ALLOWED_CHARGE_END_HOUR}:00")
-    log.info(f"STARTUP | LLM Provider: {config.LLM_PROVIDER} | Model: {config.LLM_MODEL}")
+    from agent.llm_client import resolve_llm_config
+    llm = resolve_llm_config()
+    source = ("code default" if llm["model"] == config.DEFAULT_LLM_MODEL else
+              f"overrides code default {config.DEFAULT_LLM_MODEL} via LLM_MODEL in .env or the Sheets "
+              f"Settings tab; '/model default' resets it")
+    log.info(f"STARTUP | LLM Provider: {llm['provider']} | Model: {llm['model']} ({source})")
     log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_MINUTES}min")
     log.info(f"STARTUP | Amperage: default={config.DEFAULT_CHARGER_AMPERAGE}A max={config.MAX_CHARGER_AMPERAGE}A")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
