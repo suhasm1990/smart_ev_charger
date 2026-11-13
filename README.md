@@ -85,10 +85,16 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 | Key `.env` values | Purpose |
 | :--- | :--- |
 | `NETZERO_*`, `CHARGEPOINT_*`, `TELEGRAM_*` | API credentials (required) |
-| `LLM_PROVIDER`, `LLM_MODEL`, `NVIDIA_API_KEY`, `GEMINI_API_KEY` | AI model (NVIDIA Nemotron, with Gemini as fallback) |
+| `LLM_MODEL`, `GEMINI_API_KEY`, `NVIDIA_API_KEY` | AI model (optional override; see below) |
 | `UTILITY_PROVIDER` | Rate plan: `MID` (default) or `PGE`. Any other name uses MID's energy rates with your own `UTILITY_*` fees |
 | `PUSHOVER_*`, `GITHUB_TOKEN` | Optional: Pushover notifications; dev-agent pull requests |
 | `POWERWALL_USABLE_KWH`, `EV_MILES_PER_KWH` | 13.5 kWh, 3.53 mi/kWh |
+
+**Changing the AI model.** The default is `DEFAULT_LLM_MODEL` in `core/config.py` (currently `gemini-4-hydrogen`).
+The provider is worked out from the model name, so a model name is all you ever set. To switch at runtime, send
+`/model <model name>` in Telegram (e.g. `/model nvidia/nemotron-3.5-super-vl-120b-a12b`); `/model default` goes
+back to the code default. Order of precedence: code default < `LLM_MODEL` in `.env` < Sheets Settings tab.
+If the primary keeps failing, `LLM_FALLBACK_PROVIDER` (default `gemini`, model `gemini-2.5-flash`) takes over.
 
 Google Sheets also holds **Telemetry** (~62 days of 15-minute readings) and **System Logs** (last 500 events).
 Telemetry is also written to `logs/charger_log.csv`, which is used when Sheets is unreachable.

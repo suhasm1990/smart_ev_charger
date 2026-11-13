@@ -14,7 +14,7 @@ google-auth>=2.30.0
 
 # Telegram bot & model-agnostic LLM access
 pyTelegramBotAPI>=4.34.0
-litellm>=1.60.0
+litellm>=1.80.0  # Gemini 3+/4 tool calls need thought-signature support
 
 # Monthly bill infographic
 matplotlib>=3.10.0

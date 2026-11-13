@@ -249,48 +249,62 @@ def read_source_code(file_path: str = "main.py", start_line: int = 1, end_line: 
 
 def get_active_ai_model() -> str:
     """Gets the currently active AI provider and model name."""
+    cfg = llm_client.resolve_llm_config()
     return json.dumps({
-        "provider": config.LLM_PROVIDER,
-        "model": config.LLM_MODEL,
-        "summary": f"Currently configured with {config.LLM_PROVIDER.upper()} ({config.LLM_MODEL})",
+        "provider": cfg["provider"],
+        "model": cfg["model"],
+        "default_model": config.DEFAULT_LLM_MODEL,
+        "summary": f"Currently configured with {cfg['provider'].upper()} ({cfg['model']})",
     })
 
 
-# Aliases the user might type, mapped to (provider, model). None means "keep the provider default".
+# Shortcuts the user might type, mapped to a model name. None means "that provider's default".
 _MODEL_ALIASES = {
-    "gemini": ("gemini", None), "google": ("gemini", None),
-    "gemini-pro": ("gemini", "gemini-2.5-pro"), "gemini_pro": ("gemini", "gemini-2.5-pro"),
-    "gemini-2.5-pro": ("gemini", "gemini-2.5-pro"), "pro": ("gemini", "gemini-2.5-pro"),
-    "nvidia": ("nvidia", None), "nemotron": ("nvidia", None), "llama": ("nvidia", None),
-    "nemotron-super": ("nvidia", "nvidia/nemotron-3.5-super-vl-120b-a12b"),
-    "nemotron-ultra": ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
-    "nemotron-nano": ("nvidia", "nvidia/nemotron-3-nano-30b-a3b"),
-    "openai": ("openai", None), "chatgpt": ("openai", None), "gpt": ("openai", None),
-    "anthropic": ("anthropic", None), "claude": ("anthropic", None), "sonnet": ("anthropic", None),
+    "gemini": None, "google": None, "hydrogen": "gemini-4-hydrogen",
+    "gemini-pro": "gemini-2.5-pro", "gemini_pro": "gemini-2.5-pro", "pro": "gemini-2.5-pro",
+    "flash": "gemini-2.5-flash",
+    "nvidia": None, "nemotron": None,
+    "nemotron-super": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "nemotron-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
+    "nemotron-nano": "nvidia/nemotron-3-nano-30b-a3b",
+    "openai": None, "chatgpt": None, "gpt": None,
+    "anthropic": None, "claude": None, "sonnet": None,
+}
+# Provider for each bare provider-name alias above.
+_PROVIDER_ALIASES = {
+    "gemini": "gemini", "google": "gemini", "nvidia": "nvidia", "nemotron": "nvidia",
+    "openai": "openai", "chatgpt": "openai", "gpt": "openai",
+    "anthropic": "anthropic", "claude": "anthropic", "sonnet": "anthropic",
 }
 
 
 def switch_llm_model(provider: str = "", model_name: str = None) -> str:
-    """Switches the active AI model and provider, or reports the current one.
+    """Switches the active AI model, or reports the current one. The provider is worked out from the model name.
 
     Args:
-        provider: Provider name ('gemini', 'nvidia', 'openai', 'anthropic', or 'status').
-        model_name: Optional specific model (e.g. 'gemini-2.5-pro', 'gpt-4o', 'claude-sonnet-5').
+        provider: A model name (e.g. 'gemini-4-hydrogen', 'nvidia/nemotron-3.5-super-vl-120b-a12b'), a shortcut ('gemini', 'nvidia', 'claude', 'gemini-pro', 'nemotron-ultra'), 'default' to go back to the built-in default, or 'status'.
+        model_name: Optional specific model name; when given, it wins over the first argument.
     """
-    key = (provider or "").lower().strip()
-    if not key or key in ("status", "current", "what", "check", "get", "info"):
-        return f"Currently using <b>{config.LLM_PROVIDER.upper()}</b> with model <code>{config.LLM_MODEL}</code>."
+    key = (provider or "").strip()
+    lowered = key.lower()
+    if not (key or model_name) or lowered in ("status", "current", "what", "check", "get", "info"):
+        cfg = llm_client.resolve_llm_config()
+        return f"Currently using <b>{cfg['provider'].upper()}</b> with model <code>{cfg['model']}</code>."
 
-    resolved, alias_model = _MODEL_ALIASES.get(key, (None, None))
+    if model_name:
+        model = model_name.strip()
+    elif lowered in ("default", "reset"):
+        model = config.DEFAULT_LLM_MODEL
+    elif lowered in _MODEL_ALIASES:
+        model = _MODEL_ALIASES[lowered] or llm_client.PROVIDER_MODELS[_PROVIDER_ALIASES[lowered]]
+    else:
+        model = key
+
+    resolved = llm_client.infer_provider(model) or (lowered if lowered in llm_client.PROVIDER_DEFAULTS else None)
     if resolved is None:
-        # Allow a bare model name whose provider is unambiguous from its prefix.
-        resolved = next((p for a, (p, _) in _MODEL_ALIASES.items() if a in key), None)
-        if resolved is None:
-            return (f"Error: Unknown provider '{provider}'. "
-                    f"Supported: {', '.join(llm_client.PROVIDER_DEFAULTS)}.")
-        alias_model = provider if any(c in key for c in "-.") else None
+        return (f"Error: Can't tell which provider '{model}' belongs to. Use a full model name like "
+                f"<code>gemini-4-hydrogen</code> or a shortcut ({', '.join(llm_client.PROVIDER_DEFAULTS)}).")
 
-    model = model_name or alias_model or llm_client.PROVIDER_MODELS.get(resolved)
     key_attr = llm_client.PROVIDER_DEFAULTS[resolved][0]
     if not getattr(config, key_attr, ""):
         return f"Warning: {key_attr} is not configured in .env."
@@ -841,13 +855,15 @@ def _bot_polling_loop():
     def _model(message):
         parts = (message.text or "").strip().split(maxsplit=2)
         if len(parts) == 1:
+            cfg = llm_client.resolve_llm_config()
             bot.reply_to(message, (
                 f"🧠 <b>Active AI Model</b>\n\n"
-                f"• <b>Provider</b>: <code>{config.LLM_PROVIDER}</code>\n"
-                f"• <b>Model</b>: <code>{config.LLM_MODEL}</code>\n\n"
-                f"<b>Quick switch:</b>\n"
+                f"• <b>Provider</b>: <code>{cfg['provider']}</code>\n"
+                f"• <b>Model</b>: <code>{html.escape(cfg['model'])}</code>\n"
+                f"• <b>Default</b>: <code>{config.DEFAULT_LLM_MODEL}</code>\n\n"
+                f"<b>Quick switch:</b> <code>/model &lt;any model name&gt;</code>, or\n"
                 + "\n".join(f"• <code>/model {alias}</code>" for alias in
-                            ("gemini", "gemini-pro", "nvidia", "openai", "claude"))
+                            ("default", "gemini-pro", "nvidia", "openai", "claude"))
                 + "\n\n<i>Or just ask: 'Switch model to nvidia'</i>"
             ), parse_mode="HTML")
             return
