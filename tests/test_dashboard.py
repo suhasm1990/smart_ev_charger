@@ -92,9 +92,9 @@ class TestDashboardData(DashboardTestCase):
 class TestRecentSessionEnergy(DashboardTestCase):
     def test_sessions_report_energy_and_miles(self):
         session = csv_logger.get_recent_sessions(limit=1)[0]
-        # 60 minutes at 20 A x 240 V = 4.8 kWh
-        self.assertAlmostEqual(session["energy_kwh"], 4.8, places=2)
-        self.assertAlmostEqual(session["miles_added"], round(4.8 * config.EV_MILES_PER_KWH, 1))
+        # Seeded charging runs 10:00-15:00: 20 logged intervals at 20 A x 240 V = 24 kWh
+        self.assertAlmostEqual(session["energy_kwh"], 24.0, places=2)
+        self.assertAlmostEqual(session["miles_added"], round(24.0 * config.EV_MILES_PER_KWH, 1))
 
     def test_metered_energy_wins_over_estimate(self):
         for row in self.rows:
