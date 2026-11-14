@@ -86,6 +86,9 @@ class Reading:
     session_minutes: float
     tou_period: str
     row: dict
+    battery_kw: float = 0.0          # + discharging, - charging
+    when: datetime | None = None     # parsed timestamp, when the row has one
+    metered_kwh: float = 0.0         # cumulative ChargePoint session energy (0 = unknown)
 
     @property
     def interval_h(self) -> float:
@@ -98,18 +101,6 @@ class Reading:
     @property
     def grid_export_kw(self) -> float:
         return max(0.0, -self.grid_kw)
-
-    @property
-    def ev_grid_kw(self) -> float:
-        """Share of the grid import attributable to the charger."""
-        return min(self.grid_import_kw, self.ev_power_kw) if self.charging else 0.0
-
-    @property
-    def ev_solar_kw(self) -> float:
-        """Solar power flowing into the charger after the rest of the house."""
-        if not self.charging:
-            return 0.0
-        return min(max(0.0, self.solar_kw - max(0.0, self.home_kw - self.ev_power_kw)), self.ev_power_kw)
 
 
 def _readings(rows: list[dict], start: date = None, end: date = None):
@@ -131,15 +122,17 @@ def _readings(rows: list[dict], start: date = None, end: date = None):
             dt = datetime.fromisoformat(row["timestamp"])
             hour, rate, period = dt.hour, get_tou_rate(dt), get_tou_period(dt)
         except (KeyError, TypeError, ValueError):
+            dt = None
             hour = int(_num(str(row.get("time", "12:00")).split(":")[0], 12))
             rate = _num(row.get("tou_rate_per_kwh"), DEFAULT_RATE) or DEFAULT_RATE
             period = str(row.get("tou_period", ""))
 
         charging = _is_ev_charging_row(row)
 
+        battery_val = _num(row.get("battery_kw"))
         solar_val, home_val, grid_val = clamp_night_noise(
             hour, max(0.0, _num(row.get("solar_kw"))), max(0.0, _num(row.get("home_kw"))),
-            _num(row.get("grid_kw")), _num(row.get("battery_kw")))
+            _num(row.get("grid_kw")), battery_val)
 
         yield Reading(
             day=day,
@@ -153,7 +146,127 @@ def _readings(rows: list[dict], start: date = None, end: date = None):
             session_minutes=_num(row.get("session_active_minutes")),
             tou_period=period,
             row=row,
+            battery_kw=battery_val,
+            when=dt,
+            metered_kwh=max(0.0, _num(row.get("cp_session_energy_kwh"))),
         )
+
+
+# ── EV energy per interval ──────────────────────────────────────────────────
+
+@dataclass(slots=True)
+class EvInterval:
+    """EV energy delivered in one logged interval, split by where it came from."""
+    reading: Reading
+    session: int            # sequence number of the charging session; -1 when idle
+    kwh: float = 0.0
+    solar_kwh: float = 0.0
+    battery_kwh: float = 0.0
+    grid_kwh: float = 0.0
+    prev_when: datetime | None = None
+
+    @property
+    def grid_cost(self) -> float:
+        return self.grid_kwh * self.reading.rate
+
+
+def _starts_new_session(prev: Reading | None, r: Reading) -> bool:
+    """True when charging row `r` begins a different session from `prev`.
+
+    Rows are contiguous in the log, so a session that ends at 00:15 and another
+    that starts at 00:30 would otherwise merge into one. A stop row, the
+    session clock going backwards, or the ChargePoint meter resetting all mark
+    a boundary.
+    """
+    if prev is None or not prev.charging:
+        return True
+    if str(prev.row.get("action", "")).lower() == "stop":
+        return True
+    if str(r.row.get("action", "")).lower() == "start":
+        return True
+    if r.session_minutes and prev.session_minutes and r.session_minutes + 1.0 < prev.session_minutes:
+        return True
+    return bool(r.metered_kwh and prev.metered_kwh and r.metered_kwh + 0.05 < prev.metered_kwh)
+
+
+def _split_sources(r: Reading, kwh: float, hours: float) -> tuple[float, float, float]:
+    """(solar, battery, grid) kWh behind `kwh` delivered to the car over `hours`.
+
+    The house's own load is served first: solar, then Powerwall discharge,
+    then grid. Whatever the car drew beyond what solar and the Powerwall
+    measurably supplied came from the grid. (Previously the unexplained
+    remainder was labelled "Powerwall", so any overestimate of the car's draw
+    showed up as phantom battery energy.)
+    """
+    if kwh <= 0 or hours <= 0:
+        return 0.0, 0.0, 0.0
+    ev_kw = kwh / hours
+    house_kw = max(0.0, r.home_kw - ev_kw)
+    solar_house = min(r.solar_kw, house_kw)
+    solar_ev = min(ev_kw, max(0.0, r.solar_kw - solar_house))
+    discharge = max(0.0, r.battery_kw)
+    battery_house = min(discharge, house_kw - solar_house)
+    battery_ev = min(ev_kw - solar_ev, max(0.0, discharge - battery_house))
+    solar_kwh, battery_kwh = solar_ev * hours, battery_ev * hours
+    return solar_kwh, battery_kwh, max(0.0, kwh - solar_kwh - battery_kwh)
+
+
+def _ev_intervals(readings) -> list[EvInterval]:
+    """EV energy for every reading, in log order.
+
+    The car's energy comes from the ChargePoint meter: the growth of the
+    session's cumulative kWh since the previous row. That stays correct when
+    the car tapers or stops drawing at its charge limit while the charger
+    still reports CHARGING. Sessions with no meter readings at all (older
+    rows) fall back to amperage x voltage x interval.
+    """
+    out: list[EvInterval] = []
+    session_rows: list[EvInterval] = []
+    prev: Reading | None = None
+    session_no = -1
+    default_h = config.CHECK_INTERVAL_MINUTES / 60.0
+
+    def close_session():
+        metered = any(iv.reading.metered_kwh for iv in session_rows)
+        last_meter = 0.0
+        # A log that begins mid-session has no baseline for its first reading.
+        if session_rows and out and out[0] is session_rows[0]:
+            first = session_rows[0].reading
+            if first.session_minutes > 2 * config.CHECK_INTERVAL_MINUTES:
+                last_meter = first.metered_kwh
+        for iv in session_rows:
+            r = iv.reading
+            if metered:
+                if r.metered_kwh <= 0:
+                    continue  # missed reading; the next one carries the delta
+                iv.kwh = max(0.0, r.metered_kwh - last_meter)
+                last_meter = max(last_meter, r.metered_kwh)
+            elif str(r.row.get("action", "")).lower() != "stop":
+                # Estimate: each row stands for the interval that follows it, and
+                # nothing flows after the charger was stopped.
+                iv.kwh = r.ev_power_kw * default_h
+            hours = default_h
+            if iv.prev_when is not None and r.when is not None:
+                gap = (r.when - iv.prev_when).total_seconds() / 3600.0
+                if 0 < gap <= 2 * default_h:
+                    hours = gap
+            iv.solar_kwh, iv.battery_kwh, iv.grid_kwh = _split_sources(r, iv.kwh, hours)
+        session_rows.clear()
+
+    for r in readings:
+        if r.charging:
+            if _starts_new_session(prev, r):
+                close_session()
+                session_no += 1
+            iv = EvInterval(r, session_no, prev_when=prev.when if prev is not None else None)
+            session_rows.append(iv)
+        else:
+            close_session()
+            iv = EvInterval(r, -1)
+        out.append(iv)
+        prev = r
+    close_session()
+    return out
 
 
 # ── Writing ─────────────────────────────────────────────────────────────────
@@ -261,71 +374,79 @@ def _rows_since(start: date | None) -> list[dict]:
     return get_all_log_rows(days=max(7, (datetime.now(config.TZ).date() - start).days + 1))
 
 
+def _ev_intervals_between(start: date | None, end: date | None = None) -> list[EvInterval]:
+    """EV intervals for log rows from the day before `start` through `end`.
+
+    The extra day gives a session that crosses midnight its meter baseline and
+    its start, so only its after-midnight part is credited to `start`.
+    """
+    lookback = start - timedelta(days=1) if start else None
+    return _ev_intervals(_readings(_rows_since(lookback), lookback, end))
+
+
 def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
-    """Groups contiguous charging rows into distinct sessions, newest first.
+    """Distinct charging sessions, newest first.
 
     If period is supplied (e.g. 'today', 'yesterday', 'this_week', 'YYYY-MM-DD'),
-    only sessions that took place within that date window are returned.
+    only sessions with charging inside that date window are returned.
     """
-    sessions, current = [], None
     start = end = None
     if period:
-        now = datetime.now(config.TZ)
-        start, end, _ = _resolve_date_range(period, now)
+        start, end, _ = _resolve_date_range(period, datetime.now(config.TZ))
 
     def stamp(row):
         return row.get("timestamp") or f"{row.get('date', '')} {row.get('time', '')}".strip()
 
-    def finish(session):
-        # Prefer the ChargePoint meter; fall back to amperage x voltage x time.
-        estimate = session["max_duration_minutes"] / 60.0 * session.pop("_power_kw")
-        metered = session.pop("_metered_kwh")
-        session["energy_kwh"] = round(metered or estimate, 2)
-        session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
-        sessions.append(session)
-
-    for r in _readings(_rows_since(start), start, end):
-        row = r.row
-        if r.charging:
+    sessions: dict[int, dict] = {}
+    previous = None
+    for iv in _ev_intervals_between(start, end):
+        r, row = iv.reading, iv.reading.row
+        if iv.session >= 0:
+            current = sessions.get(iv.session)
             if current is None:
-                current = {
+                current = sessions[iv.session] = {
                     "start_time": stamp(row),
                     "start_battery_pct": row.get("battery_pct", "N/A"),
                     "solar_kw": row.get("solar_kw", "0"),
                     "max_duration_minutes": r.session_minutes,
                     "stop_reason": row.get("session_stop_reason") or row.get("reason", ""),
-                    "_power_kw": 0.0,
-                    "_metered_kwh": 0.0,
+                    "energy_kwh": 0.0,
+                    "_in_period": False,
                 }
             current["end_time"] = stamp(row)
             current["end_battery_pct"] = row.get("battery_pct", "N/A")
             current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
-            current["_power_kw"] = max(current["_power_kw"], r.ev_power_kw)
-            current["_metered_kwh"] = max(current["_metered_kwh"], _num(row.get("cp_session_energy_kwh")))
+            current["energy_kwh"] += iv.kwh
+            current["_in_period"] |= start is None or start <= r.day
             if row.get("session_stop_reason"):
                 current["stop_reason"] = row["session_stop_reason"]
-        elif current is not None:
+        elif previous is not None and previous.session >= 0:
+            current = sessions[previous.session]
             current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
             current["stop_reason"] = row.get("session_stop_reason") or row.get("reason") or current["stop_reason"]
-            finish(current)
-            current = None
+        previous = iv
 
-    if current is not None:
-        finish(current)
-    return sessions[-limit:][::-1] if limit else sessions[::-1]
+    result = []
+    for session in sessions.values():
+        if not session.pop("_in_period"):
+            continue
+        session["energy_kwh"] = round(session["energy_kwh"], 2)
+        session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
+        result.append(session)
+    return result[-limit:][::-1] if limit else result[::-1]
 
 
 def get_ev_kwh_since(since: datetime) -> float:
-    """EV energy logged from `since` onwards, summed over charging intervals."""
+    """EV energy delivered from `since` onwards (ChargePoint meter where logged)."""
     total = 0.0
-    for r in _readings(_rows_since(since.date()), start=since.date()):
-        try:
-            if datetime.fromisoformat(r.row["timestamp"]) < since:
-                continue
-        except (KeyError, TypeError, ValueError):
+    for iv in _ev_intervals_between(since.date()):
+        when = iv.reading.when
+        if when is None:
             continue
-        if r.charging:
-            total += r.ev_power_kw * r.interval_h
+        if (when.tzinfo is None) != (since.tzinfo is None):
+            when = when.replace(tzinfo=since.tzinfo)
+        if when >= since:
+            total += iv.kwh
     return round(total, 2)
 
 
@@ -436,51 +557,52 @@ def get_daily_charging_cost(period: str = "today") -> dict:
         return r.hour * 60 + _num(str(r.row.get("time", "")).partition(":")[2])
 
     try:
-        sessions, current = [], None
-        grid_kwh = grid_cost = solar_kwh = 0.0
+        sessions: dict[int, dict] = {}
+        total_kwh = grid_kwh = grid_cost = solar_kwh = battery_kwh = 0.0
         intervals = 0
         last = None
 
-        for r in _readings(rows, start, end):
-            if r.charging:
+        for iv in _ev_intervals_between(start, end):
+            r = iv.reading
+            if r.day < start:
+                continue
+            if iv.session >= 0:
                 intervals += 1
+                current = sessions.get(iv.session)
                 if current is None:
                     # session_minutes counts from the session's start, so a session
                     # carried over from before midnight would credit the earlier
                     # day's minutes to this period; those are subtracted here.
-                    current = {"minutes": r.session_minutes, "power_kw": r.ev_power_kw,
-                               "carried": max(0.0, r.session_minutes - minutes_into_day(r))}
-                else:
-                    current["minutes"] = max(current["minutes"], r.session_minutes)
-                    current["power_kw"] = max(current["power_kw"], r.ev_power_kw)
-                grid_kwh += r.ev_grid_kw * r.interval_h
-                grid_cost += r.ev_grid_kw * r.interval_h * r.rate
-                solar_kwh += r.ev_solar_kw * r.interval_h
-            elif current is not None:
+                    current = sessions[iv.session] = {
+                        "minutes": r.session_minutes,
+                        "carried": max(0.0, r.session_minutes - minutes_into_day(r)) if r.day == start else 0.0,
+                    }
                 current["minutes"] = max(current["minutes"], r.session_minutes)
-                sessions.append(current)
-                current = None
-            last = r
-        if current is not None:
-            if last.day < now.date():
-                # Still charging when the period's last day ended: credit the time
-                # up to midnight (at most one interval) that the next day's rows hold.
-                current["minutes"] += min(config.CHECK_INTERVAL_MINUTES, 24 * 60 - minutes_into_day(last))
-            sessions.append(current)
+                total_kwh += iv.kwh
+                grid_kwh += iv.grid_kwh
+                grid_cost += iv.grid_cost
+                solar_kwh += iv.solar_kwh
+                battery_kwh += iv.battery_kwh
+            elif last is not None and last.session >= 0 and last.session in sessions:
+                current = sessions[last.session]
+                current["minutes"] = max(current["minutes"], r.session_minutes)
+            last = iv
 
-        default_power = state.charger_power_kw(config.DEFAULT_CHARGER_AMPERAGE)
-        total_minutes = round(sum(s["minutes"] - s["carried"] for s in sessions), 1)
+        if last is not None and last.session in sessions and last.reading.day < now.date():
+            # Still charging when the period's last day ended: credit the time
+            # up to midnight (at most one interval) that the next day's rows hold.
+            sessions[last.session]["minutes"] += min(config.CHECK_INTERVAL_MINUTES,
+                                                     24 * 60 - minutes_into_day(last.reading))
+
+        total_minutes = round(sum(max(0.0, s["minutes"] - s["carried"]) for s in sessions.values()), 1)
         if not total_minutes and intervals:
             total_minutes = round(intervals * config.CHECK_INTERVAL_MINUTES, 1)
 
-        total_kwh = round(sum((s["minutes"] - s["carried"]) / 60.0 * s["power_kw"] for s in sessions), 2)
-        if not total_kwh and total_minutes:
-            total_kwh = round(total_minutes / 60.0 * default_power, 2)
-
-        from_grid = round(min(grid_kwh, total_kwh), 2)
-        self_powered = round(max(0.0, total_kwh - from_grid), 2)
-        from_solar = round(min(solar_kwh, self_powered), 2)
-        from_battery = round(max(0.0, self_powered - from_solar), 2)
+        total_kwh = round(total_kwh, 2)
+        from_grid = round(grid_kwh, 2)
+        from_solar = round(solar_kwh, 2)
+        from_battery = round(battery_kwh, 2)
+        self_powered = round(from_solar + from_battery, 2)
 
         return {
             "period": label,
@@ -498,7 +620,9 @@ def get_daily_charging_cost(period: str = "today") -> dict:
             "grid_percentage": round(from_grid / total_kwh * 100.0, 1) if total_kwh else 0.0,
             "solar_percentage": round(self_powered / total_kwh * 100.0, 1) if total_kwh else 100.0,
             "estimated_solar_savings_dollars": round(self_powered * get_tou_rate(now), 2),
-            "calculation_note": "Includes direct solar, Tesla Powerwall battery reserves, and grid energy delivered to the vehicle.",
+            "calculation_note": ("Energy is the ChargePoint meter reading per interval (amperage x time only for "
+                                 "older rows without it). Each interval is split using that interval's measured "
+                                 "solar surplus and Powerwall discharge; the rest is grid."),
         }
     except Exception as e:
         log_csv.error(f"Error calculating charging cost summary: {e}", exc_info=True)
@@ -538,15 +662,17 @@ def get_home_energy_summary(period: str = "today") -> dict:
         grid_cost = export_credit = 0.0
         ev_kwh = ev_grid_kwh = ev_solar_kwh = ev_cost = 0.0
 
-        for r in _readings(rows, start, end):
+        for iv in _ev_intervals_between(start, end):
+            r = iv.reading
+            if r.day < start:
+                continue
             h = r.interval_h
             home += r.home_kw * h
             solar += r.solar_kw * h
-            if r.charging:
-                ev_kwh += r.ev_power_kw * h
-                ev_grid_kwh += r.ev_grid_kw * h
-                ev_cost += r.ev_grid_kw * h * r.rate
-                ev_solar_kwh += r.ev_solar_kw * h
+            ev_kwh += iv.kwh
+            ev_grid_kwh += iv.grid_kwh
+            ev_cost += iv.grid_cost
+            ev_solar_kwh += iv.solar_kwh
             if r.grid_kw > 0:
                 imported += r.grid_import_kw * h
                 grid_cost += r.grid_import_kw * h * r.rate
@@ -678,17 +804,21 @@ def get_energy_saving_advice() -> dict:
         on_peak_cost = ev_grid_cost = 0.0
         evening: dict[date, list[float]] = {}
 
-        for r in _readings(rows, start=since):
+        for iv in _ev_intervals(_readings(rows, start=since - timedelta(days=1))):
+            r = iv.reading
+            if r.day < since:
+                continue
             h = r.interval_h
-            hourly[r.hour].append((r.solar_kw, max(0.0, r.home_kw - r.ev_power_kw)))
+            ev_kw = iv.kwh / h if h else 0.0
+            hourly[r.hour].append((r.solar_kw, max(0.0, r.home_kw - ev_kw)))
 
             if r.tou_period == "on_peak":
                 on_peak_cost += r.grid_import_kw * h * r.rate
-            ev_grid_cost += r.ev_grid_kw * h * r.rate
+            ev_grid_cost += iv.grid_cost
 
             if EVENING_START_HOUR <= r.hour < EVENING_END_HOUR:
                 # Exclude the charger so evening planning reflects the house alone.
-                appliance_kw = max(0.0, r.home_kw - r.ev_power_kw)
+                appliance_kw = max(0.0, r.home_kw - ev_kw)
                 totals = evening.setdefault(r.day, [0.0, 0.0, 0.0])
                 totals[0] += appliance_kw * h
                 totals[1] += r.solar_kw * h
@@ -775,7 +905,8 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         }
         day += timedelta(days=1)
 
-    for r in _readings(rows, start, end):
+    for iv in _ev_intervals(_readings(rows, start - timedelta(days=1), end)):
+        r = iv.reading
         entry = daily.get(r.day)
         if entry is None:
             continue
@@ -783,11 +914,11 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         entry["readings_count"] += 1
         entry["home_kwh"] += r.home_kw * h
         entry["solar_kwh"] += r.solar_kw * h
+        entry["ev_grid_kwh"] += iv.grid_kwh
+        entry["ev_grid_cost"] += iv.grid_cost
         if r.grid_kw > 0:
             entry["grid_import_kwh"] += r.grid_import_kw * h
             entry["variable_grid_cost"] += r.grid_import_kw * h * r.rate
-            entry["ev_grid_kwh"] += r.ev_grid_kw * h
-            entry["ev_grid_cost"] += r.ev_grid_kw * h * r.rate
             bucket = r.tou_period if r.tou_period in ("on_peak", "partial_peak") else "off_peak"
             entry[f"{bucket}_grid_kwh"] += r.grid_import_kw * h
         else:

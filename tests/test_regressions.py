@@ -111,7 +111,6 @@ class TestAmperageAccounting(unittest.TestCase):
     def test_idle_rows_draw_no_charger_power(self):
         reading = self._reading(charger_state="IDLE", action="hold")
         self.assertEqual(reading.ev_power_kw, 0.0)
-        self.assertEqual(reading.ev_grid_kw, 0.0)
 
 
 class TestAnalyticsRobustness(unittest.TestCase):
@@ -719,3 +718,102 @@ class TestModelNameDrivesProvider(unittest.TestCase):
             update.assert_called_with(LLM_PROVIDER="gemini", LLM_MODEL="gemini-2.5-pro")
             telegram_bot.switch_llm_model("default")
             update.assert_called_with(LLM_PROVIDER="gemini", LLM_MODEL=self.config.DEFAULT_LLM_MODEL)
+
+
+class TestMeteredEnergySourceBreakdown(unittest.TestCase):
+    """Overnight grid charging was reported as 60 kWh, mostly "Powerwall", across one session.
+
+    Real case: a session from 23:05 that ended at 00:15, then a 35.38 kWh
+    session from 00:30 that hit the car's limit and sat at 0 kW (still
+    CHARGING) all morning. Energy must come from the ChargePoint meter, the two
+    sessions must stay separate, and grid power must not be relabelled as
+    Powerwall.
+    """
+
+    def setUp(self):
+        from datetime import datetime, timedelta
+        self._rows, self._datetime = csv_logger.get_all_log_rows, csv_logger.datetime
+        rows = []
+
+        def add(t, charging, minutes, meter, action="hold", ev_kw=0.0, solar=0.0, battery=0.0):
+            home = 0.4 + ev_kw
+            grid = max(0.0, home - solar - max(0.0, battery))
+            rows.append({"timestamp": t.isoformat(), "date": t.strftime("%Y-%m-%d"), "time": t.strftime("%H:%M"),
+                         "charger_state": "CHARGING" if charging else "IDLE", "action": action,
+                         "session_active_minutes": str(minutes), "charger_amperage": "32",
+                         "solar_kw": str(solar), "home_kw": str(home), "grid_kw": str(grid),
+                         "battery_kw": str(battery), "cp_session_energy_kwh": str(meter)})
+
+        t = datetime(2026, 11, 13, 23, 0, tzinfo=config.TZ)
+        add(t, False, 0, 0)
+        # Session A: 23:05 -> 00:15, 7.68 kW, 1.92 kWh per 15 minutes.
+        for i, minutes in enumerate((10, 25, 40, 55)):
+            t += timedelta(minutes=15)
+            add(t, True, minutes, round(1.28 + 1.92 * i, 2), ev_kw=7.68)
+        t += timedelta(minutes=15)
+        add(t, True, 70, 8.96, action="stop", ev_kw=7.68)          # 00:15
+        # Session B from 00:30, straight after A with no idle row between.
+        t += timedelta(minutes=15)
+        meter, minutes = 0.0, 0
+        add(t, True, minutes, meter, action="start")
+        while t < datetime(2026, 11, 14, 9, 15, tzinfo=config.TZ):
+            t += timedelta(minutes=15)
+            minutes += 15
+            drawing = meter < 35.38
+            meter = round(min(35.38, meter + 1.92), 2)
+            daylight = t.hour >= 7
+            add(t, True, minutes, meter, ev_kw=7.68 if drawing else 0.0,
+                solar=2.12 if daylight else 0.0, battery=-1.72 if daylight else 0.0)
+        csv_logger.get_all_log_rows = lambda days=7, force_refresh=False: rows
+
+        class FrozenNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 11, 14, 9, 20, tzinfo=config.TZ)
+        csv_logger.datetime = FrozenNow
+
+    def tearDown(self):
+        csv_logger.get_all_log_rows, csv_logger.datetime = self._rows, self._datetime
+
+    def test_today_counts_both_sessions_from_the_meter(self):
+        result = csv_logger.get_daily_charging_cost("today")
+        self.assertEqual(result["total_sessions_count"], 2)
+        # A's two after-midnight intervals (3.84) + all of B (35.38).
+        self.assertAlmostEqual(result["total_kwh_added"], 39.22, places=2)
+        self.assertAlmostEqual(result["ev_grid_kwh_pulled"], 39.22, places=2)
+        self.assertEqual(result["powerwall_battery_kwh_used"], 0.0)
+        self.assertEqual(result["solar_kwh_used"], 0.0)
+        # A: 15 minutes after midnight; B: 00:30 -> 09:15.
+        self.assertEqual(result["total_charging_minutes"], 15 + 525)
+
+    def test_yesterday_keeps_the_pre_midnight_part(self):
+        result = csv_logger.get_daily_charging_cost("yesterday")
+        self.assertEqual(result["total_sessions_count"], 1)
+        self.assertAlmostEqual(result["total_kwh_added"], 5.12, places=2)
+
+    def test_sessions_are_listed_separately(self):
+        sessions = csv_logger.get_recent_sessions(limit=5)
+        self.assertEqual([s["energy_kwh"] for s in sessions], [35.38, 8.96])
+
+    def test_goal_progress_uses_metered_energy(self):
+        from datetime import datetime
+        since = datetime(2026, 11, 14, 0, 20, tzinfo=config.TZ)
+        self.assertAlmostEqual(csv_logger.get_ev_kwh_since(since), 35.38, places=2)
+
+
+class TestEnergySourceSplit(unittest.TestCase):
+    def _reading(self, **values):
+        row = {"date": "2026-08-01", "timestamp": "2026-08-01T21:00:00", "charger_state": "CHARGING",
+               "charger_amperage": "32", **{k: str(v) for k, v in values.items()}}
+        return next(csv_logger._readings([row]))
+
+    def test_powerwall_discharge_is_credited_after_house_load(self):
+        r = self._reading(solar_kw=0, home_kw=8.68, grid_kw=4.68, battery_kw=4.0)
+        solar, battery, grid = csv_logger._split_sources(r, 1.92, 0.25)
+        self.assertAlmostEqual(solar, 0.0)
+        self.assertAlmostEqual(battery, 3.0 * 0.25)   # 4 kW discharge less 1 kW of house load
+        self.assertAlmostEqual(grid, 1.92 - 0.75)
+
+    def test_unexplained_energy_is_grid_not_powerwall(self):
+        r = self._reading(solar_kw=0, home_kw=0.4, grid_kw=0.4, battery_kw=0)
+        self.assertEqual(csv_logger._split_sources(r, 1.92, 0.25), (0.0, 0.0, 1.92))
