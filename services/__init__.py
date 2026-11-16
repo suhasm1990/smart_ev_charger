@@ -7,7 +7,7 @@ from services.chargepoint import (
     stop_charger,
 )
 from services.charger_ops import stop_and_restore_defaults
-from services.netzero import get_powerwall_stats
+from services.powerwall import get_powerwall_stats
 from services.sheets_db import (
     add_user_instruction,
     append_log_row,

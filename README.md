@@ -5,7 +5,7 @@ rates, and is run day to day from Telegram.
 
 ## How it works
 
-Every 15 minutes it reads the Powerwall (NetZero API) and the ChargePoint Home Flex, then:
+Every 15 minutes it reads the Powerwall (Tesla Fleet API, or NetZero as the fallback) and the ChargePoint Home Flex, then:
 
 - **Starts** charging inside today's **charge window** when the Powerwall is at or above the **start %**.
 - **Stops** when the Powerwall drops below the **stop %** or the window ends. Solar readings don't start or stop it.
@@ -84,11 +84,18 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 
 | Key `.env` values | Purpose |
 | :--- | :--- |
-| `NETZERO_*`, `CHARGEPOINT_*`, `TELEGRAM_*` | API credentials (required) |
+| `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET`, `TESLA_REFRESH_TOKEN`, `TESLA_ENERGY_SITE_ID` | Tesla Fleet API (preferred Powerwall source). `tools/tesla_fleet_check.py check` prints all four. The refresh token is only the seed; Tesla rotates it and the newest is kept in `logs/tesla_fleet.json` |
+| `NETZERO_*`, `CHARGEPOINT_*`, `TELEGRAM_*` | API credentials (NetZero optional when Tesla is set) |
 | `LLM_MODEL`, `GEMINI_API_KEY`, `NVIDIA_API_KEY` | AI model (optional override; see below) |
 | `UTILITY_PROVIDER` | Rate plan: `MID` (default) or `PGE`. Any other name uses MID's energy rates with your own `UTILITY_*` fees |
 | `PUSHOVER_*`, `GITHUB_TOKEN` | Optional: Pushover notifications; dev-agent pull requests |
 | `POWERWALL_USABLE_KWH`, `EV_MILES_PER_KWH` | 13.5 kWh, 3.53 mi/kWh |
+| `TESLA_MONTHLY_CALL_BUDGET` | 4500 calls (about $9 of Tesla's $10 monthly credit); past it, live data uses NetZero until the 1st |
+
+**Metered energy history.** With Tesla configured, the charger pulls yesterday's 5-minute energy history once a
+night (one API call) into `logs/energy_history.csv`, and on start backfills the last 2 months with one call per
+month. Bills, `/report` and the dashboard use these metered days, each interval priced at its own TOU rate, and
+fall back to the 15-minute snapshot estimate for days without them.
 
 **Changing the AI model.** The default is `DEFAULT_LLM_MODEL` in `core/config.py` (currently `gemini-4-hydrogen`).
 The provider is worked out from the model name, so a model name is all you ever set. To switch at runtime, send
@@ -111,7 +118,7 @@ Telemetry is also written to `logs/charger_log.csv`, which is used when Sheets i
 | `agent/daily_agent.py` | Morning planner prompt and validation |
 | `agent/telegram_bot.py`, `agent/llm_client.py` | Telegram bot, AI tools, model fallback |
 | `agent/alerts.py`, `agent/dev_agent.py` | Custom alerts; the code-fixing dev agent |
-| `services/` | NetZero, ChargePoint and Google Sheets clients |
+| `services/` | Tesla Fleet API, NetZero, ChargePoint and Google Sheets clients |
 | `reporting/` | Telemetry, energy/bill analytics, notifications |
 | `dashboard/` | Web dashboard |
 

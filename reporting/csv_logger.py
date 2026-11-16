@@ -19,6 +19,7 @@ from core.tou import (
     is_weekend,
     provider_label,
 )
+from reporting import energy_history
 from reporting.logger import log_csv
 
 CSV_HEADERS = [
@@ -658,8 +659,9 @@ def get_home_energy_summary(period: str = "today") -> dict:
         return {"error": "No log data found yet."}
 
     try:
-        home = solar = imported = exported = 0.0
-        grid_cost = export_credit = 0.0
+        # Whole-home figures per day: snapshot estimates first, then replaced
+        # by Tesla's metered totals for every day that has them.
+        per_day: dict[date, list[float]] = {}  # [home, solar, imported, exported, grid_cost]
         ev_kwh = ev_grid_kwh = ev_solar_kwh = ev_cost = 0.0
 
         for iv in _ev_intervals_between(start, end):
@@ -667,18 +669,25 @@ def get_home_energy_summary(period: str = "today") -> dict:
             if r.day < start:
                 continue
             h = r.interval_h
-            home += r.home_kw * h
-            solar += r.solar_kw * h
+            day = per_day.setdefault(r.day, [0.0] * 5)
+            day[0] += r.home_kw * h
+            day[1] += r.solar_kw * h
             ev_kwh += iv.kwh
             ev_grid_kwh += iv.grid_kwh
             ev_cost += iv.grid_cost
             ev_solar_kwh += iv.solar_kwh
             if r.grid_kw > 0:
-                imported += r.grid_import_kw * h
-                grid_cost += r.grid_import_kw * h * r.rate
+                day[2] += r.grid_import_kw * h
+                day[4] += r.grid_import_kw * h * r.rate
             else:
-                exported += r.grid_export_kw * h
-                export_credit += r.grid_export_kw * h * _export_credit_rate()
+                day[3] += r.grid_export_kw * h
+
+        metered = energy_history.daily_totals(start, end)
+        for d, m in metered.items():
+            per_day[d] = [m["home_kwh"], m["solar_kwh"], m["grid_import_kwh"],
+                          m["solar_export_kwh"], m["variable_grid_cost"]]
+        home, solar, imported, exported, grid_cost = (sum(v[i] for v in per_day.values()) for i in range(5))
+        export_credit = exported * _export_credit_rate()
 
         fixed = _fixed_fee(days)
         appliance_cost = max(0.0, grid_cost - ev_cost)
@@ -711,10 +720,20 @@ def get_home_energy_summary(period: str = "today") -> dict:
             "home_appliances_share_of_bill_dollars": round(appliance_cost, 2),
             "home_self_powered_percentage": _self_powered_pct(home, imported),
             "utility_rate_plan": provider_label(),
+            "metered_days_count": len(metered),
+            "data_note": _metered_note(len(metered), days),
         }
     except Exception as e:
         log_csv.error(f"Error calculating home energy summary: {e}", exc_info=True)
         return {"error": f"Failed to calculate home energy summary: {e}"}
+
+
+def _metered_note(metered: int, days: int) -> str:
+    if metered >= days:
+        return "Metered by Tesla (exact)."
+    if metered:
+        return f"{metered} of {days} days metered by Tesla; the rest estimated from 15-minute snapshots."
+    return "Estimated from 15-minute snapshots."
 
 
 _TOU_LABELS = (("on_peak", "On-peak"), ("partial_peak", "Partial-peak"), ("off_peak", "Off-peak"))
@@ -732,17 +751,26 @@ def get_bill_breakdown(period: str = "today") -> dict:
     if not rows:
         return {"error": "No log data found yet."}
 
-    grid_kwh = dict.fromkeys((key for key, _ in _TOU_LABELS), 0.0)
-    taxed_cost = dict.fromkeys(grid_kwh, 0.0)
-    export_kwh = 0.0
+    keys = [key for key, _ in _TOU_LABELS]
+    per_day: dict[date, dict] = {}
     for r in _readings(rows, start, end):
         h = r.interval_h
+        d = per_day.setdefault(r.day, {"kwh": dict.fromkeys(keys, 0.0), "cost": dict.fromkeys(keys, 0.0),
+                                       "export": 0.0})
         if r.grid_kw > 0:
-            bucket = r.tou_period if r.tou_period in grid_kwh else "off_peak"
-            grid_kwh[bucket] += r.grid_import_kw * h
-            taxed_cost[bucket] += r.grid_import_kw * h * r.rate
+            bucket = r.tou_period if r.tou_period in keys else "off_peak"
+            d["kwh"][bucket] += r.grid_import_kw * h
+            d["cost"][bucket] += r.grid_import_kw * h * r.rate
         else:
-            export_kwh += r.grid_export_kw * h
+            d["export"] += r.grid_export_kw * h
+    metered = energy_history.daily_totals(start, end)
+    for day, m in metered.items():
+        per_day[day] = {"kwh": {k: m[f"{k}_grid_kwh"] for k in keys},
+                        "cost": {k: m[f"{k}_grid_cost"] for k in keys},
+                        "export": m["solar_export_kwh"]}
+    grid_kwh = {k: sum(d["kwh"][k] for d in per_day.values()) for k in keys}
+    taxed_cost = {k: sum(d["cost"][k] for d in per_day.values()) for k in keys}
+    export_kwh = sum(d["export"] for d in per_day.values())
 
     def line(text, amount, detail=""):
         return {"label": text, "detail": detail, "amount": round(amount, 2)}
@@ -783,6 +811,8 @@ def get_bill_breakdown(period: str = "today") -> dict:
         "grid_import_kwh": round(sum(grid_kwh.values()), 2),
         "groups": groups,
         "total_dollars": round(total, 2),
+        "metered_days_count": len(metered),
+        "data_note": _metered_note(len(metered), days),
     }
 
 
@@ -928,6 +958,18 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
     expected = int(24 * 60 / max(1, config.CHECK_INTERVAL_MINUTES))
     records, totals = [], dict.fromkeys(fields, 0.0)
 
+    # Days Tesla metered replace the snapshot estimate for whole-home figures.
+    # EV figures stay from the ChargePoint meter; the day is not scaled up.
+    metered = energy_history.daily_totals(start, end)
+    for day, m in metered.items():
+        entry = daily[day]
+        for f in ("home_kwh", "solar_kwh", "grid_import_kwh", "solar_export_kwh", "variable_grid_cost",
+                  "on_peak_grid_kwh", "partial_peak_grid_kwh", "off_peak_grid_kwh"):
+            entry[f] = m[f]
+        entry["solar_export_credit"] = m["solar_export_kwh"] * _export_credit_rate()
+        entry["readings_count"] = max(entry["readings_count"], expected)
+        entry["metered"] = True
+
     # Scale up days that missed intervals (restarts, updates, downtime)
     # so a gap does not read as artificially zero consumption.
     valid_days = [d for d in daily if daily[d]["readings_count"] > 0]
@@ -994,5 +1036,7 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
         "home_appliances_cost_dollars": round(max(0.0, total_var_cost - totals["ev_grid_cost"]), 2),
         "self_powered_percentage": _self_powered_pct(totals["home_kwh"], totals["grid_import_kwh"]),
         "utility_rate_plan": provider_label(),
+        "metered_days_count": len(metered),
+        "data_note": _metered_note(len(metered), days_count),
         "daily_records": records,
     }
