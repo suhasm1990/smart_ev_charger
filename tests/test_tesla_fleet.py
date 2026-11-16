@@ -93,6 +93,20 @@ class TestTokenRotation(_TeslaCase):
             tesla_fleet._access_token(tesla_fleet._store(), force=False)
         self.assertEqual(post.call_args.kwargs["data"]["refresh_token"], "seed-NEW")
 
+    def test_fresh_container_restores_the_rotated_token_from_sheets(self):
+        sheet = {}
+        with mock.patch.object(tesla_fleet.sheets_db, "is_disabled", return_value=False), \
+             mock.patch.object(tesla_fleet.sheets_db, "update_settings",
+                               side_effect=lambda patch, blocking=False: sheet.update(patch)), \
+             mock.patch.object(tesla_fleet.sheets_db, "get_settings", side_effect=lambda **_: dict(sheet)):
+            with mock.patch.object(tesla_fleet._session, "post", return_value=_response(body=_token(2))):
+                tesla_fleet._access_token(tesla_fleet._store(), force=False)
+            os.remove(config.TESLA_TOKEN_FILE)  # a new image starts with an empty logs/
+            with mock.patch.object(tesla_fleet._session, "post", return_value=_response(body=_token(3))) as post:
+                tesla_fleet._access_token(tesla_fleet._store(), force=True)
+        self.assertEqual(post.call_args.kwargs["data"]["refresh_token"], "refresh-2")
+        self.assertEqual(json.loads(sheet[tesla_fleet.SHEETS_KEY])["refresh_token"], "refresh-3")
+
     def test_401_refreshes_once_and_retries(self):
         with mock.patch.object(tesla_fleet._session, "post",
                                side_effect=[_response(body=_token(2)), _response(body=_token(3))]), \

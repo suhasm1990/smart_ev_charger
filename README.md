@@ -84,7 +84,7 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 
 | Key `.env` values | Purpose |
 | :--- | :--- |
-| `TESLA_CLIENT_ID`, `TESLA_REFRESH_TOKEN`, `TESLA_ENERGY_SITE_ID` | Tesla Fleet API (preferred Powerwall source); `tools/tesla_fleet_check.py check` prints them (`TESLA_CLIENT_SECRET` is only used by that script). The refresh token is only the seed; Tesla rotates it and the newest is kept in `logs/tesla_fleet.json` |
+| `TESLA_CLIENT_ID`, `TESLA_REFRESH_TOKEN`, `TESLA_ENERGY_SITE_ID` | Tesla Fleet API (preferred Powerwall source); `tools/tesla_fleet_check.py check` prints them (`TESLA_CLIENT_SECRET` is only used by that script). The refresh token is only the seed; Tesla rotates it, and the newest is kept in `logs/tesla_fleet.json` and backed up to the Sheet's Settings tab (`TESLA_TOKEN_STATE`) so a fresh container picks it up |
 | `NETZERO_*`, `CHARGEPOINT_*`, `TELEGRAM_*` | API credentials (NetZero optional when Tesla is set) |
 | `LLM_MODEL`, `GEMINI_API_KEY`, `NVIDIA_API_KEY` | AI model (optional override; see below) |
 | `UTILITY_PROVIDER` | Rate plan: `MID` (default) or `PGE`. Any other name uses MID's energy rates with your own `UTILITY_*` fees |

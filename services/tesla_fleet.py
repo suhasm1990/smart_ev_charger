@@ -1,8 +1,9 @@
 """Powerwall live status and metered energy history from the Tesla Fleet API.
 
 Tesla refresh tokens are single use: every refresh returns a new one, saved to
-TESLA_TOKEN_FILE before anything else. TESLA_REFRESH_TOKEN in .env is only the
-seed, adopted on first start and again whenever it changes (a new sign-in).
+TESLA_TOKEN_FILE and backed up to the Google Sheet settings tab, because a new
+image starts with an empty logs/ folder. TESLA_REFRESH_TOKEN in .env is only
+the seed, adopted on first start and again whenever it changes (a new sign-in).
 
 Requests are not retried: Tesla bills every response below HTTP 500, and the
 caller falls back to NetZero for that cycle anyway.
@@ -17,9 +18,11 @@ from datetime import date, datetime, timedelta
 import requests
 
 from core import config
+from services import sheets_db
 from services.netzero import build_stats
 
 TOKEN_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
+SHEETS_KEY = "TESLA_TOKEN_STATE"
 _REFRESH_MARGIN_S = 300  # refresh the access token 5 minutes before it expires
 
 _session = requests.Session()
@@ -41,11 +44,21 @@ def is_configured() -> bool:
 # ── Token store (also holds this month's call count) ────────────────────────
 
 def _load() -> dict:
+    """The local store; on a fresh container, the copy backed up in Sheets."""
     try:
         with open(config.TESLA_TOKEN_FILE) as f:
             return json.load(f)
     except (OSError, ValueError):
+        pass
+    if sheets_db.is_disabled():
         return {}
+    try:
+        backup = json.loads(sheets_db.get_settings(force_refresh=True).get(SHEETS_KEY) or "{}")
+    except Exception:
+        return {}
+    if backup:
+        _save(backup)
+    return backup
 
 
 def _save(store: dict):
@@ -84,6 +97,8 @@ def _access_token(store: dict, force: bool) -> str:
     store.update(refresh_token=body["refresh_token"], access_token=body["access_token"],
                  expires_at=time.time() + float(body["expires_in"]))
     _save(store)
+    if not sheets_db.is_disabled():
+        sheets_db.update_settings({SHEETS_KEY: json.dumps(store)}, blocking=True)
     return store["access_token"]
 
 
