@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Prove the Tesla Fleet API works for this Powerwall before any app changes.
 
-Standalone: needs only `requests`. Run it on your own computer, in this order:
+Standalone: needs only `requests`. Run it on your own computer.
 
-    export TESLA_CLIENT_ID=...        # from developer.tesla.com/dashboard
-    export TESLA_CLIENT_SECRET=...
-    export TESLA_DOMAIN=suhasm1990.github.io          # where the public key is hosted
-    export TESLA_REDIRECT_URI=https://suhasm1990.github.io/callback
+Put the app credentials in ~/.tesla_fleet/credentials.env (or export them):
 
-    python tools/tesla_fleet_check.py register   # one time: partner token + register domain
-    python tools/tesla_fleet_check.py login      # one time: sign in, paste the code back
-    python tools/tesla_fleet_check.py check      # any time: live + history calls
+    TESLA_CLIENT_ID=...               # from developer.tesla.com/dashboard
+    TESLA_CLIENT_SECRET=...
+    TESLA_DOMAIN=suhasm1990.github.io                       # optional, this is the default
+    TESLA_REDIRECT_URI=https://suhasm1990.github.io/callback  # optional, this is the default
+
+Then, in this order:
+
+    python tools/tesla_fleet_check.py register          # one time: register the domain
+    python tools/tesla_fleet_check.py login             # prints the sign-in link
+    python tools/tesla_fleet_check.py login '<url>'     # finish: the URL you landed on
+    python tools/tesla_fleet_check.py check             # any time: live + history calls
 
 Tokens are saved to ~/.tesla_fleet/tokens.json (outside the repo). Raw API
 responses go to ~/.tesla_fleet/responses/ so you can see exactly what came back.
@@ -38,12 +43,32 @@ TZ_NAME = os.environ.get("TZ_NAME", "America/Los_Angeles")
 HOME = Path(os.environ.get("TESLA_FLEET_HOME", Path.home() / ".tesla_fleet"))
 TOKENS_FILE = HOME / "tokens.json"
 RESPONSES_DIR = HOME / "responses"
+CREDENTIALS_FILE = HOME / "credentials.env"
+LOGIN_STATE_FILE = HOME / "login_state.json"
+DEFAULTS = {
+    "TESLA_DOMAIN": "suhasm1990.github.io",
+    "TESLA_REDIRECT_URI": "https://suhasm1990.github.io/callback",
+}
+
+
+def _load_credentials():
+    """Read KEY=VALUE lines from credentials.env; exported variables win."""
+    if CREDENTIALS_FILE.exists():
+        for line in CREDENTIALS_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.removeprefix("export ").strip()
+            os.environ.setdefault(key, value.strip().strip("'\""))
+    for key, value in DEFAULTS.items():
+        os.environ.setdefault(key, value)
 
 
 def _need(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        sys.exit(f"Set {name} first (see the top of this file).")
+        sys.exit(f"Set {name} in {CREDENTIALS_FILE} or export it (see the top of this file).")
     return value
 
 
@@ -105,30 +130,39 @@ def cmd_register():
 
 
 # ── Step 2: sign in as the Powerwall owner (authorization code) ──────────────
-def cmd_login():
+def cmd_login(pasted: str = None):
     client_id, secret = _need("TESLA_CLIENT_ID"), _need("TESLA_CLIENT_SECRET")
     redirect = _need("TESLA_REDIRECT_URI")
-    state = secrets.token_urlsafe(16)
-    url = AUTH_URL + "?" + urllib.parse.urlencode({
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect,
-        "scope": SCOPES,
-        "state": state,
-        "locale": "en-US",
-        "prompt_missing_scopes": "true",
-    })
-    print("1. Open this URL, sign in with your Tesla account and approve:\n")
-    print(f"   {url}\n")
-    print("2. You land on your redirect URL (a 404 page there is fine).")
-    pasted = input("   Paste the FULL URL from the address bar here: ").strip()
-    query = urllib.parse.parse_qs(urllib.parse.urlparse(pasted).query)
+    if not pasted:
+        state = secrets.token_urlsafe(16)
+        HOME.mkdir(parents=True, exist_ok=True)
+        LOGIN_STATE_FILE.write_text(json.dumps({"state": state}))
+        url = AUTH_URL + "?" + urllib.parse.urlencode({
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "scope": SCOPES,
+            "state": state,
+            "locale": "en-US",
+            "prompt_missing_scopes": "true",
+        })
+        print("1. Open this URL, sign in with your Tesla account and approve:\n")
+        print(f"   {url}\n")
+        print("2. You land on your redirect URL (a 404 page there is fine). Copy the FULL")
+        print("   URL from the address bar and run (keep the quotes):\n")
+        print(f"   python {sys.argv[0]} login '<that URL>'")
+        return
+
+    if not LOGIN_STATE_FILE.exists():
+        sys.exit("Run login without a URL first to get the sign-in link.")
+    state = json.loads(LOGIN_STATE_FILE.read_text())["state"]
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(pasted.strip()).query)
     if query.get("state", [""])[0] != state:
-        sys.exit("State does not match. Start login again and paste the newest URL.")
+        sys.exit("State does not match. Run login again and use the newest link.")
     if "code" not in query:
         sys.exit(f"No code in that URL: {query.get('error', query)}")
 
-    print("3. Exchange code for tokens")
+    print("Exchanging code for tokens")
     tokens = _show("user_token", requests.post(TOKEN_URL, data={
         "grant_type": "authorization_code",
         "client_id": client_id,
@@ -140,7 +174,8 @@ def cmd_login():
     if "refresh_token" not in tokens:
         sys.exit("No refresh_token returned; offline_access scope is missing.")
     _save_tokens(tokens)
-    print(f"Saved tokens to {TOKENS_FILE}. Next: python tools/tesla_fleet_check.py check")
+    LOGIN_STATE_FILE.unlink(missing_ok=True)
+    print(f"Saved tokens to {TOKENS_FILE}. Next: python {sys.argv[0]} check")
 
 
 def _refresh(tokens: dict) -> dict:
@@ -227,7 +262,10 @@ def cmd_check():
 
 
 if __name__ == "__main__":
-    commands = {"register": cmd_register, "login": cmd_login, "check": cmd_check}
-    if len(sys.argv) != 2 or sys.argv[1] not in commands:
-        sys.exit(f"Usage: python {sys.argv[0]} [{'|'.join(commands)}]")
-    commands[sys.argv[1]]()
+    _load_credentials()
+    if len(sys.argv) == 3 and sys.argv[1] == "login":
+        cmd_login(sys.argv[2])
+    elif len(sys.argv) == 2 and sys.argv[1] in ("register", "login", "check"):
+        {"register": cmd_register, "login": cmd_login, "check": cmd_check}[sys.argv[1]]()
+    else:
+        sys.exit(f"Usage: python {sys.argv[0]} register | login ['<url>'] | check")
