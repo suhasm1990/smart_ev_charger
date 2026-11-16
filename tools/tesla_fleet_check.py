@@ -125,10 +125,11 @@ def cmd_register():
     _show("partner_register", requests.post(
         f"{API_BASE}/api/1/partner_accounts", json={"domain": domain}, headers=headers, timeout=20))
 
-    print("4. Confirm Tesla has the key on file")
-    _show("partner_public_key", requests.get(
-        f"{API_BASE}/api/1/partner_accounts/public_key", params={"domain": domain},
-        headers=headers, timeout=20))
+    print("4. Confirm Tesla has the key on file (informational)")
+    r = requests.get(f"{API_BASE}/api/1/partner_accounts/public_key", params={"domain": domain},
+                     headers=headers, timeout=20)
+    print(f"  partner_public_key: HTTP {r.status_code}"
+          + ("" if r.ok else " (read-back only; registration above already succeeded)"))
     print("Registered. Next: python tools/tesla_fleet_check.py login")
 
 
