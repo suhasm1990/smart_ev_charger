@@ -136,3 +136,26 @@ def seed_telemetry(days_back_start: int = 40, days: int = 31, interval_minutes: 
                 "tou_period": "", "tou_rate_per_kwh": "0.17",
             })
     return rows
+
+
+def seed_energy_history(rows: list[dict], test) -> None:
+    """Stores Tesla-style metered history matching seeded telemetry rows, in a
+    throwaway file for this test only."""
+    import os
+    import tempfile
+    from unittest import mock
+
+    from reporting import energy_history
+
+    path = os.path.join(tempfile.mkdtemp(), "energy_history.csv")
+    patcher = mock.patch.object(config, "ENERGY_HISTORY_FILE", path)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    wh = 1000 * 15 / 60  # kW over a 15-minute row -> Wh
+    energy_history.store([{
+        "timestamp": r["timestamp"],
+        "grid_energy_imported": max(0.0, float(r["grid_kw"])) * wh,
+        "grid_energy_exported_from_solar": max(0.0, -float(r["grid_kw"])) * wh,
+        "solar_energy_exported": float(r["solar_kw"]) * wh,
+        "total_home_usage": float(r["home_kw"]) * wh,
+    } for r in rows])

@@ -136,7 +136,6 @@ class TestAnalyticsRobustness(unittest.TestCase):
             {},
         ]
         for result in (csv_logger.get_daily_charging_cost("today"),
-                       csv_logger.get_home_energy_summary("today"),
                        csv_logger.get_energy_saving_advice()):
             self.assertNotIn("error", result)
 

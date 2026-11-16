@@ -23,6 +23,7 @@ from core import (
 from core import goal as charge_goal
 from dashboard import record_live, start_dashboard_server
 from reporting import (
+    energy_history,
     log,
     log_chargepoint,
     log_decision,
@@ -242,6 +243,7 @@ def run_cycle():
         action, reason = evaluate(stats, now)
         log.info(
             f"CYCLE | action={action} | state={state.charger_state} | tou={tou} | "
+            f"source={stats.get('data_source', '?')} | "
             f"battery={stats['battery_pct']}% | solar={stats['solar_kw']}kW | "
             f"surplus={stats['solar_surplus_kw']}kW | home={stats['home_kw']}kW | "
             f"grid={stats['grid_kw']}kW | session={get_session_minutes():.0f}min | "
@@ -291,7 +293,7 @@ def run_cycle():
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "N/A"
-        log.error(f"NETZERO API ERROR | status={status} | {e}")
+        log.error(f"POWERWALL API ERROR | status={status} | {e}")
         _note_api_failure("Failed to fetch Powerwall stats")
     except Exception as e:
         log.error(f"CYCLE ERROR | {type(e).__name__}: {e}", exc_info=True)
@@ -405,6 +407,13 @@ def check_monthly_schedule():
         log.error(f"Failed to send the monthly report: {e}")
 
 
+def sync_energy_history():
+    try:
+        energy_history.sync()
+    except Exception as e:
+        log.warning(f"Energy history sync failed: {type(e).__name__}: {e}")
+
+
 _shutdown_event = threading.Event()
 
 
@@ -455,6 +464,9 @@ def main():
     log.info(f"STARTUP | Min session: {config.MIN_CHARGE_MINUTES}min | Interval: {config.CHECK_INTERVAL_MINUTES}min")
     log.info(f"STARTUP | Amperage: default={config.DEFAULT_CHARGER_AMPERAGE}A max={config.MAX_CHARGER_AMPERAGE}A")
     log.info(f"STARTUP | CSV log: {config.CSV_LOG_FILE} | Text log: {config.TEXT_LOG_FILE}")
+    from services.powerwall import active_source
+    log.info(f"STARTUP | Powerwall data: {active_source()} | "
+             f"Tesla calls budget: {config.TESLA_MONTHLY_CALL_BUDGET}/month")
     log.info("=" * 70)
 
     # Read the previous run's exit marker and heartbeat before this run overwrites them.
@@ -472,6 +484,8 @@ def main():
     schedule.every().day.at(config.DAILY_RESET_TIME, tz_name).do(daily_reset)
     schedule.every().day.at(config.DAILY_AGENT_TIME, tz_name).do(_run_in_thread(run_daily_agent, "DailyAgent"))
     schedule.every().day.at("07:00", tz_name).do(_run_in_thread(check_monthly_schedule, "MonthlyReport"))
+    # Metered Tesla history: one call a night for yesterday.
+    schedule.every().day.at("01:00", tz_name).do(_run_in_thread(sync_energy_history, "EnergyHistory"))
     _register_cycle_job(config.CHECK_INTERVAL_MINUTES)
 
     if config.TELEGRAM_BOT_TOKEN:
@@ -479,6 +493,7 @@ def main():
     start_dashboard_server()
 
     run_cycle_safe()
+    _run_in_thread(sync_energy_history, "EnergyHistory")()  # backfills missing days, if any
 
     while not _shutdown_event.is_set():
         schedule.run_pending()

@@ -53,9 +53,20 @@ def get_powerwall_stats(now: datetime = None) -> dict:
     live = data.get("live_status")
     if not isinstance(live, dict):
         raise ValueError("NetZero response is missing 'live_status' — API schema may have changed")
+    if live.get("percentage_charged") is None and data.get("percentage_charged") is not None:
+        live = {**live, "percentage_charged": data["percentage_charged"]}
+    return build_stats(live, now, source="NetZero")
+
+
+def build_stats(live: dict, now: datetime = None, source: str = "NetZero") -> dict:
+    """Maps a Tesla-style live_status (watts) to the charger's stats dict.
+
+    NetZero relays Tesla's own live_status, and the Fleet API returns the same
+    field names, so both sources share this mapping.
+    """
     missing = [k for k in ("solar_power", "load_power", "grid_power", "battery_power") if k not in live]
     if missing:
-        raise ValueError(f"NetZero live_status is missing fields: {', '.join(missing)}")
+        raise ValueError(f"{source} live_status is missing fields: {', '.join(missing)}")
 
     now = now or datetime.now(config.TZ)
     solar_kw = max(0.0, round(live["solar_power"] / 1000, 2))
@@ -74,7 +85,7 @@ def get_powerwall_stats(now: datetime = None) -> dict:
         battery_activity, battery_flow_desc = "idle", "idle (0.0 kW)"
 
     stats = {
-        "battery_pct":        round(live.get("percentage_charged") or data.get("percentage_charged", 0), 1),
+        "battery_pct":        round(live.get("percentage_charged") or 0, 1),
         "solar_kw":           solar_kw,
         "home_kw":            home_kw,
         "grid_kw":            grid_kw,
@@ -87,10 +98,11 @@ def get_powerwall_stats(now: datetime = None) -> dict:
         "island_mode":        live.get("island_status", "on_grid"),
         "storm_mode":         live.get("storm_mode_active", False),
         "data_ts":            live.get("timestamp", ""),
+        "data_source":        source,
     }
 
     log_netzero.debug(
-        f"solar={stats['solar_kw']}kW | home={stats['home_kw']}kW | "
+        f"{source} | solar={stats['solar_kw']}kW | home={stats['home_kw']}kW | "
         f"surplus={stats['solar_surplus_kw']}kW | grid={stats['grid_kw']}kW | "
         f"battery={stats['battery_kw']}kW ({stats['battery_pct']}%) | "
         f"self_powered={stats['self_powered_pct']}% | island={stats['island_mode']} | "

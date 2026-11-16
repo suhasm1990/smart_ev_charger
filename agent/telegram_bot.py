@@ -33,7 +33,7 @@ from reporting.report_generator import generate_monthly_report_image
 from services.chargepoint import get_charger_status as get_cp_status
 from services.chargepoint import set_charger_amperage_limit, start_charger
 from services.charger_ops import stop_and_restore_defaults
-from services.netzero import get_powerwall_stats
+from services.powerwall import get_powerwall_stats
 from services.sheets_db import add_user_instruction
 
 RUN_CYCLE_CALLBACK = None

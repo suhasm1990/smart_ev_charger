@@ -34,6 +34,22 @@ NETZERO_SITE_ID   = _env("NETZERO_SITE_ID")
 NETZERO_API_TOKEN = _env("NETZERO_API_TOKEN")
 NETZERO_BASE_URL  = _env("NETZERO_BASE_URL", "https://api.netzero.energy/api/v1")
 
+# ── Tesla Fleet API (Powerwall) ─────────────────────────────────────────────
+# Preferred Powerwall source when TESLA_CLIENT_ID and TESLA_REFRESH_TOKEN are
+# set; NetZero stays as the fallback. TESLA_REFRESH_TOKEN is only the first
+# token: Tesla rotates it on every refresh, and the newest one is kept in
+# TESLA_TOKEN_FILE (under logs/, which survives restarts).
+TESLA_CLIENT_ID      = _env("TESLA_CLIENT_ID")  # TESLA_CLIENT_SECRET is only needed by tools/tesla_fleet_check.py
+TESLA_REFRESH_TOKEN  = _env("TESLA_REFRESH_TOKEN")
+TESLA_ENERGY_SITE_ID = _env("TESLA_ENERGY_SITE_ID")
+TESLA_API_BASE       = _env("TESLA_API_BASE", "https://fleet-api.prd.na.vn.cloud.tesla.com")
+TESLA_TOKEN_FILE     = _env("TESLA_TOKEN_FILE", "logs/tesla_fleet.json")
+ENERGY_HISTORY_FILE  = _env("ENERGY_HISTORY_FILE", "logs/energy_history.csv")
+ENERGY_HISTORY_BACKFILL_MONTHS = _env_int("ENERGY_HISTORY_BACKFILL_MONTHS", "1")  # months before the current one
+# Tesla bills 500 data calls per $1 and credits $10 a month. 4,500 calls ($9)
+# keeps a margin; past it, live data falls back to NetZero until the 1st.
+TESLA_MONTHLY_CALL_BUDGET = _env_int("TESLA_MONTHLY_CALL_BUDGET", "4500")
+
 # ── ChargePoint ─────────────────────────────────────────────────────────────
 CHARGEPOINT_USERNAME      = _env("CHARGEPOINT_USERNAME")
 CHARGEPOINT_COULOMB_TOKEN = _env("CHARGEPOINT_COULOMB_TOKEN")
