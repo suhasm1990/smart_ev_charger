@@ -243,6 +243,7 @@ def run_cycle():
         action, reason = evaluate(stats, now)
         log.info(
             f"CYCLE | action={action} | state={state.charger_state} | tou={tou} | "
+            f"source={stats.get('data_source', '?')} | "
             f"battery={stats['battery_pct']}% | solar={stats['solar_kw']}kW | "
             f"surplus={stats['solar_surplus_kw']}kW | home={stats['home_kw']}kW | "
             f"grid={stats['grid_kw']}kW | session={get_session_minutes():.0f}min | "
