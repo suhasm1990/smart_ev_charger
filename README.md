@@ -84,7 +84,7 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 
 | Key `.env` values | Purpose |
 | :--- | :--- |
-| `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET`, `TESLA_REFRESH_TOKEN`, `TESLA_ENERGY_SITE_ID` | Tesla Fleet API (preferred Powerwall source). `tools/tesla_fleet_check.py check` prints all four. The refresh token is only the seed; Tesla rotates it and the newest is kept in `logs/tesla_fleet.json` |
+| `TESLA_CLIENT_ID`, `TESLA_REFRESH_TOKEN`, `TESLA_ENERGY_SITE_ID` | Tesla Fleet API (preferred Powerwall source); `tools/tesla_fleet_check.py check` prints them (`TESLA_CLIENT_SECRET` is only used by that script). The refresh token is only the seed; Tesla rotates it and the newest is kept in `logs/tesla_fleet.json` |
 | `NETZERO_*`, `CHARGEPOINT_*`, `TELEGRAM_*` | API credentials (NetZero optional when Tesla is set) |
 | `LLM_MODEL`, `GEMINI_API_KEY`, `NVIDIA_API_KEY` | AI model (optional override; see below) |
 | `UTILITY_PROVIDER` | Rate plan: `MID` (default) or `PGE`. Any other name uses MID's energy rates with your own `UTILITY_*` fees |
@@ -92,10 +92,11 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 | `POWERWALL_USABLE_KWH`, `EV_MILES_PER_KWH` | 13.5 kWh, 3.53 mi/kWh |
 | `TESLA_MONTHLY_CALL_BUDGET` | 4500 calls (about $9 of Tesla's $10 monthly credit); past it, live data uses NetZero until the 1st |
 
-**Metered energy history.** With Tesla configured, the charger pulls yesterday's 5-minute energy history once a
-night (one API call) into `logs/energy_history.csv`, and on start backfills the current and previous month with one call
-per month. Bills, `/report` and the dashboard use these metered days, each interval priced at its own TOU rate, and
-fall back to the 15-minute snapshot estimate for days without them.
+**Metered energy history.** The charger pulls yesterday's 5-minute energy history once a night (one API call) into
+`logs/energy_history.csv`, and on start backfills the current and previous month with one call per month. Today so far
+is fetched only when the dashboard or bot asks, at most once an hour. Home usage, solar, grid import/export, bills and
+`/report` come only from this history, each interval priced at its own TOU rate. EV figures still come from the
+ChargePoint meter in the charger log.
 
 **Changing the AI model.** The default is `DEFAULT_LLM_MODEL` in `core/config.py` (currently `gemini-4-hydrogen`).
 The provider is worked out from the model name, so a model name is all you ever set. To switch at runtime, send

@@ -80,17 +80,17 @@ class TestTokenRotation(_TeslaCase):
     def test_next_refresh_uses_the_rotated_token_not_the_seed(self):
         with mock.patch.object(tesla_fleet._session, "post",
                                side_effect=[_response(body=_token(2)), _response(body=_token(3))]) as post:
-            tesla_fleet._access_token()
-            tesla_fleet._access_token(force_refresh=True)
+            tesla_fleet._access_token(tesla_fleet._store(), force=False)
+            tesla_fleet._access_token(tesla_fleet._store(), force=True)
         self.assertEqual(post.call_args.kwargs["data"]["refresh_token"], "refresh-2")
         self.assertEqual(self.store()["refresh_token"], "refresh-3")
 
     def test_a_new_seed_in_env_replaces_the_chain(self):
         with mock.patch.object(tesla_fleet._session, "post", return_value=_response(body=_token(2))):
-            tesla_fleet._access_token()
+            tesla_fleet._access_token(tesla_fleet._store(), force=False)
         with mock.patch.object(config, "TESLA_REFRESH_TOKEN", "seed-NEW"), \
              mock.patch.object(tesla_fleet._session, "post", return_value=_response(body=_token(9))) as post:
-            tesla_fleet._access_token()
+            tesla_fleet._access_token(tesla_fleet._store(), force=False)
         self.assertEqual(post.call_args.kwargs["data"]["refresh_token"], "seed-NEW")
 
     def test_401_refreshes_once_and_retries(self):
@@ -105,7 +105,7 @@ class TestTokenRotation(_TeslaCase):
     def test_rejected_refresh_token_raises_auth_error(self):
         with mock.patch.object(tesla_fleet._session, "post", return_value=_response(400)):
             with self.assertRaises(tesla_fleet.TeslaAuthError):
-                tesla_fleet._access_token()
+                tesla_fleet._access_token(tesla_fleet._store(), force=False)
 
 
 class TestBudgetAndFallback(_TeslaCase):
@@ -207,16 +207,26 @@ class TestEnergyHistory(_TeslaCase):
         have = {date(2026, 11, 1) + timedelta(days=i) for i in range(15)}
         self.assertEqual(energy_history.plan_fetches(today, have, months=0), [])
 
-    def test_sync_fetches_only_missing_days(self):
+    def test_nightly_sync_is_one_call_for_yesterday_even_if_partly_stored(self):
         yesterday = DAY - timedelta(days=1)
         with mock.patch.object(config, "ENERGY_HISTORY_BACKFILL_MONTHS", 0), \
              mock.patch.object(energy_history, "metered_days",
-                               return_value={DAY.replace(day=d) for d in range(1, yesterday.day)}), \
+                               return_value={DAY.replace(day=d) for d in range(1, DAY.day)}), \
              mock.patch.object(tesla_fleet, "get_energy_intervals",
                                return_value=self._full_day(yesterday)) as fetch:
             result = energy_history.sync(now=_midnight(DAY).replace(hour=0, minute=30))
         fetch.assert_called_once_with(yesterday, yesterday)
         self.assertEqual(result["calls"], 1)
+
+
+    def test_today_is_fetched_on_demand_at_most_hourly(self):
+        today = datetime.now(config.TZ).date()
+        with mock.patch.object(energy_history, "_today_fetched_at", None), \
+             mock.patch.object(tesla_fleet, "get_energy_intervals", return_value=[]) as fetch:
+            energy_history.daily_totals(today, today)
+            energy_history.daily_totals(today - timedelta(days=3), today)
+            energy_history.daily_totals(today - timedelta(days=3), today - timedelta(days=1))
+        fetch.assert_called_once_with(today, today)
 
 
 class TestBillsUseMeteredDays(_TeslaCase):
@@ -226,7 +236,7 @@ class TestBillsUseMeteredDays(_TeslaCase):
              mock.patch.object(csv_logger, "_readings", return_value=iter([])):
             bill = csv_logger.get_bill_breakdown(str(DAY))
         self.assertEqual(bill["grid_import_kwh"], 3.0)
-        self.assertEqual(bill["metered_days_count"], 1)
+        self.assertEqual(bill["data_note"], "Metered by Tesla.")
         energy = {line["label"]: line["detail"] for line in bill["groups"][0]["lines"]}
         self.assertEqual(energy["On-peak"], "1.0 kWh" if config._IS_MID else "1.0 kWh, incl. taxes")
 
@@ -237,7 +247,7 @@ class TestBillsUseMeteredDays(_TeslaCase):
             summary = csv_logger.get_home_energy_summary(str(DAY))
         self.assertEqual(summary["total_grid_imported_kwh"], 3.0)
         self.assertEqual(summary["total_solar_exported_kwh"], 0.5)
-        self.assertEqual(summary["data_note"], "Metered by Tesla (exact).")
+        self.assertEqual(summary["data_note"], "Metered by Tesla.")
 
     @staticmethod
     def _day():

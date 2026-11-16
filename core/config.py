@@ -39,10 +39,9 @@ NETZERO_BASE_URL  = _env("NETZERO_BASE_URL", "https://api.netzero.energy/api/v1"
 # set; NetZero stays as the fallback. TESLA_REFRESH_TOKEN is only the first
 # token: Tesla rotates it on every refresh, and the newest one is kept in
 # TESLA_TOKEN_FILE (under logs/, which survives restarts).
-TESLA_CLIENT_ID      = _env("TESLA_CLIENT_ID")
-TESLA_CLIENT_SECRET  = _env("TESLA_CLIENT_SECRET")
+TESLA_CLIENT_ID      = _env("TESLA_CLIENT_ID")  # TESLA_CLIENT_SECRET is only needed by tools/tesla_fleet_check.py
 TESLA_REFRESH_TOKEN  = _env("TESLA_REFRESH_TOKEN")
-TESLA_ENERGY_SITE_ID = _env("TESLA_ENERGY_SITE_ID")  # optional: looked up from /products when empty
+TESLA_ENERGY_SITE_ID = _env("TESLA_ENERGY_SITE_ID")
 TESLA_API_BASE       = _env("TESLA_API_BASE", "https://fleet-api.prd.na.vn.cloud.tesla.com")
 TESLA_TOKEN_FILE     = _env("TESLA_TOKEN_FILE", "logs/tesla_fleet.json")
 ENERGY_HISTORY_FILE  = _env("ENERGY_HISTORY_FILE", "logs/energy_history.csv")

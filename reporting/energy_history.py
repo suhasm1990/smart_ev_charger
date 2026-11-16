@@ -11,6 +11,7 @@ import csv
 import logging
 import os
 import threading
+import time
 from datetime import date, datetime, timedelta
 
 from core import config
@@ -18,8 +19,7 @@ from core.tou import get_tou_period, get_tou_rate
 
 log = logging.getLogger("TESLA")
 
-HEADERS = ["timestamp", "grid_import_wh", "grid_export_wh", "solar_wh", "home_wh",
-           "battery_discharge_wh", "battery_charge_wh"]
+HEADERS = ["timestamp", "grid_import_wh", "grid_export_wh", "solar_wh", "home_wh"]
 
 _lock = threading.RLock()
 _cache: dict = {"mtime": None, "rows": {}}
@@ -52,9 +52,6 @@ def normalise(entry: dict) -> dict | None:
                               "grid_energy_exported_from_generator"),
         "solar_wh": _wh(entry, "solar_energy_exported"),
         "home_wh": home,
-        "battery_discharge_wh": _wh(entry, "battery_energy_exported"),
-        "battery_charge_wh": _wh(entry, "battery_energy_imported_from_solar", "battery_energy_imported_from_grid",
-                                 "battery_energy_imported_from_generator"),
     }
 
 
@@ -125,13 +122,16 @@ def metered_days() -> set[date]:
 # ── Daily totals ────────────────────────────────────────────────────────────
 
 def daily_totals(start: date, end: date) -> dict[date, dict]:
-    """Per-day metered kWh and TOU-priced import cost, for complete days only.
+    """Per-day metered kWh and TOU-priced import cost: complete days, plus today so far.
 
     Each interval is priced at the rate in force at its start. Tesla's
     intervals (5 or 30 minutes) never straddle a TOU boundary, since those
     fall on the hour.
     """
-    complete = metered_days()
+    today = datetime.now(config.TZ).date()
+    if start <= today <= end:
+        refresh_today()
+    complete = metered_days() | {today}
     totals: dict[date, dict] = {}
     for when, row in _parsed_rows():
         day = when.date()
@@ -139,7 +139,7 @@ def daily_totals(start: date, end: date) -> dict[date, dict]:
             continue
         t = totals.setdefault(day, {
             "home_kwh": 0.0, "solar_kwh": 0.0, "grid_import_kwh": 0.0, "solar_export_kwh": 0.0,
-            "battery_discharge_kwh": 0.0, "battery_charge_kwh": 0.0, "variable_grid_cost": 0.0,
+            "variable_grid_cost": 0.0,
             "on_peak_grid_kwh": 0.0, "partial_peak_grid_kwh": 0.0, "off_peak_grid_kwh": 0.0,
             "on_peak_grid_cost": 0.0, "partial_peak_grid_cost": 0.0, "off_peak_grid_cost": 0.0,
         })
@@ -147,8 +147,6 @@ def daily_totals(start: date, end: date) -> dict[date, dict]:
         t["home_kwh"] += _wh(row, "home_wh") / 1000
         t["solar_kwh"] += _wh(row, "solar_wh") / 1000
         t["solar_export_kwh"] += _wh(row, "grid_export_wh") / 1000
-        t["battery_discharge_kwh"] += _wh(row, "battery_discharge_wh") / 1000
-        t["battery_charge_kwh"] += _wh(row, "battery_charge_wh") / 1000
         if imported:
             period = get_tou_period(when)
             bucket = period if period in ("on_peak", "partial_peak") else "off_peak"
@@ -167,10 +165,10 @@ def _month_start(day: date) -> date:
 
 
 def plan_fetches(today: date, have: set[date], months: int) -> list[tuple[date, date]]:
-    """The fewest calls that cover every missing completed day.
+    """One call per month that has missing completed days, spanning the missing ones.
 
-    A month with one missing day gets a day call (5-minute detail); a month
-    with more gets one month call (30-minute detail).
+    Nightly that is just yesterday (a 5-minute day call); a first-start
+    backfill is one 30-minute month call per month.
     """
     yesterday = today - timedelta(days=1)
     first = _month_start(today)
@@ -184,12 +182,32 @@ def plan_fetches(today: date, have: set[date], months: int) -> list[tuple[date, 
         last = min(nxt - timedelta(days=1), yesterday)
         missing = [month + timedelta(days=i) for i in range((last - month).days + 1)
                    if month + timedelta(days=i) not in have]
-        if len(missing) == 1:
-            fetches.append((missing[0], missing[0]))
-        elif missing:
+        if missing:
             fetches.append((missing[0], missing[-1]))
         month = nxt
     return fetches
+
+
+_TODAY_MAX_AGE_S = 3600
+_today_fetched_at: float | None = None
+
+
+def refresh_today():
+    """Today so far, fetched only when asked for and at most once an hour."""
+    global _today_fetched_at
+    from services import tesla_fleet
+
+    if not tesla_fleet.is_configured():
+        return
+    with _lock:
+        if _today_fetched_at is not None and time.monotonic() - _today_fetched_at < _TODAY_MAX_AGE_S:
+            return
+        _today_fetched_at = time.monotonic()
+    today = datetime.now(config.TZ).date()
+    try:
+        store(tesla_fleet.get_energy_intervals(today, today))
+    except Exception as e:
+        log.warning(f"Could not fetch today's energy history: {type(e).__name__}: {e}")
 
 
 def sync(now: datetime = None) -> dict:
@@ -199,7 +217,10 @@ def sync(now: datetime = None) -> dict:
     if not tesla_fleet.is_configured():
         return {"skipped": "Tesla not configured"}
     now = now or datetime.now(config.TZ)
-    fetches = plan_fetches(now.date(), metered_days(), config.ENERGY_HISTORY_BACKFILL_MONTHS)
+    # Yesterday is always re-fetched: an on-demand "today" fetch late last
+    # night may have stored it only up to that moment.
+    have = metered_days() - {now.date() - timedelta(days=1)}
+    fetches = plan_fetches(now.date(), have, config.ENERGY_HISTORY_BACKFILL_MONTHS)
     stored = 0
     for first, last in fetches:
         try:

@@ -13,7 +13,7 @@ import dashboard.data as dashboard_data
 import dashboard.server as dashboard_server
 from core import config, state
 from reporting import csv_logger
-from tests.helpers import MockedCycle, charger, powerwall, seed_telemetry
+from tests.helpers import MockedCycle, charger, powerwall, seed_energy_history, seed_telemetry
 
 
 class DashboardTestCase(unittest.TestCase):
@@ -22,6 +22,7 @@ class DashboardTestCase(unittest.TestCase):
         self.mock.reset_state()
         self.addCleanup(self.mock.restore)
         self.rows = seed_telemetry(days_back_start=0, days=1)
+        seed_energy_history(self.rows, self)
         self.row_reads = 0
 
         def rows(days=7, force_refresh=False):
@@ -112,12 +113,6 @@ class TestBillBreakdown(DashboardTestCase):
         self.assertGreater(fixed["lines"][-1]["amount"], 0)  # local surcharge applied
         self.assertLess(credits["subtotal"], 0)
         self.assertAlmostEqual(sum(g["subtotal"] for g in bill["groups"]), bill["total_dollars"], delta=0.02)
-
-    def test_reports_actual_usage_without_scaling_a_partial_day(self):
-        full = csv_logger.get_bill_breakdown("today")["grid_import_kwh"]
-        self.rows = self.rows[: len(self.rows) // 2]
-        half = csv_logger.get_bill_breakdown("today")["grid_import_kwh"]
-        self.assertLess(half, full)
 
     def test_dashboard_shows_cost_with_fixed_charges_and_credit(self):
         bill = csv_logger.get_bill_breakdown("today")

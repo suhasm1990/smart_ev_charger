@@ -120,8 +120,9 @@ class TestFullSystem(unittest.TestCase):
     def test_energy_analytics_and_report_generation(self):
         """Tests calculation of energy summaries and PNG infographic generation."""
         import reporting.csv_logger as csv_logger
-        from tests.helpers import seed_telemetry
+        from tests.helpers import seed_energy_history, seed_telemetry
         rows = seed_telemetry()
+        seed_energy_history(rows, self)
         original = csv_logger.get_all_log_rows
         csv_logger.get_all_log_rows = lambda days=7, force_refresh=False: rows
         self.addCleanup(lambda: setattr(csv_logger, "get_all_log_rows", original))

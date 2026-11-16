@@ -483,10 +483,8 @@ def main():
     schedule.every().day.at(config.DAILY_RESET_TIME, tz_name).do(daily_reset)
     schedule.every().day.at(config.DAILY_AGENT_TIME, tz_name).do(_run_in_thread(run_daily_agent, "DailyAgent"))
     schedule.every().day.at("07:00", tz_name).do(_run_in_thread(check_monthly_schedule, "MonthlyReport"))
-    # Metered Tesla history: one call for yesterday after midnight; the 06:30
-    # run is a no-op unless Tesla had not finished yesterday by then.
-    for at in ("00:30", "06:30"):
-        schedule.every().day.at(at, tz_name).do(_run_in_thread(sync_energy_history, "EnergyHistory"))
+    # Metered Tesla history: one call a night for yesterday.
+    schedule.every().day.at("01:00", tz_name).do(_run_in_thread(sync_energy_history, "EnergyHistory"))
     _register_cycle_job(config.CHECK_INTERVAL_MINUTES)
 
     if config.TELEGRAM_BOT_TOKEN:
