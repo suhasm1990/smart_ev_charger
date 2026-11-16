@@ -3,7 +3,7 @@
 
 Standalone: needs only `requests`. Run it on your own computer.
 
-Put the app credentials in ~/.tesla_fleet/credentials.env (or export them):
+Put the app credentials in the repo's .env, ~/.tesla_fleet/credentials.env, or export them:
 
     TESLA_CLIENT_ID=...               # from developer.tesla.com/dashboard
     TESLA_CLIENT_SECRET=...
@@ -44,6 +44,7 @@ HOME = Path(os.environ.get("TESLA_FLEET_HOME", Path.home() / ".tesla_fleet"))
 TOKENS_FILE = HOME / "tokens.json"
 RESPONSES_DIR = HOME / "responses"
 CREDENTIALS_FILE = HOME / "credentials.env"
+REPO_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 LOGIN_STATE_FILE = HOME / "login_state.json"
 DEFAULTS = {
     "TESLA_DOMAIN": "suhasm1990.github.io",
@@ -52,9 +53,11 @@ DEFAULTS = {
 
 
 def _load_credentials():
-    """Read KEY=VALUE lines from credentials.env; exported variables win."""
-    if CREDENTIALS_FILE.exists():
-        for line in CREDENTIALS_FILE.read_text().splitlines():
+    """Read KEY=VALUE lines from the repo's .env, then credentials.env; exported variables win."""
+    for env_file in (REPO_ENV_FILE, CREDENTIALS_FILE):
+        if not env_file.exists():
+            continue
+        for line in env_file.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -68,7 +71,7 @@ def _load_credentials():
 def _need(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        sys.exit(f"Set {name} in {CREDENTIALS_FILE} or export it (see the top of this file).")
+        sys.exit(f"Set {name} in {REPO_ENV_FILE} or export it (see the top of this file).")
     return value
 
 
