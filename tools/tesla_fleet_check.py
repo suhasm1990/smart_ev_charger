@@ -258,7 +258,13 @@ def cmd_check():
         start_date=month_start.isoformat(), end_date=datetime.now(tz).isoformat()))
 
     print(f"\nAll calls worked. Raw responses are in {RESPONSES_DIR}/")
-    print("Please share the printed summary (it holds no secrets).")
+    print("Please share the printed summary above (it holds no secrets).")
+    print("\nFor the charger, add these to .env (SECRET, do not share). After you do,")
+    print("stop running `check` on this Mac: only one machine can keep a refresh token.")
+    print(f"  TESLA_CLIENT_ID={os.environ['TESLA_CLIENT_ID']}")
+    print(f"  TESLA_CLIENT_SECRET={os.environ['TESLA_CLIENT_SECRET']}")
+    print(f"  TESLA_REFRESH_TOKEN={tokens['refresh_token']}")
+    print(f"  TESLA_ENERGY_SITE_ID={site_id}")
 
 
 if __name__ == "__main__":
