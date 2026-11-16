@@ -95,7 +95,7 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 | `TESLA_MONTHLY_CALL_BUDGET` | 4500 calls (about $9 of Tesla's $10 monthly credit); past it, live data uses NetZero until the 1st |
 
 **Metered energy history.** The charger pulls yesterday's 5-minute energy history once a night (one API call) into
-`logs/energy_history.csv`, and on start backfills the current and previous month with one call per month. Today so far
+`logs/energy_history_v2.csv`, and on start backfills the current and previous month with one call per month. Today so far
 is fetched only when the dashboard or bot asks, at most once an hour. Home usage, solar, grid import/export, bills and
 `/report` come only from this history, each interval priced at its own TOU rate. EV figures still come from the
 ChargePoint meter in the charger log.

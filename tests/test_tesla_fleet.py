@@ -197,6 +197,11 @@ class TestEnergyHistory(_TeslaCase):
                     + 2.0 * tou.get_tou_rate(_midnight(DAY).replace(hour=2)))
         self.assertAlmostEqual(totals["variable_grid_cost"], expected)
 
+    def test_export_uses_tesla_total_over_the_attributed_split(self):
+        entry = _interval(_midnight(DAY).replace(hour=12), total_grid_energy_exported=2000,
+                          grid_energy_exported_from_solar=500)
+        self.assertEqual(energy_history.normalise(entry)["grid_export_wh"], 2000)
+
     def test_storing_twice_does_not_duplicate(self):
         energy_history.store(self._full_day())
         self.assertEqual(energy_history.store(self._full_day()), 0)
