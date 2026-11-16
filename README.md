@@ -30,7 +30,9 @@ cp .env.example .env            # fill in the credentials
 docker compose up -d --build    # or, without Docker: pip install -r requirements.txt && python main.py
 ```
 
-For the NAS, `./build_docker.sh` builds the image (default `linux/amd64`).
+For the NAS, `./deploy_nas.sh` builds the image on your Mac, streams it to the NAS over ssh and replaces the
+`smart_ev_charger` container (set `NAS=user@host` to override the default). It needs passwordless ssh
+(`ssh-copy-id`) and the NAS user in the `docker` group. `./build_docker.sh` only builds the image.
 
 ## Using it (Telegram)
 
