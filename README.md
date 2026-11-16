@@ -93,8 +93,8 @@ Most are set in `.env` (see `.env.example`). These can be changed live and are s
 | `TESLA_MONTHLY_CALL_BUDGET` | 4500 calls (about $9 of Tesla's $10 monthly credit); past it, live data uses NetZero until the 1st |
 
 **Metered energy history.** With Tesla configured, the charger pulls yesterday's 5-minute energy history once a
-night (one API call) into `logs/energy_history.csv`, and on start backfills the last 2 months with one call per
-month. Bills, `/report` and the dashboard use these metered days, each interval priced at its own TOU rate, and
+night (one API call) into `logs/energy_history.csv`, and on start backfills the current and previous month with one call
+per month. Bills, `/report` and the dashboard use these metered days, each interval priced at its own TOU rate, and
 fall back to the 15-minute snapshot estimate for days without them.
 
 **Changing the AI model.** The default is `DEFAULT_LLM_MODEL` in `core/config.py` (currently `gemini-4-hydrogen`).

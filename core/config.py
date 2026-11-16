@@ -46,7 +46,7 @@ TESLA_ENERGY_SITE_ID = _env("TESLA_ENERGY_SITE_ID")  # optional: looked up from 
 TESLA_API_BASE       = _env("TESLA_API_BASE", "https://fleet-api.prd.na.vn.cloud.tesla.com")
 TESLA_TOKEN_FILE     = _env("TESLA_TOKEN_FILE", "logs/tesla_fleet.json")
 ENERGY_HISTORY_FILE  = _env("ENERGY_HISTORY_FILE", "logs/energy_history.csv")
-ENERGY_HISTORY_BACKFILL_MONTHS = _env_int("ENERGY_HISTORY_BACKFILL_MONTHS", "2")
+ENERGY_HISTORY_BACKFILL_MONTHS = _env_int("ENERGY_HISTORY_BACKFILL_MONTHS", "1")  # months before the current one
 # Tesla bills 500 data calls per $1 and credits $10 a month. 4,500 calls ($9)
 # keeps a margin; past it, live data falls back to NetZero until the 1st.
 TESLA_MONTHLY_CALL_BUDGET = _env_int("TESLA_MONTHLY_CALL_BUDGET", "4500")
