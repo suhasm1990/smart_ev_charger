@@ -163,7 +163,21 @@ def format_model_name(provider: str, model_name: str) -> str:
     return f"{prefix}{model_name}" if prefix and not model_name.startswith(prefix) else model_name
 
 
-def get_thinking_kwargs(provider: str, model_name: str) -> dict:
+# Thinking level for Gemini 3+ models. Left unset, Gemini thinks at its highest
+# level and streams nothing while it does, so the planner hit the 120s read
+# timeout; an explicit level also makes litellm stream the thoughts, which keeps
+# the connection busy. Chat stays light so Telegram replies come back quickly.
+PLANNER_REASONING_EFFORT = "medium"
+CHAT_REASONING_EFFORT = "low"
+
+
+def _is_gemini_thinking_level_model(provider: str, model: str) -> bool:
+    """Gemini 3 and later take a thinking level (2.x used a token budget)."""
+    name = model.lower().split("/")[-1]
+    return provider == "gemini" and name.startswith("gemini-") and not name.startswith(("gemini-1", "gemini-2"))
+
+
+def get_thinking_kwargs(provider: str, model_name: str, effort: str = CHAT_REASONING_EFFORT) -> dict:
     """Enables extended reasoning where the provider supports it."""
     budget = config.LLM_THINKING_BUDGET
     if budget <= 0:
@@ -173,15 +187,17 @@ def get_thinking_kwargs(provider: str, model_name: str) -> dict:
         return {"thinking": {"type": "enabled", "budget_tokens": budget}}
     if re.search(r"\bo[134]\b|^o[134]-", model):
         return {"reasoning_effort": "high"}
+    if _is_gemini_thinking_level_model(provider, model):
+        return {"reasoning_effort": effort}
     return {}
 
 
-def _completion_kwargs(cfg: dict) -> tuple[str, dict]:
+def _completion_kwargs(cfg: dict, effort: str = CHAT_REASONING_EFFORT) -> tuple[str, dict]:
     model_name = format_model_name(cfg["provider"], cfg["model"])
     kwargs = {"model": model_name, "api_key": cfg["api_key"], "timeout": 60}
     if cfg["base_url"]:
         kwargs["api_base"] = cfg["base_url"]
-    kwargs.update(get_thinking_kwargs(cfg["provider"], model_name))
+    kwargs.update(get_thinking_kwargs(cfg["provider"], model_name, effort))
     return model_name, kwargs
 
 
@@ -280,12 +296,16 @@ def _execute_tool(tool_map: dict, name: str, raw_args) -> str:
 
 def _generate_json_with(cfg: dict, messages: list) -> dict:
     log.info(f"Generating JSON via {cfg['provider']} ({cfg['model']})")
-    _, kwargs = _completion_kwargs(cfg)
+    _, kwargs = _completion_kwargs(cfg, effort=PLANNER_REASONING_EFFORT)
     # litellm honours `timeout` over `request_timeout`, so override the shared default.
     kwargs["timeout"] = JSON_TIMEOUT
     # Streamed so the timeout bounds each chunk, not the whole reply: reasoning
     # models can think for minutes on the planner prompt yet never stall.
-    stream = _complete(messages=messages, temperature=0.2, stream=True, **kwargs)
+    # Google advises leaving Gemini 3+ at its default temperature; lower values can
+    # make it loop or reason worse (litellm also flags them as deprecated).
+    if not _is_gemini_thinking_level_model(cfg["provider"], cfg["model"]):
+        kwargs["temperature"] = 0.2
+    stream = _complete(messages=messages, stream=True, **kwargs)
     content = "".join(
         chunk.choices[0].delta.content or "" for chunk in stream if chunk.choices
     )
