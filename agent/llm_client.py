@@ -34,8 +34,9 @@ PROVIDER_MODELS = {
 }
 
 # Backup model per provider. Gemini's differs from the default primary so the
-# fallback isn't the very model that just failed.
-FALLBACK_MODELS = {**PROVIDER_MODELS, "gemini": "gemini-2.5-flash"}
+# fallback isn't the very model that just failed. (gemini-2.5-flash was retired
+# for new users in Nov 2026; Google's 404 names gemini-3.8-flash as its successor.)
+FALLBACK_MODELS = {**PROVIDER_MODELS, "gemini": "gemini-3.8-flash"}
 
 RETRY_ATTEMPTS = 3
 JSON_TIMEOUT = 120  # Max gap between streamed chunks; hosted reasoning models can pause ~25s+.
@@ -121,16 +122,22 @@ def resolve_llm_config() -> dict:
 
 
 def resolve_fallback_config(primary: dict) -> dict | None:
-    """The backup provider used when the primary keeps failing transiently.
+    """The backup provider used when the primary keeps failing or its model is gone.
 
-    None when no fallback is configured, it has no API key, or it is the same
-    model as the primary (retrying the same model is what already failed).
+    When the primary was switched away from the code default, the default
+    (DEFAULT_LLM_MODEL) is the backup, so a stale or retired model falls back to
+    the one the code names. None when no fallback is configured, it has no API
+    key, or it is the same model as the primary.
     """
     provider = (config.LLM_FALLBACK_PROVIDER or "").lower().strip()
     if provider not in PROVIDER_DEFAULTS:
         return None
     key_attr, default_base_url, _ = PROVIDER_DEFAULTS[provider]
-    model = config.LLM_FALLBACK_MODEL or FALLBACK_MODELS[provider]
+    model = config.LLM_FALLBACK_MODEL
+    if not model:
+        default = config.DEFAULT_LLM_MODEL
+        use_default = infer_provider(default) == provider and primary["model"] != default
+        model = default if use_default else FALLBACK_MODELS[provider]
     api_key = getattr(config, key_attr, "")
     if not api_key or (provider, model) == (primary["provider"], primary["model"]):
         return None
@@ -195,6 +202,19 @@ def _is_transient_llm_error(e: Exception) -> bool:
     return any(t in msg for t in
                ("429", "rate limit", "too many requests", "overloaded", "500", "502", "503", "timeout",
                 "timed out"))
+
+
+def _is_model_unavailable(e: Exception) -> bool:
+    """The model id was retired or doesn't exist (HTTP 404); retrying it won't help, another model will."""
+    not_found = getattr(litellm, "NotFoundError", None)
+    if not_found is not None and isinstance(e, not_found):
+        return True
+    msg = str(e).lower()
+    return "404" in msg and any(t in msg for t in ("not_found", "not found", "no longer available"))
+
+
+def _should_fall_back(e: Exception) -> bool:
+    return _is_transient_llm_error(e) or _is_model_unavailable(e)
 
 
 def _complete(**kwargs):
@@ -275,8 +295,8 @@ def _generate_json_with(cfg: dict, messages: list) -> dict:
 def generate_json(prompt: str, system_instruction: str = "") -> dict:
     """Asks the model for a structured JSON object and parses the reply.
 
-    If the primary model keeps failing transiently, the request is repeated
-    once on the configured fallback model.
+    If the primary model keeps failing transiently, or its model id is gone
+    (404), the request is repeated once on the fallback model.
     """
     cfg = resolve_llm_config()
     if not cfg["api_key"]:
@@ -288,7 +308,7 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
     try:
         result = _generate_json_with(cfg, messages)
     except Exception as e:
-        fallback = resolve_fallback_config(cfg) if _is_transient_llm_error(e) else None
+        fallback = resolve_fallback_config(cfg) if _should_fall_back(e) else None
         if fallback is None:
             log.error(f"Error generating JSON via '{cfg['provider']}': {e}", exc_info=True)
             raise
@@ -387,7 +407,7 @@ def chat_with_tools(history: list, user_text: str, tools: list,
         reply = _chat_turn(cfg, messages, tool_map, tool_schemas, max_iterations)
     except Exception as e:
         tools_ran = any(m.get("role") == "tool" for m in messages[turn_start:])
-        fallback = resolve_fallback_config(cfg) if _is_transient_llm_error(e) and not tools_ran else None
+        fallback = resolve_fallback_config(cfg) if _should_fall_back(e) and not tools_ran else None
         if fallback is None:
             log.error(f"Error in chat via '{cfg['provider']}': {e}", exc_info=True)
             return f"Error interacting with the AI model: {e}", messages

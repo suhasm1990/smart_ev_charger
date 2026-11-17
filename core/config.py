@@ -130,11 +130,24 @@ POWERWALL_USABLE_KWH     = _env_float("POWERWALL_USABLE_KWH", "13.5")
 # openai, anthropic) is worked out from the model name, so this is all you edit.
 # Overridden, in order, by the LLM_MODEL env var and then the runtime setting in
 # Google Sheets (changed from Telegram with /model; "/model default" resets to this).
+# An empty LLM_MODEL means "follow this default", so changing it here takes effect
+# on restart even though every setting is saved to Sheets.
 DEFAULT_LLM_MODEL = "gemini-4-hydrogen"
+
+# Old code defaults that were saved to Sheets as if the user had picked them. A
+# stored value in this set counts as "follow the default" (all are retired anyway).
+_FORMER_DEFAULT_LLM_MODELS = {"gemini-2.5-flash", "gemini/gemini-2.5-flash", "models/gemini-2.5-flash"}
+
+
+def _llm_model(value) -> str:
+    """Runtime LLM_MODEL: '' (follow DEFAULT_LLM_MODEL) or an explicit model name."""
+    model = str(value or "").strip()
+    return "" if model.lower() in _FORMER_DEFAULT_LLM_MODELS | {"none", "default"} else model
+
 
 # Only needed for a model name that doesn't reveal its provider; normally leave empty.
 LLM_PROVIDER        = _env("LLM_PROVIDER").lower().strip()
-LLM_MODEL           = _env("LLM_MODEL") or _env("GEMINI_MODEL") or DEFAULT_LLM_MODEL
+LLM_MODEL           = _llm_model(_env("LLM_MODEL") or _env("GEMINI_MODEL"))  # '' -> DEFAULT_LLM_MODEL
 LLM_API_KEY         = _env("LLM_API_KEY")
 LLM_BASE_URL        = _env("LLM_BASE_URL")
 LLM_THINKING_BUDGET = _env_int("LLM_THINKING_BUDGET", "8192")
@@ -192,7 +205,7 @@ DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
     "MANUAL_GUARD_STOP_TIME":        (_optional(str),   "None"),  # ISO datetime
     "EV_MILES_PER_KWH":              (float, "3.53"),
     "LLM_PROVIDER":                  (str,   ""),  # empty -> inferred from LLM_MODEL
-    "LLM_MODEL":                     (str,   DEFAULT_LLM_MODEL),
+    "LLM_MODEL":                     (_llm_model, ""),  # empty -> DEFAULT_LLM_MODEL
 }
 
 # Statically declared so linters and readers can see every dynamic key; the

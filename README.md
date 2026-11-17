@@ -104,7 +104,8 @@ ChargePoint meter in the charger log.
 The provider is worked out from the model name, so a model name is all you ever set. To switch at runtime, send
 `/model <model name>` in Telegram (e.g. `/model nvidia/nemotron-3.5-super-vl-120b-a12b`); `/model default` goes
 back to the code default. Order of precedence: code default < `LLM_MODEL` in `.env` < Sheets Settings tab.
-If the primary keeps failing, `LLM_FALLBACK_PROVIDER` (default `gemini`, model `gemini-2.5-flash`) takes over.
+If the primary keeps failing or its model is retired (404), `LLM_FALLBACK_PROVIDER` (default `gemini`) takes over
+with the code default model, or `gemini-3.8-flash` when the default is already the primary.
 
 Google Sheets also holds **Telemetry** (~62 days of 15-minute readings) and **System Logs** (last 500 events).
 Telemetry is also written to `logs/charger_log.csv`, which is used when Sheets is unreachable.
