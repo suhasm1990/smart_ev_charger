@@ -262,7 +262,7 @@ def get_active_ai_model() -> str:
 _MODEL_ALIASES = {
     "gemini": None, "google": None, "hydrogen": "gemini-4-hydrogen",
     "gemini-pro": "gemini-2.5-pro", "gemini_pro": "gemini-2.5-pro", "pro": "gemini-2.5-pro",
-    "flash": "gemini-2.5-flash",
+    "flash": "gemini-3.8-flash",
     "nvidia": None, "nemotron": None,
     "nemotron-super": "nvidia/nemotron-3.5-super-vl-120b-a12b",
     "nemotron-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
@@ -294,7 +294,10 @@ def switch_llm_model(provider: str = "", model_name: str = None) -> str:
     if model_name:
         model = model_name.strip()
     elif lowered in ("default", "reset"):
-        model = config.DEFAULT_LLM_MODEL
+        # Store "follow the default" rather than today's default, so a later code change still applies.
+        config.update(LLM_PROVIDER="", LLM_MODEL="")
+        log.info(f"AI model reset to the code default '{config.DEFAULT_LLM_MODEL}'")
+        return f"✅ Back to the default AI model (<code>{config.DEFAULT_LLM_MODEL}</code>)."
     elif lowered in _MODEL_ALIASES:
         model = _MODEL_ALIASES[lowered] or llm_client.PROVIDER_MODELS[_PROVIDER_ALIASES[lowered]]
     else:

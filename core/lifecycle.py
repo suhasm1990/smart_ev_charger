@@ -129,7 +129,8 @@ def startup_message(now: datetime | None = None) -> str:
         label = "stopped" if marker else "last cycle"
         timing += f" · {label} {_when(stopped_at, now)} · down {_duration((now - stopped_at).total_seconds())}"
 
-    model = config.LLM_MODEL.split("/")[-1]
+    from agent.llm_client import resolve_llm_config
+    model = resolve_llm_config()["model"].split("/")[-1]
     lines = [title, detail, "", timing,
              f"📦 <code>{html.escape(_code_version())}</code>",
              f"⚙️ {config.MANUAL_MODE_OVERRIDE.upper()} · {html.escape(model)}"]

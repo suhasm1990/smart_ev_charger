@@ -560,11 +560,24 @@ class TestLLMFallback(unittest.TestCase):
         config.GEMINI_API_KEY = ""
         self.assertIsNone(llm_client.resolve_fallback_config(self.PRIMARY))
         config.GEMINI_API_KEY = "g"
-        same = {"provider": "gemini", "model": llm_client.FALLBACK_MODELS["gemini"]}
+        config.LLM_FALLBACK_MODEL = "gemini-x"
+        same = {"provider": "gemini", "model": "gemini-x"}
         self.assertIsNone(llm_client.resolve_fallback_config(same))
+        config.LLM_FALLBACK_MODEL = ""
         # The default Gemini primary still gets a different Gemini model as its backup.
         default = {"provider": "gemini", "model": config.DEFAULT_LLM_MODEL}
         self.assertNotEqual(llm_client.resolve_fallback_config(default)["model"], config.DEFAULT_LLM_MODEL)
+        # Any other primary falls back to the code default model.
+        self.assertEqual(llm_client.resolve_fallback_config(self.PRIMARY)["model"], config.DEFAULT_LLM_MODEL)
+
+    def test_json_falls_back_when_model_is_retired(self):
+        def generate(cfg, messages):
+            if not cfg.get("fallback"):
+                raise RuntimeError('NotFoundError: {"code": 404, "message": "This model models/x is no '
+                                   'longer available to new users.", "status": "NOT_FOUND"}')
+            return {"ok": True}
+        llm_client._generate_json_with = generate
+        self.assertEqual(llm_client.generate_json("plan"), {"ok": True})
 
     def test_json_falls_back_on_transient_error_and_labels_it(self):
         def generate(cfg, messages):
@@ -716,7 +729,26 @@ class TestModelNameDrivesProvider(unittest.TestCase):
             telegram_bot.switch_llm_model("gemini-2.5-pro")
             update.assert_called_with(LLM_PROVIDER="gemini", LLM_MODEL="gemini-2.5-pro")
             telegram_bot.switch_llm_model("default")
-            update.assert_called_with(LLM_PROVIDER="gemini", LLM_MODEL=self.config.DEFAULT_LLM_MODEL)
+            update.assert_called_with(LLM_PROVIDER="", LLM_MODEL="")
+
+    def test_stale_former_default_in_sheets_follows_code_default(self):
+        from unittest.mock import patch
+
+        import services.sheets_db as sheets_db
+        stale = {"LLM_PROVIDER": "gemini", "LLM_MODEL": "gemini-2.5-flash"}
+        with patch.object(sheets_db, "get_settings", return_value=stale):
+            self.config.load_dynamic_config(remote=True, force_refresh=True)
+        self.assertEqual(self.config.LLM_MODEL, "")
+        self.assertEqual(self.llm_client.resolve_llm_config()["model"], self.config.DEFAULT_LLM_MODEL)
+
+    def test_explicit_choice_in_sheets_still_wins(self):
+        from unittest.mock import patch
+
+        import services.sheets_db as sheets_db
+        chosen = {"LLM_PROVIDER": "nvidia", "LLM_MODEL": "nvidia/nemotron-3.5-super-vl-120b-a12b"}
+        with patch.object(sheets_db, "get_settings", return_value=chosen):
+            self.config.load_dynamic_config(remote=True, force_refresh=True)
+        self.assertEqual(self.llm_client.resolve_llm_config()["provider"], "nvidia")
 
 
 class TestMeteredEnergySourceBreakdown(unittest.TestCase):
