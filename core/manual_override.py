@@ -6,17 +6,23 @@ from core.state import state
 from reporting.logger import log_mode
 from reporting.notifications import notify
 
+# Manual mode always lasts at least this long, so an override set just before
+# the reset hour (e.g. "charge full" at 23:51) isn't cut off minutes later.
+MIN_MANUAL_HOURS = 6
+
+
+def manual_reset_at(set_at: datetime) -> datetime:
+    """First reset hour at least MIN_MANUAL_HOURS after manual mode was set."""
+    earliest = set_at + timedelta(hours=MIN_MANUAL_HOURS)
+    reset_at = earliest.replace(hour=config.NIGHT_BLACKOUT_END_HOUR, minute=0, second=0, microsecond=0)
+    return reset_at if reset_at >= earliest else reset_at + timedelta(days=1)
+
 
 def _auto_reset_due(now: datetime) -> bool:
-    """True once the morning reset hour has passed since manual mode was set."""
+    """True once the reset time for the current manual override has passed."""
     if not (state.manual_mode and state.manual_mode_set_at):
         return False
-    reset_at = state.manual_mode_set_at.replace(
-        hour=config.NIGHT_BLACKOUT_END_HOUR, minute=0, second=0, microsecond=0
-    )
-    if state.manual_mode_set_at.hour >= config.NIGHT_BLACKOUT_END_HOUR:
-        reset_at += timedelta(days=1)
-    return now >= reset_at
+    return now >= manual_reset_at(state.manual_mode_set_at)
 
 
 def check_manual_mode() -> bool:
@@ -52,10 +58,9 @@ def check_manual_mode() -> bool:
     if is_manual and not state.prev_manual_mode:
         state.manual_mode = True
         state.manual_mode_set_at = now
-        log_mode.warning(
-            f"MANUAL MODE ACTIVATED | Automation paused until {config.NIGHT_BLACKOUT_END_HOUR}:00"
-        )
-        notify(f"⚙️ Manual mode ON — automation paused until {config.NIGHT_BLACKOUT_END_HOUR}:00")
+        until = manual_reset_at(now).strftime("%a %H:%M")
+        log_mode.warning(f"MANUAL MODE ACTIVATED | Automation paused until {until}")
+        notify(f"⚙️ Manual mode ON — automation paused until {until}")
     elif not is_manual and state.prev_manual_mode:
         state.manual_mode = False
         state.manual_mode_set_at = None
