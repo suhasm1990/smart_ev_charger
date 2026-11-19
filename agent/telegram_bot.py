@@ -567,7 +567,8 @@ def trigger_daily_agent() -> str:
     """
     from agent.daily_agent import run_daily_agent
     try:
-        run_daily_agent()
+        if not run_daily_agent():
+            return "Error: The Daily AI Agent failed; the reason was sent to Telegram. Settings are unchanged."
         return "Success: Ran the Daily AI Agent. The plan and settings have been updated and sent to Telegram."
     except Exception as e:
         return f"Error executing the Daily AI Agent: {e}"
@@ -909,9 +910,10 @@ def _bot_polling_loop():
         bot.send_chat_action(message.chat.id, "typing")
         from agent.daily_agent import run_daily_agent
         try:
-            run_daily_agent()
-            bot.reply_to(message, "✅ <b>Daily AI Agent finished.</b> See the update above for today's plan.",
-                         parse_mode="HTML")
+            # On failure run_daily_agent has already sent the notice with the reason.
+            if run_daily_agent():
+                bot.reply_to(message, "✅ <b>Daily AI Agent finished.</b> See the update above for today's plan.",
+                             parse_mode="HTML")
         except Exception as e:
             bot.reply_to(message, f"❌ <b>Daily AI Agent error:</b> {html.escape(str(e))}", parse_mode="HTML")
 

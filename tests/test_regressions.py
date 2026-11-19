@@ -853,3 +853,50 @@ class TestEnergySourceSplit(unittest.TestCase):
     def test_unexplained_energy_is_grid_not_powerwall(self):
         r = self._reading(solar_kw=0, home_kw=0.4, grid_kw=0.4, battery_kw=0)
         self.assertEqual(csv_logger._split_sources(r, 1.92, 0.25), (0.0, 0.0, 1.92))
+
+
+class TestPlannerTimeoutAndFailureReporting(unittest.TestCase):
+    """Gemini 3+ gets an explicit thinking level, and a failed plan never reports success."""
+
+    def test_gemini_4_gets_explicit_thinking_level(self):
+        from agent import llm_client
+        cfg = {"provider": "gemini", "model": "gemini-4-hydrogen", "api_key": "k", "base_url": None}
+        _, planner = llm_client._completion_kwargs(cfg, effort=llm_client.PLANNER_REASONING_EFFORT)
+        _, chat = llm_client._completion_kwargs(cfg)
+        self.assertEqual(planner["reasoning_effort"], "medium")
+        self.assertEqual(chat["reasoning_effort"], "low")
+        old = {"provider": "gemini", "model": "gemini-2.5-pro", "api_key": "k", "base_url": None}
+        self.assertNotIn("reasoning_effort", llm_client._completion_kwargs(old)[1])
+
+    def test_planner_omits_temperature_for_gemini_4(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from agent import llm_client
+        seen = {}
+
+        def complete(**kwargs):
+            seen.update(kwargs)
+            delta = SimpleNamespace(content='{"ok": true}')
+            return [SimpleNamespace(choices=[SimpleNamespace(delta=delta)])]
+        cfg = {"provider": "gemini", "model": "gemini-4-hydrogen", "api_key": "k", "base_url": None}
+        with patch.object(llm_client, "_complete", complete):
+            self.assertEqual(llm_client._generate_json_with(cfg, []), {"ok": True})
+        self.assertNotIn("temperature", seen)
+        self.assertEqual(seen["reasoning_effort"], "medium")
+
+    def test_failed_plan_returns_false_and_tool_reports_error(self):
+        from unittest.mock import patch
+
+        from agent import daily_agent, telegram_bot
+        with patch.object(daily_agent.llm_client, "resolve_llm_config", return_value={"provider": "gemini", "api_key": "k"}), \
+             patch.object(daily_agent, "get_energy_saving_advice", return_value=""), \
+             patch.object(daily_agent, "get_home_energy_summary", return_value={}), \
+             patch.object(daily_agent, "get_settings", return_value={}), \
+             patch.object(daily_agent, "build_prompt", return_value="p"), \
+             patch.object(daily_agent.llm_client, "generate_json", side_effect=RuntimeError("Read timed out")), \
+             patch.object(daily_agent, "notify") as notify:
+            self.assertFalse(daily_agent.run_daily_agent())
+            self.assertIn("failed to run", notify.call_args[0][0])
+        with patch.object(daily_agent, "run_daily_agent", return_value=False):
+            self.assertTrue(telegram_bot.trigger_daily_agent().startswith("Error"))

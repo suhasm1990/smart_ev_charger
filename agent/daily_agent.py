@@ -1,4 +1,5 @@
 """Morning AI planner: sets today's Powerwall thresholds for the live charging rules."""
+import html
 from datetime import datetime, timedelta
 
 from agent import llm_client
@@ -316,13 +317,19 @@ def _apply_plan(plan: dict) -> list[str]:
     return applied
 
 
-def run_daily_agent():
-    """Fetches history and today's rates, asks the model for thresholds, and applies them."""
+def run_daily_agent() -> bool:
+    """Fetches history and today's rates, asks the model for thresholds, and applies them.
+
+    Returns True when a plan was applied and announced; on failure a notice is
+    sent instead and False is returned, so callers don't also report success.
+    """
     log.info("Starting the daily AI planner...")
     cfg = llm_client.resolve_llm_config()
     if not cfg.get("api_key"):
         log.warning(f"No API key for LLM provider '{cfg.get('provider')}'. Daily agent cannot run.")
-        return
+        notify(f"⚠️ <b>Daily AI Agent Notice</b>\nNo API key is set for the AI provider "
+               f"'{cfg.get('provider')}', so the planner can't run.")
+        return False
 
     now = datetime.now(config.TZ)
     advice = get_energy_saving_advice()
@@ -372,9 +379,11 @@ def run_daily_agent():
             f"<i>{plan.get('reasoning', '')}</i>\n\n"
             f"{llm_client.model_label()}"
         )
+        return True
     except Exception as e:
         log.error(f"Daily agent failed: {e}", exc_info=True)
-        notify(f"⚠️ <b>Daily AI Agent Notice</b>\nThe planner failed to run: {e}")
+        notify(f"⚠️ <b>Daily AI Agent Notice</b>\nThe planner failed to run: {html.escape(str(e))}")
+        return False
 
 
 if __name__ == "__main__":
