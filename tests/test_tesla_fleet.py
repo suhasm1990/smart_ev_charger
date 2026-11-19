@@ -169,7 +169,7 @@ def _interval(when: datetime, **wh) -> dict:
 
 
 # A Wednesday, not a holiday.
-DAY = date(2026, 11, 18)
+DAY = date(2026, 11, 4)  # in the past, so it is never "today" (which counts while partial)
 
 
 def _midnight(day: date) -> datetime:
