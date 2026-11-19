@@ -588,9 +588,9 @@ class TestLLMFallback(unittest.TestCase):
         self.assertEqual(llm_client.generate_json("plan"), {"ok": True})
         self.assertIn("(fallback)", llm_client.model_label())
 
-    def test_json_does_not_fall_back_on_permanent_error(self):
+    def test_json_raises_the_last_error_when_every_model_fails(self):
         def generate(cfg, messages):
-            raise ValueError("bad request")
+            raise ValueError(f"bad request from {cfg['model']}")
         llm_client._generate_json_with = generate
         with self.assertRaises(ValueError):
             llm_client.generate_json("plan")
@@ -903,7 +903,7 @@ class TestPlannerTimeoutAndFailureReporting(unittest.TestCase):
 
 
 class TestOverloadRetryAndFallbackChain(unittest.TestCase):
-    """A Gemini 503 mid-stream is retried, then moves to another provider, with a short message."""
+    """A failing or slow model hands over to the next one, ending on another provider, with a short message."""
 
     OVERLOAD = '503 {"message": "This model is currently experiencing high demand.", "status": "UNAVAILABLE"}'
 
@@ -920,8 +920,7 @@ class TestOverloadRetryAndFallbackChain(unittest.TestCase):
         (self.config.LLM_FALLBACK_PROVIDER, self.config.LLM_FALLBACK_MODEL, self.config.GEMINI_API_KEY,
          self.config.NVIDIA_API_KEY, self.config.OPENAI_API_KEY, self.config.ANTHROPIC_API_KEY) = self._saved
 
-    def test_mid_stream_overload_is_retried(self):
-        from types import SimpleNamespace
+    def test_mid_stream_failure_is_not_retried_on_the_same_model(self):
         from unittest.mock import patch
         calls = []
 
@@ -931,21 +930,8 @@ class TestOverloadRetryAndFallbackChain(unittest.TestCase):
 
         def complete(**kwargs):
             calls.append(1)
-            if len(calls) == 1:
-                return stream()
-            return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok": 1}'))])]
-        with patch.object(self.llm, "_complete", complete), patch.object(self.llm.time, "sleep", lambda s: None):
-            self.assertEqual(self.llm._stream_text(model="m"), '{"ok": 1}')
-        self.assertEqual(len(calls), 2)
-
-    def test_timeouts_are_not_retried_on_the_same_model(self):
-        from unittest.mock import patch
-        calls = []
-
-        def complete(**kwargs):
-            calls.append(1)
-            raise RuntimeError("Read timed out")
-        with patch.object(self.llm, "_complete", complete), patch.object(self.llm.time, "sleep", lambda s: None):
+            return stream()
+        with patch.object(self.llm, "_complete", complete):
             with self.assertRaises(RuntimeError):
                 self.llm._stream_text(model="m")
         self.assertEqual(len(calls), 1)

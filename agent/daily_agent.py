@@ -67,8 +67,9 @@ idle. Do not invent other per-kWh costs.
 Energy budget today:
 {energy_budget}
 
-Hourly profile (7-day averages; house load excludes the EV; surplus = solar - house load):
-hour | rate period | avg solar kW | avg house kW | avg surplus kW
+Daytime hourly profile, {earliest}:00-{latest_end}:00 (7-day averages; house load excludes the EV; \
+surplus = solar - house load):
+hour | avg solar kW | avg house kW | avg surplus kW
 {hourly_table}
 
 Evening needs & history:
@@ -143,12 +144,14 @@ def _rate_table(now: datetime) -> str:
 
 
 def _hourly_table(now: datetime, profile: list[dict]) -> str:
+    """Only the hours a charge window can cover; rates are already in the rate table and
+    the evening is summarised under 'Evening needs', so night rows would only add noise."""
     rows = []
     for p in profile:
-        at = _at_hour(now, p["hour"])
+        if not WINDOW_EARLIEST_HOUR <= p["hour"] < WINDOW_LATEST_END:
+            continue
         rows.append(" | ".join((
             f"{p['hour']:02d}:00",
-            f"{get_tou_period(at).replace('_', '-')} ${get_tou_rate(at):.3f}",
             f"{p['solar_kw']:.1f}",
             f"{p['house_kw']:.1f}",
             f"{p['solar_kw'] - p['house_kw']:+.1f}",
@@ -167,19 +170,12 @@ def _history_section(advice: dict, yesterday: dict) -> str:
             f"• Avg Late-Afternoon/Evening Solar: {advice['avg_evening_solar_generation_kwh']} kWh",
             f"• Net Evening Battery Deficit to Cover: {advice['avg_evening_net_battery_deficit_kwh']} kWh",
             f"• Required Minimum Battery Reserve at 16:00: {advice['recommended_evening_battery_reserve_pct']}%",
-            f"• Last 7 days: on-peak grid cost ${advice['on_peak_grid_cost_last_7_days']:.2f}, "
-            f"EV grid charging cost ${advice['ev_grid_charging_cost_last_7_days']:.2f}",
         ]
     if not yesterday or "error" in yesterday:
         lines.append("• Yesterday's totals unavailable.")
     else:
-        lines += [
-            f"• Yesterday Solar Generated: {yesterday['total_solar_generated_kwh']} kWh | "
-            f"Grid Imported: {yesterday['total_grid_imported_kwh']} kWh "
-            f"(Self-Powered: {yesterday['home_self_powered_percentage']}%)",
-            f"• Yesterday EV Charged: {yesterday['ev_charging_total_kwh']} kWh "
-            f"({yesterday['ev_estimated_miles_added']} miles added)",
-        ]
+        # Yesterday's solar is the only recent-weather signal the 7-day averages lack.
+        lines.append(f"• Yesterday Solar Generated: {yesterday['total_solar_generated_kwh']} kWh")
     return "\n".join(lines)
 
 
