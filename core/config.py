@@ -44,7 +44,8 @@ TESLA_REFRESH_TOKEN  = _env("TESLA_REFRESH_TOKEN")
 TESLA_ENERGY_SITE_ID = _env("TESLA_ENERGY_SITE_ID")
 TESLA_API_BASE       = _env("TESLA_API_BASE", "https://fleet-api.prd.na.vn.cloud.tesla.com")
 TESLA_TOKEN_FILE     = _env("TESLA_TOKEN_FILE", "logs/tesla_fleet.json")
-ENERGY_HISTORY_FILE  = _env("ENERGY_HISTORY_FILE", "logs/energy_history.csv")
+# v2: export taken from total_grid_energy_exported; a new name makes the NAS re-fetch once.
+ENERGY_HISTORY_FILE  = _env("ENERGY_HISTORY_FILE", "logs/energy_history_v2.csv")
 ENERGY_HISTORY_BACKFILL_MONTHS = _env_int("ENERGY_HISTORY_BACKFILL_MONTHS", "1")  # months before the current one
 # Tesla bills 500 data calls per $1 and credits $10 a month. 4,500 calls ($9)
 # keeps a margin; past it, live data falls back to NetZero until the 1st.

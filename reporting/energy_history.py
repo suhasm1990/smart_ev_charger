@@ -48,8 +48,11 @@ def normalise(entry: dict) -> dict | None:
     return {
         "timestamp": ts,
         "grid_import_wh": _wh(entry, "grid_energy_imported"),
-        "grid_export_wh": _wh(entry, "grid_energy_exported_from_solar", "grid_energy_exported_from_battery",
-                              "grid_energy_exported_from_generator"),
+        # Tesla's from_solar/from_battery split misses part of the metered export
+        # (Oct 2026: 55 of 96 kWh), so the total wins when present.
+        "grid_export_wh": _wh(entry, "total_grid_energy_exported") or _wh(
+            entry, "grid_energy_exported_from_solar", "grid_energy_exported_from_battery",
+            "grid_energy_exported_from_generator"),
         "solar_wh": _wh(entry, "solar_energy_exported"),
         "home_wh": home,
     }
