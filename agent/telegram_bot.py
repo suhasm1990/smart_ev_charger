@@ -15,6 +15,7 @@ from agent import llm_client
 from agent.alerts import add_alert, list_alerts, remove_alert
 from core import config, lifecycle, state
 from core import goal as charge_goal
+from core.manual_override import MIN_MANUAL_HOURS
 from core.tou import (
     RATE_SCHEDULES,
     get_tou_period,
@@ -121,7 +122,7 @@ def get_system_status() -> str:
         "mode_behavior": (
             "MANUAL_MODE: Automatic solar and battery stop thresholds (e.g. stop at 35%) and charge windows are PAUSED. "
             "Charging continues until the user manually stops it, switches back to auto, or the daily reset at "
-            f"{config.NIGHT_BLACKOUT_END_HOUR}:00."
+            f"{config.NIGHT_BLACKOUT_END_HOUR}:00 (the first one at least {MIN_MANUAL_HOURS} hours after manual mode was set)."
             if is_manual else
             f"AUTO_MODE: Inside the charge window ({config.ALLOWED_CHARGE_START_HOUR}:00-"
             f"{config.ALLOWED_CHARGE_END_HOUR}:00), charging starts when the Powerwall is at or above "
