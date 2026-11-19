@@ -36,6 +36,7 @@ from reporting import (
 from services import (
     ChargePointStartError,
     get_charger_status,
+    get_last_session_kwh,
     get_powerwall_stats,
     sheets_db,
     start_charger,
@@ -351,8 +352,25 @@ def _report_session_cost():
         sheets_db.flush()  # the session's last rows must be in the sheet before it is read back
         sessions = get_recent_sessions(limit=1)
         if sessions:
-            notify(_session_cost_message(sessions[0]))
+            notify(_session_cost_message(_with_final_kwh(sessions[0])))
     _was_charging = charging
+
+
+def _with_final_kwh(s: dict) -> dict:
+    """Scales the logged session up to ChargePoint's final total.
+
+    The log reads the meter every cycle, so energy after the last reading
+    (e.g. the car finishing on its own) is missing; it is priced like the rest.
+    """
+    try:
+        final = get_last_session_kwh()
+    except Exception as e:
+        log_chargepoint.warning(f"Could not read the session's final kWh: {e}")
+        return s
+    if not final > s["energy_kwh"] > 0:
+        return s
+    scale = final / s["energy_kwh"]
+    return {**s, "energy_kwh": final, "grid_kwh": s["grid_kwh"] * scale, "cost": s["cost"] * scale}
 
 
 def _session_cost_message(s: dict) -> str:

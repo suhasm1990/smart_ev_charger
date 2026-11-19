@@ -33,6 +33,7 @@ class TestSessionCost(unittest.TestCase):
     def test_cost_is_posted_once_when_charging_ends(self):
         session = {"energy_kwh": 7.6, "grid_kwh": 7.6, "cost": 1.23}
         with mock.patch.object(main, "get_recent_sessions", return_value=[session]), \
+             mock.patch.object(main, "get_last_session_kwh", return_value=0.0), \
              mock.patch.object(main.sheets_db, "flush"), mock.patch.object(main, "notify") as notify:
             main._was_charging = False
             for charger_state in (state.State.CHARGING, state.State.CHARGING, state.State.IDLE, state.State.IDLE):
@@ -40,6 +41,18 @@ class TestSessionCost(unittest.TestCase):
                 main._report_session_cost()
         notify.assert_called_once()
         self.assertIn("$1.23", notify.call_args[0][0])
+
+    def test_tail_after_the_last_reading_uses_chargepoints_final_total(self):
+        session = {"energy_kwh": 6.0, "grid_kwh": 3.0, "cost": 0.60}
+        with mock.patch.object(main, "get_last_session_kwh", return_value=7.5):
+            s = main._with_final_kwh(session)
+        self.assertEqual((s["energy_kwh"], s["grid_kwh"]), (7.5, 3.75))
+        self.assertAlmostEqual(s["cost"], 0.75)
+
+    def test_final_total_is_ignored_when_chargepoint_fails(self):
+        session = {"energy_kwh": 6.0, "grid_kwh": 3.0, "cost": 0.60}
+        with mock.patch.object(main, "get_last_session_kwh", side_effect=RuntimeError("down")):
+            self.assertIs(main._with_final_kwh(session), session)
 
 
 if __name__ == "__main__":
