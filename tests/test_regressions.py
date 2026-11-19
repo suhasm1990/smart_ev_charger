@@ -627,7 +627,7 @@ class TestLLMFallback(unittest.TestCase):
                 raise RuntimeError("Request timed out")
         llm_client._complete = complete
         reply, _ = llm_client.chat_with_tools([], "start charging", [start_charger])
-        self.assertTrue(reply.startswith("Error interacting with the AI model"))
+        self.assertTrue(reply.startswith("⚠️ Couldn't reach the AI model"))
         self.assertEqual(actions, ["start"])
 
 
@@ -897,6 +897,84 @@ class TestPlannerTimeoutAndFailureReporting(unittest.TestCase):
              patch.object(daily_agent.llm_client, "generate_json", side_effect=RuntimeError("Read timed out")), \
              patch.object(daily_agent, "notify") as notify:
             self.assertFalse(daily_agent.run_daily_agent())
-            self.assertIn("failed to run", notify.call_args[0][0])
+            self.assertIn("took too long", notify.call_args[0][0])
         with patch.object(daily_agent, "run_daily_agent", return_value=False):
             self.assertTrue(telegram_bot.trigger_daily_agent().startswith("Error"))
+
+
+class TestOverloadRetryAndFallbackChain(unittest.TestCase):
+    """A Gemini 503 mid-stream is retried, then moves to another provider, with a short message."""
+
+    OVERLOAD = '503 {"message": "This model is currently experiencing high demand.", "status": "UNAVAILABLE"}'
+
+    def setUp(self):
+        from agent import llm_client
+        from core import config
+        self.llm, self.config = llm_client, config
+        self._saved = (config.LLM_FALLBACK_PROVIDER, config.LLM_FALLBACK_MODEL, config.GEMINI_API_KEY,
+                       config.NVIDIA_API_KEY, config.OPENAI_API_KEY, config.ANTHROPIC_API_KEY)
+        config.LLM_FALLBACK_PROVIDER, config.LLM_FALLBACK_MODEL = "gemini", ""
+        config.GEMINI_API_KEY, config.NVIDIA_API_KEY, config.OPENAI_API_KEY, config.ANTHROPIC_API_KEY = "g", "n", "", ""
+
+    def tearDown(self):
+        (self.config.LLM_FALLBACK_PROVIDER, self.config.LLM_FALLBACK_MODEL, self.config.GEMINI_API_KEY,
+         self.config.NVIDIA_API_KEY, self.config.OPENAI_API_KEY, self.config.ANTHROPIC_API_KEY) = self._saved
+
+    def test_mid_stream_overload_is_retried(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        calls = []
+
+        def stream():
+            raise RuntimeError(self.OVERLOAD)
+            yield  # pragma: no cover
+
+        def complete(**kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return stream()
+            return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"ok": 1}'))])]
+        with patch.object(self.llm, "_complete", complete), patch.object(self.llm.time, "sleep", lambda s: None):
+            self.assertEqual(self.llm._stream_text(model="m"), '{"ok": 1}')
+        self.assertEqual(len(calls), 2)
+
+    def test_timeouts_are_not_retried_on_the_same_model(self):
+        from unittest.mock import patch
+        calls = []
+
+        def complete(**kwargs):
+            calls.append(1)
+            raise RuntimeError("Read timed out")
+        with patch.object(self.llm, "_complete", complete), patch.object(self.llm.time, "sleep", lambda s: None):
+            with self.assertRaises(RuntimeError):
+                self.llm._stream_text(model="m")
+        self.assertEqual(len(calls), 1)
+
+    def test_chain_adds_another_provider_after_gemini(self):
+        primary = {"provider": "gemini", "model": self.config.DEFAULT_LLM_MODEL}
+        chain = self.llm.resolve_fallback_configs(primary)
+        self.assertEqual([c["provider"] for c in chain], ["gemini", "nvidia"])
+        self.config.NVIDIA_API_KEY = ""
+        self.assertEqual([c["provider"] for c in self.llm.resolve_fallback_configs(primary)], ["gemini"])
+
+    def test_json_walks_the_chain_until_one_answers(self):
+        from unittest.mock import patch
+        tried = []
+
+        def generate(cfg, messages):
+            tried.append(cfg["provider"])
+            if cfg["provider"] == "gemini":
+                raise RuntimeError(self.OVERLOAD)
+            return {"ok": True}
+        primary = {"provider": "gemini", "model": self.config.DEFAULT_LLM_MODEL, "api_key": "g", "base_url": None}
+        with patch.object(self.llm, "resolve_llm_config", return_value=primary), \
+             patch.object(self.llm, "_generate_json_with", generate):
+            self.assertEqual(self.llm.generate_json("plan"), {"ok": True})
+        self.assertEqual(tried, ["gemini", "gemini", "nvidia"])
+        self.assertIn("(fallback)", self.llm.model_label())
+
+    def test_friendly_error_is_short(self):
+        friendly = self.llm.friendly_error(RuntimeError(self.OVERLOAD * 5))
+        self.assertIn("overloaded", friendly)
+        self.assertNotIn("UNAVAILABLE", friendly)
+        self.assertIn("too long", self.llm.friendly_error(RuntimeError("Read timed out after 120s")))

@@ -145,6 +145,35 @@ def resolve_fallback_config(primary: dict) -> dict | None:
             "base_url": default_base_url, "fallback": True}
 
 
+# Providers tried, in order, as a last-resort backup from a different company when
+# the configured fallback shares the primary's provider (e.g. both Gemini, both
+# overloaded at once). Only providers with an API key set are used.
+CROSS_PROVIDER_BACKUPS = ("nvidia", "openai", "anthropic", "gemini")
+
+
+def resolve_fallback_configs(primary: dict) -> list[dict]:
+    """Every backup to try, in order: the configured fallback, then another provider.
+
+    A Google-wide overload (503) hits every Gemini model at once, so when the
+    fallback is the same provider as the primary, the first other provider with
+    an API key is added after it.
+    """
+    chain = []
+    first = resolve_fallback_config(primary)
+    if first:
+        chain.append(first)
+    used = {primary["provider"]} | {c["provider"] for c in chain}
+    if len(used) == 1:
+        for provider in CROSS_PROVIDER_BACKUPS:
+            key_attr, default_base_url, _ = PROVIDER_DEFAULTS[provider]
+            api_key = getattr(config, key_attr, "")
+            if provider not in used and api_key:
+                chain.append({"provider": provider, "model": FALLBACK_MODELS[provider], "api_key": api_key,
+                              "base_url": default_base_url, "fallback": True})
+                break
+    return chain
+
+
 # The config that answered this thread's most recent generate_json or
 # chat_with_tools call, so footers name the model actually used.
 _last_used = threading.local()
@@ -233,6 +262,11 @@ def _should_fall_back(e: Exception) -> bool:
     return _is_transient_llm_error(e) or _is_model_unavailable(e)
 
 
+def _is_timeout(e: Exception) -> bool:
+    timeout = getattr(litellm, "Timeout", None)
+    return (timeout is not None and isinstance(e, timeout)) or "timed out" in str(e).lower()
+
+
 def _complete(**kwargs):
     """Calls the model, backing off on transient failures."""
     if litellm is None:
@@ -246,6 +280,47 @@ def _complete(**kwargs):
             wait = 3 * (attempt + 1)
             log.warning(f"Transient LLM error ({type(e).__name__}); retrying in {wait}s ({attempt + 1}/{RETRY_ATTEMPTS})")
             time.sleep(wait)
+
+
+# Waits between attempts when a streamed reply fails part-way (e.g. Gemini's
+# 503 "high demand" arrives as a mid-stream error, after _complete has returned).
+STREAM_RETRY_WAITS = (5, 15)
+
+
+def _stream_text(**kwargs) -> str:
+    """Streams a reply and returns its text, retrying the whole request on overloads.
+
+    Timeouts aren't retried here: a model that stalled for JSON_TIMEOUT once will
+    likely stall again, so the caller moves on to the fallback instead.
+    """
+    for attempt in range(len(STREAM_RETRY_WAITS) + 1):
+        try:
+            stream = _complete(stream=True, **kwargs)
+            return "".join(chunk.choices[0].delta.content or "" for chunk in stream if chunk.choices)
+        except Exception as e:
+            if attempt == len(STREAM_RETRY_WAITS) or _is_timeout(e) or not _is_transient_llm_error(e):
+                raise
+            wait = STREAM_RETRY_WAITS[attempt]
+            log.warning(f"LLM stream failed ({type(e).__name__}); retrying in {wait}s "
+                        f"({attempt + 1}/{len(STREAM_RETRY_WAITS)})")
+            time.sleep(wait)
+
+
+def friendly_error(e: Exception) -> str:
+    """A short, plain-English reason for an AI failure, for Telegram (raw details go to the log)."""
+    msg = str(e).lower()
+    if _is_timeout(e):
+        return "The AI model took too long to answer."
+    if _is_model_unavailable(e):
+        return "The AI model has been retired or doesn't exist. Use /model to pick another."
+    if any(t in msg for t in ("401", "403", "api key", "api_key", "permission", "unauthenticated")):
+        return "The AI provider rejected the API key."
+    if any(t in msg for t in ("429", "rate limit", "too many requests", "quota", "resource_exhausted")):
+        return "The AI provider's rate limit or quota was hit."
+    if _is_transient_llm_error(e):
+        return "The AI service is overloaded or temporarily down (usually clears within minutes)."
+    first_line = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+    return first_line[:160] + ("…" if len(first_line) > 160 else "")
 
 
 # ── Conversation history ────────────────────────────────────────────────────
@@ -305,18 +380,15 @@ def _generate_json_with(cfg: dict, messages: list) -> dict:
     # make it loop or reason worse (litellm also flags them as deprecated).
     if not _is_gemini_thinking_level_model(cfg["provider"], cfg["model"]):
         kwargs["temperature"] = 0.2
-    stream = _complete(messages=messages, stream=True, **kwargs)
-    content = "".join(
-        chunk.choices[0].delta.content or "" for chunk in stream if chunk.choices
-    )
-    return extract_json_from_text(content)
+    return extract_json_from_text(_stream_text(messages=messages, **kwargs))
 
 
 def generate_json(prompt: str, system_instruction: str = "") -> dict:
     """Asks the model for a structured JSON object and parses the reply.
 
     If the primary model keeps failing transiently, or its model id is gone
-    (404), the request is repeated once on the fallback model.
+    (404), the request moves down the fallback chain (see resolve_fallback_configs).
+    Each model's own overload retries happen in _stream_text.
     """
     cfg = resolve_llm_config()
     if not cfg["api_key"]:
@@ -328,17 +400,23 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
     try:
         result = _generate_json_with(cfg, messages)
     except Exception as e:
-        fallback = resolve_fallback_config(cfg) if _should_fall_back(e) else None
-        if fallback is None:
+        chain = resolve_fallback_configs(cfg) if _should_fall_back(e) else []
+        if not chain:
             log.error(f"Error generating JSON via '{cfg['provider']}': {e}", exc_info=True)
             raise
-        log.warning(f"Primary LLM '{cfg['model']}' failed ({type(e).__name__}); "
-                    f"falling back to '{fallback['model']}'")
-        try:
-            result = _generate_json_with(fallback, messages)
-        except Exception as fallback_error:
-            log.error(f"Fallback LLM '{fallback['model']}' also failed: {fallback_error}", exc_info=True)
-            raise
+        error = e
+        for fallback in chain:
+            log.warning(f"LLM '{cfg['model']}' failed ({type(error).__name__}); falling back to '{fallback['model']}'")
+            try:
+                result = _generate_json_with(fallback, messages)
+                break
+            except Exception as fallback_error:
+                log.error(f"Fallback LLM '{fallback['model']}' also failed: {fallback_error}", exc_info=True)
+                error, cfg = fallback_error, fallback
+                if not _should_fall_back(fallback_error):
+                    raise
+        else:
+            raise error
         cfg = fallback
     _last_used.cfg = cfg
     return result
@@ -427,18 +505,26 @@ def chat_with_tools(history: list, user_text: str, tools: list,
         reply = _chat_turn(cfg, messages, tool_map, tool_schemas, max_iterations)
     except Exception as e:
         tools_ran = any(m.get("role") == "tool" for m in messages[turn_start:])
-        fallback = resolve_fallback_config(cfg) if _should_fall_back(e) and not tools_ran else None
-        if fallback is None:
+        chain = resolve_fallback_configs(cfg) if _should_fall_back(e) and not tools_ran else []
+        if not chain:
             log.error(f"Error in chat via '{cfg['provider']}': {e}", exc_info=True)
-            return f"Error interacting with the AI model: {e}", messages
-        log.warning(f"Primary LLM '{cfg['model']}' failed ({type(e).__name__}); "
-                    f"retrying the turn on fallback '{fallback['model']}'")
-        messages = fresh_messages()
-        try:
-            reply = _chat_turn(fallback, messages, tool_map, tool_schemas, max_iterations)
-        except Exception as fallback_error:
-            log.error(f"Error in chat via fallback '{fallback['provider']}': {fallback_error}", exc_info=True)
-            return f"Error interacting with the AI model: {fallback_error}", messages
-        cfg = fallback
+            return f"⚠️ Couldn't reach the AI model: {friendly_error(e)}", messages
+        reply, error = None, e
+        for fallback in chain:
+            log.warning(f"LLM '{cfg['model']}' failed ({type(error).__name__}); "
+                        f"retrying the turn on fallback '{fallback['model']}'")
+            messages = fresh_messages()
+            try:
+                reply = _chat_turn(fallback, messages, tool_map, tool_schemas, max_iterations)
+                cfg = fallback
+                break
+            except Exception as fallback_error:
+                log.error(f"Error in chat via fallback '{fallback['model']}': {fallback_error}", exc_info=True)
+                error, cfg = fallback_error, fallback
+                if not _should_fall_back(fallback_error) or any(
+                        m.get("role") == "tool" for m in messages[turn_start:]):
+                    break
+        if reply is None:
+            return f"⚠️ Couldn't reach the AI model: {friendly_error(error)}", messages
     _last_used.cfg = cfg
     return reply, messages

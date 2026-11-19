@@ -382,7 +382,9 @@ def run_daily_agent() -> bool:
         return True
     except Exception as e:
         log.error(f"Daily agent failed: {e}", exc_info=True)
-        notify(f"⚠️ <b>Daily AI Agent Notice</b>\nThe planner failed to run: {html.escape(str(e))}")
+        notify(f"⚠️ <b>Daily AI Agent Notice</b>\nToday's plan couldn't be made: "
+               f"{html.escape(llm_client.friendly_error(e))}\n"
+               f"Your charging settings are unchanged. Try /plan again in a few minutes.")
         return False
 
 
