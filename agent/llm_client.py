@@ -39,7 +39,7 @@ PROVIDER_MODELS = {
 FALLBACK_MODELS = {**PROVIDER_MODELS, "gemini": "gemini-3.8-flash"}
 
 RETRY_ATTEMPTS = 3
-JSON_TIMEOUT = 120  # Max gap between streamed chunks; hosted reasoning models can pause ~25s+.
+JSON_TIMEOUT = 60  # Max silence between streamed chunks before switching to the next model.
 CHAT_TIMEOUT = 35
 
 
@@ -70,7 +70,9 @@ def function_to_openai_tool(fn: typing.Callable) -> dict:
         "type": "function",
         "function": {
             "name": fn.__name__,
-            "description": doc,
+            # Only the summary paragraph: parameters are described below, so the
+            # docstring's Args section would just repeat them on every call.
+            "description": doc.split("\n\n")[0].strip(),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -143,6 +145,35 @@ def resolve_fallback_config(primary: dict) -> dict | None:
         return None
     return {"provider": provider, "model": model, "api_key": api_key,
             "base_url": default_base_url, "fallback": True}
+
+
+# Providers tried, in order, as a last-resort backup from a different company when
+# the configured fallback shares the primary's provider (e.g. both Gemini, both
+# overloaded at once). Only providers with an API key set are used.
+CROSS_PROVIDER_BACKUPS = ("nvidia", "openai", "anthropic", "gemini")
+
+
+def resolve_fallback_configs(primary: dict) -> list[dict]:
+    """Every backup to try, in order: the configured fallback, then another provider.
+
+    A Google-wide overload (503) hits every Gemini model at once, so when the
+    fallback is the same provider as the primary, the first other provider with
+    an API key is added after it.
+    """
+    chain = []
+    first = resolve_fallback_config(primary)
+    if first:
+        chain.append(first)
+    used = {primary["provider"]} | {c["provider"] for c in chain}
+    if len(used) == 1:
+        for provider in CROSS_PROVIDER_BACKUPS:
+            key_attr, default_base_url, _ = PROVIDER_DEFAULTS[provider]
+            api_key = getattr(config, key_attr, "")
+            if provider not in used and api_key:
+                chain.append({"provider": provider, "model": FALLBACK_MODELS[provider], "api_key": api_key,
+                              "base_url": default_base_url, "fallback": True})
+                break
+    return chain
 
 
 # The config that answered this thread's most recent generate_json or
@@ -229,8 +260,9 @@ def _is_model_unavailable(e: Exception) -> bool:
     return "404" in msg and any(t in msg for t in ("not_found", "not found", "no longer available"))
 
 
-def _should_fall_back(e: Exception) -> bool:
-    return _is_transient_llm_error(e) or _is_model_unavailable(e)
+def _is_timeout(e: Exception) -> bool:
+    timeout = getattr(litellm, "Timeout", None)
+    return (timeout is not None and isinstance(e, timeout)) or "timed out" in str(e).lower()
 
 
 def _complete(**kwargs):
@@ -246,6 +278,29 @@ def _complete(**kwargs):
             wait = 3 * (attempt + 1)
             log.warning(f"Transient LLM error ({type(e).__name__}); retrying in {wait}s ({attempt + 1}/{RETRY_ATTEMPTS})")
             time.sleep(wait)
+
+
+def _stream_text(**kwargs) -> str:
+    """Streams a reply and returns its text. Failures go straight to the next model."""
+    stream = _complete(stream=True, **kwargs)
+    return "".join(chunk.choices[0].delta.content or "" for chunk in stream if chunk.choices)
+
+
+def friendly_error(e: Exception) -> str:
+    """A short, plain-English reason for an AI failure, for Telegram (raw details go to the log)."""
+    msg = str(e).lower()
+    if _is_timeout(e):
+        return "The AI model took too long to answer."
+    if _is_model_unavailable(e):
+        return "The AI model has been retired or doesn't exist. Use /model to pick another."
+    if any(t in msg for t in ("401", "403", "api key", "api_key", "permission", "unauthenticated")):
+        return "The AI provider rejected the API key."
+    if any(t in msg for t in ("429", "rate limit", "too many requests", "quota", "resource_exhausted")):
+        return "The AI provider's rate limit or quota was hit."
+    if _is_transient_llm_error(e):
+        return "The AI service is overloaded or temporarily down (usually clears within minutes)."
+    first_line = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+    return first_line[:160] + ("…" if len(first_line) > 160 else "")
 
 
 # ── Conversation history ────────────────────────────────────────────────────
@@ -305,18 +360,19 @@ def _generate_json_with(cfg: dict, messages: list) -> dict:
     # make it loop or reason worse (litellm also flags them as deprecated).
     if not _is_gemini_thinking_level_model(cfg["provider"], cfg["model"]):
         kwargs["temperature"] = 0.2
-    stream = _complete(messages=messages, stream=True, **kwargs)
-    content = "".join(
-        chunk.choices[0].delta.content or "" for chunk in stream if chunk.choices
-    )
-    return extract_json_from_text(content)
+    return extract_json_from_text(_stream_text(messages=messages, **kwargs))
+
+
+def models_to_try(primary: dict) -> list[dict]:
+    """The primary model, then each backup, in the order they are tried."""
+    return [primary] + resolve_fallback_configs(primary)
 
 
 def generate_json(prompt: str, system_instruction: str = "") -> dict:
     """Asks the model for a structured JSON object and parses the reply.
 
-    If the primary model keeps failing transiently, or its model id is gone
-    (404), the request is repeated once on the fallback model.
+    Simple rule: if a model fails or goes quiet for JSON_TIMEOUT, the next one
+    in models_to_try() gets the request. The last failure is raised.
     """
     cfg = resolve_llm_config()
     if not cfg["api_key"]:
@@ -324,24 +380,18 @@ def generate_json(prompt: str, system_instruction: str = "") -> dict:
 
     messages = ([{"role": "system", "content": system_instruction}] if system_instruction else []) + \
                [{"role": "user", "content": prompt}]
-    _last_used.cfg = cfg
-    try:
-        result = _generate_json_with(cfg, messages)
-    except Exception as e:
-        fallback = resolve_fallback_config(cfg) if _should_fall_back(e) else None
-        if fallback is None:
-            log.error(f"Error generating JSON via '{cfg['provider']}': {e}", exc_info=True)
-            raise
-        log.warning(f"Primary LLM '{cfg['model']}' failed ({type(e).__name__}); "
-                    f"falling back to '{fallback['model']}'")
+    error = None
+    for attempt in models_to_try(cfg):
+        if error is not None:
+            log.warning(f"Switching to '{attempt['model']}' after: {friendly_error(error)}")
         try:
-            result = _generate_json_with(fallback, messages)
-        except Exception as fallback_error:
-            log.error(f"Fallback LLM '{fallback['model']}' also failed: {fallback_error}", exc_info=True)
-            raise
-        cfg = fallback
-    _last_used.cfg = cfg
-    return result
+            result = _generate_json_with(attempt, messages)
+            _last_used.cfg = attempt
+            return result
+        except Exception as e:
+            log.error(f"LLM '{attempt['model']}' failed: {e}", exc_info=True)
+            error = e
+    raise error
 
 
 def _chat_turn(cfg: dict, messages: list, tool_map: dict, tool_schemas: list, max_iterations: int) -> str:
@@ -398,9 +448,9 @@ def chat_with_tools(history: list, user_text: str, tools: list,
                     system_instruction: str = "", max_iterations: int = 12) -> tuple[str, list]:
     """Runs a tool-calling conversation turn and returns (reply, new history).
 
-    If the primary model fails transiently before any tool has run, the turn
-    is restarted on the fallback model. Once a tool has acted (e.g. started
-    the charger) the turn is not replayed, so no action can run twice.
+    If a model fails before any tool has run, the turn restarts on the next
+    model in models_to_try(). Once a tool has acted (e.g. started the charger)
+    the turn is not replayed, so no action can run twice.
     """
     cfg = resolve_llm_config()
     if not cfg["api_key"]:
@@ -420,25 +470,20 @@ def chat_with_tools(history: list, user_text: str, tools: list,
             messages.append({"role": "user", "content": user_text})
         return messages
 
-    messages = fresh_messages()
-    turn_start = len(messages)
-    _last_used.cfg = cfg
-    try:
-        reply = _chat_turn(cfg, messages, tool_map, tool_schemas, max_iterations)
-    except Exception as e:
-        tools_ran = any(m.get("role") == "tool" for m in messages[turn_start:])
-        fallback = resolve_fallback_config(cfg) if _should_fall_back(e) and not tools_ran else None
-        if fallback is None:
-            log.error(f"Error in chat via '{cfg['provider']}': {e}", exc_info=True)
-            return f"Error interacting with the AI model: {e}", messages
-        log.warning(f"Primary LLM '{cfg['model']}' failed ({type(e).__name__}); "
-                    f"retrying the turn on fallback '{fallback['model']}'")
+    error = None
+    for attempt in models_to_try(cfg):
         messages = fresh_messages()
+        turn_start = len(messages)
+        if error is not None:
+            log.warning(f"Retrying the chat turn on '{attempt['model']}' after: {friendly_error(error)}")
         try:
-            reply = _chat_turn(fallback, messages, tool_map, tool_schemas, max_iterations)
-        except Exception as fallback_error:
-            log.error(f"Error in chat via fallback '{fallback['provider']}': {fallback_error}", exc_info=True)
-            return f"Error interacting with the AI model: {fallback_error}", messages
-        cfg = fallback
-    _last_used.cfg = cfg
-    return reply, messages
+            reply = _chat_turn(attempt, messages, tool_map, tool_schemas, max_iterations)
+            _last_used.cfg = attempt
+            return reply, messages
+        except Exception as e:
+            log.error(f"Chat via '{attempt['model']}' failed: {e}", exc_info=True)
+            error = e
+            # Never replay a turn once a tool has acted (e.g. started the charger).
+            if any(m.get("role") == "tool" for m in messages[turn_start:]):
+                break
+    return f"⚠️ Couldn't reach the AI model: {friendly_error(error)}", messages

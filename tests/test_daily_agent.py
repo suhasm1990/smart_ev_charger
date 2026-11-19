@@ -40,9 +40,11 @@ class PlannerTestCase(unittest.TestCase):
 
 
 class TestPrompt(PlannerTestCase):
-    def test_prompt_lists_every_hour_and_marks_missing_history(self):
+    def test_prompt_lists_daytime_hours_only_and_marks_missing_history(self):
         prompt = daily_agent.build_prompt(WEEKDAY, NO_HISTORY, {}, "")
-        self.assertIn("12:00 | off-peak", prompt)
+        self.assertIn("\n12:00 | ", prompt)
+        self.assertNotIn("\n03:00 | ", prompt)  # night hours can't be in a charge window
+        self.assertNotIn("\n20:00 | ", prompt)
         self.assertIn("+5.0", prompt)  # 12:00 surplus
         self.assertIn("evening history unavailable", prompt)
         self.assertIn("Yesterday's totals unavailable", prompt)
