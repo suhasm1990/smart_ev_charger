@@ -628,6 +628,14 @@ def generate_monthly_report(period: str = "last_month") -> str:
                        "note": "Monthly report PNG generated successfully."})
 
 
+def get_weekly_report(period: str = "last_week") -> str:
+    """Weekly car charging and home energy report: sessions, kWh, cost, solar share, peak use, whole-home estimate.
+    period is 'last_week' (Monday to Sunday) or 'this_week' (so far). Use for any weekly summary request.
+    """
+    from reporting.weekly_report import weekly_report_text
+    return weekly_report_text(period)
+
+
 def _send_report_photo(bot, chat_id, path: str) -> bool:
     """Sends a generated bill infographic; False when there is no image to send."""
     if not (path and os.path.exists(path)):
@@ -720,7 +728,7 @@ def clean_telegram_html(text: str) -> str:
 
 TOOLS = [
     get_system_status, get_recent_charging_sessions, get_daily_charging_cost,
-    get_home_energy_summary, get_energy_saving_advice, generate_monthly_report,
+    get_home_energy_summary, get_energy_saving_advice, generate_monthly_report, get_weekly_report,
     get_tou_schedule, get_tesla_powerwall_status, read_application_logs, read_source_code,
     set_battery_thresholds, set_blackout_hours, set_override_mode,
     start_charging, stop_charging, set_charger_amperage, manage_custom_alert,
@@ -733,7 +741,7 @@ SYSTEM_INSTRUCTION = (
     "You are an AI assistant for a Smart EV Charger. You help the user monitor and control their solar EV charging system.\n\n"
     "CAPABILITIES & TOOLS:\n"
     "- Real-time status: Call 'get_system_status' or 'get_tesla_powerwall_status' for Powerwall battery %, solar, home load, grid, and charger state.\n"
-    "- History & metrics: Call 'get_daily_charging_cost' (returns 'total_sessions_count' for session count, and 'total_kwh_added') or 'get_recent_charging_sessions' (pass date_or_period='today' or 'yesterday' to filter by date) or 'get_home_energy_summary'.\n"
+    "- History & metrics: Call 'get_daily_charging_cost' (returns 'total_sessions_count' for session count, and 'total_kwh_added') or 'get_recent_charging_sessions' (pass date_or_period='today' or 'yesterday' to filter by date), 'get_home_energy_summary', or 'get_weekly_report' (weekly car + home report; show its text as is).\n"
     "- Advice & TOU rates: Call 'get_energy_saving_advice' or 'get_tou_schedule'.\n"
     "- Charger control: Call 'start_charging' (use 32A for full/maximum power, 20A otherwise) or 'stop_charging'. Only pass stop_battery_pct, stop_at_hour, or duration_hours if explicitly asked.\n"
     "- Thresholds & blackout: Call 'set_battery_thresholds', 'set_blackout_hours', or 'set_override_mode'.\n"
@@ -790,6 +798,7 @@ COMMANDS = (
     ("auto", "Return to automatic charging"),
     ("plan", "Run the AI planner now"),
     ("bill", "Monthly bill infographic"),
+    ("weekly", "Weekly car and home energy report"),
     ("logs", "Recent events, e.g. /logs 30 ERROR"),
     ("model", "Show or switch the AI model"),
     ("update", "Pull the latest code and restart"),
@@ -913,6 +922,14 @@ def _bot_polling_loop():
         period = args[1].strip() if len(args) > 1 else "last_month"
         if not _send_report_photo(bot, message.chat.id, generate_monthly_report_image(period)):
             bot.reply_to(message, f"Error: could not generate a monthly report for '{period}'.")
+
+    @command("weekly", "week", "weekly_report")
+    def _weekly(message):
+        bot.send_chat_action(message.chat.id, "typing")
+        args = (message.text or "").split(maxsplit=1)
+        period = "this_week" if len(args) > 1 and "this" in args[1].lower() else "last_week"
+        from reporting.weekly_report import weekly_report_text
+        bot.reply_to(message, weekly_report_text(period), parse_mode="HTML")
 
     @command("logs", "log", "syslog")
     def _logs(message):

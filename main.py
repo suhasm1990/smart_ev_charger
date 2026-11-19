@@ -450,6 +450,15 @@ def check_monthly_schedule():
         log.error(f"Failed to send the monthly report: {e}")
 
 
+def send_weekly_report():
+    """Posts last week's car and home energy report (scheduled for Monday morning)."""
+    from reporting.weekly_report import weekly_report_text
+    try:
+        notify(weekly_report_text("last_week"))
+    except Exception as e:
+        log.error(f"Failed to send the weekly report: {e}")
+
+
 def sync_energy_history():
     try:
         energy_history.sync()
@@ -527,6 +536,7 @@ def main():
     schedule.every().day.at(config.DAILY_RESET_TIME, tz_name).do(daily_reset)
     schedule.every().day.at(config.DAILY_AGENT_TIME, tz_name).do(_run_in_thread(run_daily_agent, "DailyAgent"))
     schedule.every().day.at("07:00", tz_name).do(_run_in_thread(check_monthly_schedule, "MonthlyReport"))
+    schedule.every().monday.at("07:05", tz_name).do(_run_in_thread(send_weekly_report, "WeeklyReport"))
     # Metered Tesla history: one call a night for yesterday.
     schedule.every().day.at("01:00", tz_name).do(_run_in_thread(sync_energy_history, "EnergyHistory"))
     _register_cycle_job(config.CHECK_INTERVAL_MINUTES)
