@@ -2,6 +2,7 @@
 from services.chargepoint import (
     ChargePointStartError,
     get_charger_status,
+    get_last_session_kwh,
     set_charger_amperage_limit,
     start_charger,
     stop_charger,
@@ -22,7 +23,7 @@ from services.sheets_db import (
 
 __all__ = [
     "stop_and_restore_defaults",
-    "ChargePointStartError", "start_charger", "stop_charger", "get_charger_status",
+    "ChargePointStartError", "start_charger", "stop_charger", "get_charger_status", "get_last_session_kwh",
     "set_charger_amperage_limit", "get_powerwall_stats", "get_sheet", "append_log_row",
     "get_recent_logs", "get_system_logs", "get_settings", "update_settings",
     "add_user_instruction", "clear_user_instruction", "flush",

@@ -159,6 +159,8 @@ def get_recent_charging_sessions(limit: int = 5, date_or_period: str = None) -> 
         f"  • End Time: {s.get('end_time', 'N/A')}\n"
         f"  • Duration: {s.get('max_duration_minutes', 0):.1f} min\n"
         f"  • Battery SoC: {s.get('start_battery_pct', 'N/A')}% -> {s.get('end_battery_pct', 'N/A')}%\n"
+        f"  • Energy: {s['energy_kwh']:.1f} kWh ({s['grid_kwh']:.1f} kWh from grid)\n"
+        f"  • Cost: ${s['cost']:.2f}\n"
         f"  • Stop Reason: {s.get('stop_reason') or 'Normal completion or manual stop'}"
         for i, s in enumerate(sessions, 1)
     )

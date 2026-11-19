@@ -838,12 +838,17 @@ class TestEnergySourceSplit(unittest.TestCase):
                "charger_amperage": "32", **{k: str(v) for k, v in values.items()}}
         return next(csv_logger._readings([row]))
 
-    def test_powerwall_discharge_is_credited_after_house_load(self):
-        r = self._reading(solar_kw=0, home_kw=8.68, grid_kw=4.68, battery_kw=4.0)
+    def test_car_takes_solar_then_powerwall_then_grid(self):
+        # The Gateway's home/grid readings under-read, so they are ignored.
+        r = self._reading(solar_kw=2.0, home_kw=2.7, grid_kw=0.7, battery_kw=4.0)
         solar, battery, grid = csv_logger._split_sources(r, 1.92, 0.25)
-        self.assertAlmostEqual(solar, 0.0)
-        self.assertAlmostEqual(battery, 3.0 * 0.25)   # 4 kW discharge less 1 kW of house load
-        self.assertAlmostEqual(grid, 1.92 - 0.75)
+        self.assertAlmostEqual(solar, 0.5)
+        self.assertAlmostEqual(battery, 1.0)
+        self.assertAlmostEqual(grid, 0.42)
+
+    def test_powerwall_charging_is_not_credited(self):
+        r = self._reading(solar_kw=0, home_kw=7.6, grid_kw=7.6, battery_kw=-1.0)
+        self.assertEqual(csv_logger._split_sources(r, 1.9, 0.25), (0.0, 0.0, 1.9))
 
     def test_unexplained_energy_is_grid_not_powerwall(self):
         r = self._reading(solar_kw=0, home_kw=0.4, grid_kw=0.4, battery_kw=0)

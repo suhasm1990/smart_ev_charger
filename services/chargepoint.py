@@ -16,6 +16,7 @@ from reporting.logger import log_chargepoint
 
 _client = None
 _client_lock = threading.Lock()
+_last_session_id = None  # newest session seen, read back for its final total once it ends
 
 
 class ChargePointStartError(Exception):
@@ -156,6 +157,8 @@ async def _get_charger_status() -> dict:
                         "charging_time_seconds": 0, "session_start_time": None}
         session_id = getattr(user_status, "session_id", None) if user_status else None
         if session_id:
+            global _last_session_id
+            _last_session_id = session_id
             try:
                 session = await client.get_charging_session(session_id)
                 if session:
@@ -183,6 +186,13 @@ async def _get_charger_status() -> dict:
         log_chargepoint.warning(f"Error getting charger status, resetting session: {_clean_error(e)}")
         await _drop_client()
         raise
+
+
+async def _last_session_kwh() -> float:
+    if not _last_session_id:
+        return 0.0
+    session = await (await _get_client()).get_charging_session(_last_session_id)
+    return float(session.energy_kwh or 0.0)
 
 
 async def _set_amperage_limit(amperage: int):
@@ -251,6 +261,11 @@ def stop_charger():
 
 def get_charger_status() -> dict:
     return _run(_get_charger_status())
+
+
+def get_last_session_kwh() -> float:
+    """ChargePoint's final kWh for the most recent session (0.0 when none was seen)."""
+    return _run(_last_session_kwh())
 
 
 def set_charger_amperage_limit(amperage: int):

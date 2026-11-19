@@ -24,6 +24,7 @@ from core import goal as charge_goal
 from dashboard import record_live, start_dashboard_server
 from reporting import (
     energy_history,
+    get_recent_sessions,
     log,
     log_chargepoint,
     log_decision,
@@ -35,7 +36,9 @@ from reporting import (
 from services import (
     ChargePointStartError,
     get_charger_status,
+    get_last_session_kwh,
     get_powerwall_stats,
+    sheets_db,
     start_charger,
     stop_and_restore_defaults,
     stop_charger,
@@ -338,6 +341,45 @@ def _note_api_failure(description: str):
         )
 
 
+_was_charging = False
+
+
+def _report_session_cost():
+    """Posts what a charging session cost once the charger goes idle."""
+    global _was_charging
+    charging = state.charger_state == state.State.CHARGING
+    if _was_charging and not charging:
+        sheets_db.flush()  # the session's last rows must be in the sheet before it is read back
+        sessions = get_recent_sessions(limit=1)
+        if sessions:
+            notify(_session_cost_message(_with_final_kwh(sessions[0])))
+    _was_charging = charging
+
+
+def _with_final_kwh(s: dict) -> dict:
+    """Scales the logged session up to ChargePoint's final total.
+
+    The log reads the meter every cycle, so energy after the last reading
+    (e.g. the car finishing on its own) is missing; it is priced like the rest.
+    """
+    try:
+        final = get_last_session_kwh()
+    except Exception as e:
+        log_chargepoint.warning(f"Could not read the session's final kWh: {e}")
+        return s
+    if not final > s["energy_kwh"] > 0:
+        return s
+    scale = final / s["energy_kwh"]
+    return {**s, "energy_kwh": final, "grid_kwh": s["grid_kwh"] * scale, "cost": s["cost"] * scale}
+
+
+def _session_cost_message(s: dict) -> str:
+    free = s["energy_kwh"] - s["grid_kwh"]
+    return (f"💵 <b>Session cost: ${s['cost']:.2f}</b>\n"
+            f"{s['energy_kwh']:.1f} kWh charged · {s['grid_kwh']:.1f} kWh from grid · "
+            f"{free:.1f} kWh free (solar/Powerwall)")
+
+
 _cycle_lock = threading.Lock()
 
 
@@ -355,6 +397,7 @@ def run_cycle_safe():
     def worker():
         try:
             run_cycle()
+            _report_session_cost()
         except Exception as e:
             log.error(f"Uncaught exception in run_cycle: {e}", exc_info=True)
         finally:
