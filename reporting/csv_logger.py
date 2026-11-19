@@ -193,23 +193,16 @@ def _starts_new_session(prev: Reading | None, r: Reading) -> bool:
 def _split_sources(r: Reading, kwh: float, hours: float) -> tuple[float, float, float]:
     """(solar, battery, grid) kWh behind `kwh` delivered to the car over `hours`.
 
-    The house's own load is served first: solar, then Powerwall discharge,
-    then grid. Whatever the car drew beyond what solar and the Powerwall
-    measurably supplied came from the grid. (Previously the unexplained
-    remainder was labelled "Powerwall", so any overestimate of the car's draw
-    showed up as phantom battery energy.)
+    The car takes solar first, then Powerwall discharge; the rest came from
+    the grid. Only solar and Powerwall readings are used: they come from their
+    own inverters and match the MID meter, while the Gateway's grid (and so
+    home) reading under-reads.
     """
     if kwh <= 0 or hours <= 0:
         return 0.0, 0.0, 0.0
-    ev_kw = kwh / hours
-    house_kw = max(0.0, r.home_kw - ev_kw)
-    solar_house = min(r.solar_kw, house_kw)
-    solar_ev = min(ev_kw, max(0.0, r.solar_kw - solar_house))
-    discharge = max(0.0, r.battery_kw)
-    battery_house = min(discharge, house_kw - solar_house)
-    battery_ev = min(ev_kw - solar_ev, max(0.0, discharge - battery_house))
-    solar_kwh, battery_kwh = solar_ev * hours, battery_ev * hours
-    return solar_kwh, battery_kwh, max(0.0, kwh - solar_kwh - battery_kwh)
+    solar_kwh = min(kwh, r.solar_kw * hours)
+    battery_kwh = min(kwh - solar_kwh, max(0.0, r.battery_kw) * hours)
+    return solar_kwh, battery_kwh, kwh - solar_kwh - battery_kwh
 
 
 def _ev_intervals(readings) -> list[EvInterval]:
@@ -412,12 +405,16 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
                     "max_duration_minutes": r.session_minutes,
                     "stop_reason": row.get("session_stop_reason") or row.get("reason", ""),
                     "energy_kwh": 0.0,
+                    "grid_kwh": 0.0,
+                    "cost": 0.0,
                     "_in_period": False,
                 }
             current["end_time"] = stamp(row)
             current["end_battery_pct"] = row.get("battery_pct", "N/A")
             current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
             current["energy_kwh"] += iv.kwh
+            current["grid_kwh"] += iv.grid_kwh
+            current["cost"] += iv.grid_cost
             current["_in_period"] |= start is None or start <= r.day
             if row.get("session_stop_reason"):
                 current["stop_reason"] = row["session_stop_reason"]
@@ -432,6 +429,8 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
         if not session.pop("_in_period"):
             continue
         session["energy_kwh"] = round(session["energy_kwh"], 2)
+        session["grid_kwh"] = round(session["grid_kwh"], 2)
+        session["cost"] = round(session["cost"], 2)
         session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
         result.append(session)
     return result[-limit:][::-1] if limit else result[::-1]
