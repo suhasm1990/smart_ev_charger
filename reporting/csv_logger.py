@@ -387,7 +387,12 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
     start = end = None
     if period:
         start, end, _ = _resolve_date_range(period, datetime.now(config.TZ))
+    result = sessions_between(start, end)
+    return result[-limit:][::-1] if limit else result[::-1]
 
+
+def sessions_between(start: date | None, end: date | None) -> list[dict]:
+    """Charging sessions with charging between `start` and `end`, oldest first."""
     def stamp(row):
         return row.get("timestamp") or f"{row.get('date', '')} {row.get('time', '')}".strip()
 
@@ -433,7 +438,7 @@ def get_recent_sessions(limit: int = 5, period: str = None) -> list[dict]:
         session["cost"] = round(session["cost"], 2)
         session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
         result.append(session)
-    return result[-limit:][::-1] if limit else result[::-1]
+    return result
 
 
 def get_ev_kwh_since(since: datetime) -> float:

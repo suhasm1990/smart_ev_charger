@@ -124,6 +124,9 @@ MAX_CHARGER_AMPERAGE     = _env_int("MAX_CHARGER_AMPERAGE", "32")
 CHARGER_VOLTAGE          = _env_float("CHARGER_VOLTAGE", "240.0")
 EV_MILES_PER_KWH         = _env_float("EV_MILES_PER_KWH", "3.53")
 POWERWALL_USABLE_KWH     = _env_float("POWERWALL_USABLE_KWH", "13.5")
+# Gas car the weekly report compares charging cost against.
+GAS_CAR_MPG              = _env_float("GAS_CAR_MPG", "30")
+GAS_PRICE_PER_GALLON     = _env_float("GAS_PRICE_PER_GALLON", "4.75")
 
 # ── LLM (model-agnostic via litellm) ────────────────────────────────────────
 # The one place to change the default AI model. The provider (gemini, nvidia,
