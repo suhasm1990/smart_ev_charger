@@ -249,6 +249,14 @@ class TestEnergyHistory(_TeslaCase):
 
 
 class TestBillsUseMeteredDays(_TeslaCase):
+    def setUp(self):
+        super().setUp()
+        # A Gateway that reads right, so Tesla's metered import passes through unchanged.
+        for key, value in (("GATEWAY_GRID_READ_PCT", 100.0), ("HOUSE_BASELINE_KW", 0.0)):
+            patcher = mock.patch.object(config, key, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_bill_breakdown_prefers_metered_history(self):
         energy_history.store(self._day())
         with mock.patch.object(csv_logger, "_rows_since", return_value=[{"date": str(DAY)}]), \
