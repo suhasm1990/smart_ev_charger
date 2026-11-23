@@ -114,12 +114,42 @@ class TestBillBreakdown(DashboardTestCase):
         self.assertLess(credits["subtotal"], 0)
         self.assertAlmostEqual(sum(g["subtotal"] for g in bill["groups"]), bill["total_dollars"], delta=0.02)
 
-    def test_dashboard_shows_cost_with_fixed_charges_and_credit(self):
-        bill = csv_logger.get_bill_breakdown("today")
-        energy = dashboard_data.get_dashboard_data()["energy_today"]
-        self.assertEqual(energy["energy_cost"], bill["groups"][0]["subtotal"])
-        self.assertEqual(energy["fixed_charges"], bill["groups"][1]["subtotal"])
-        self.assertEqual(energy["solar_credit"], -bill["groups"][2]["subtotal"])
+
+
+class TestMonth(DashboardTestCase):
+    def month(self):
+        return dashboard_data.get_dashboard_data()["month"]
+
+    def test_gateway_reading_the_car_needs_no_correction(self):
+        month = self.month()
+        today = month["days"][-1]
+        self.assertEqual(month["car"]["missed_kwh"], 0)
+        self.assertAlmostEqual(month["car"]["kwh"], 24.0, places=1)
+        self.assertGreater(today["car_kwh"], 0)
+        self.assertEqual(dashboard_data.get_dashboard_data()["energy_today"]["grid_import_kwh"], today["grid_kwh"])
+
+    def test_car_grid_the_gateway_misses_is_added_to_import_and_bill(self):
+        for row in self.rows:
+            if row["charger_state"] == "CHARGING":
+                row["grid_kw"] = "0"  # Gateway blind to the charger
+        seed_energy_history(self.rows, self)
+        month = self.month()
+        tesla_import = sum(max(0.0, float(r["grid_kw"])) * 0.25 for r in self.rows)
+        car_grid = month["car"]["grid_kwh"]
+        self.assertGreater(car_grid, 0)
+        self.assertAlmostEqual(month["car"]["missed_kwh"], car_grid, places=2)
+        self.assertAlmostEqual(month["grid_kwh"], tesla_import + car_grid, places=0)
+
+    def test_bill_lines_add_up_and_projection_covers_the_month(self):
+        bill = self.month()["bill"]
+        self.assertAlmostEqual(sum(line["amount"] for line in bill["lines"]), bill["to_date"], delta=0.05)
+        self.assertGreaterEqual(bill["projected"], bill["to_date"])
+
+    def test_sessions_list_source_split(self):
+        session = dashboard_data.get_dashboard_data()["ev"]["sessions"][0]
+        self.assertAlmostEqual(session["solar_kwh"] + session["battery_kwh"] + session["grid_kwh"],
+                               session["energy_kwh"], places=1)
+        self.assertGreater(session["solar_kwh"], 0)
 
 
 class TestDashboardServer(DashboardTestCase):

@@ -410,6 +410,8 @@ def sessions_between(start: date | None, end: date | None) -> list[dict]:
                     "max_duration_minutes": r.session_minutes,
                     "stop_reason": row.get("session_stop_reason") or row.get("reason", ""),
                     "energy_kwh": 0.0,
+                    "solar_kwh": 0.0,
+                    "battery_kwh": 0.0,
                     "grid_kwh": 0.0,
                     "cost": 0.0,
                     "_in_period": False,
@@ -418,6 +420,8 @@ def sessions_between(start: date | None, end: date | None) -> list[dict]:
             current["end_battery_pct"] = row.get("battery_pct", "N/A")
             current["max_duration_minutes"] = max(current["max_duration_minutes"], r.session_minutes)
             current["energy_kwh"] += iv.kwh
+            current["solar_kwh"] += iv.solar_kwh
+            current["battery_kwh"] += iv.battery_kwh
             current["grid_kwh"] += iv.grid_kwh
             current["cost"] += iv.grid_cost
             current["_in_period"] |= start is None or start <= r.day
@@ -433,8 +437,8 @@ def sessions_between(start: date | None, end: date | None) -> list[dict]:
     for session in sessions.values():
         if not session.pop("_in_period"):
             continue
-        session["energy_kwh"] = round(session["energy_kwh"], 2)
-        session["grid_kwh"] = round(session["grid_kwh"], 2)
+        for key in ("energy_kwh", "solar_kwh", "battery_kwh", "grid_kwh"):
+            session[key] = round(session[key], 2)
         session["cost"] = round(session["cost"], 2)
         session["miles_added"] = round(session["energy_kwh"] * config.EV_MILES_PER_KWH, 1)
         result.append(session)
@@ -456,17 +460,21 @@ def get_ev_kwh_since(since: datetime) -> float:
 
 
 def get_hourly_profile(period: str = "today") -> list[dict]:
-    """Average solar, home load, and Powerwall charge per hour of a single day."""
+    """Average solar, home load, car charging power and Powerwall charge per hour of a single day."""
     day, _, _ = _resolve_date_range(period)
-    buckets: dict[int, list[tuple[float, float, float]]] = {}
-    for r in _readings(_rows_since(day), day, day):
-        buckets.setdefault(r.hour, []).append((r.solar_kw, r.home_kw, _num(r.row.get("battery_pct"))))
+    buckets: dict[int, list[tuple[float, float, float, float]]] = {}
+    for iv in _ev_intervals_between(day, day):
+        r = iv.reading
+        if r.day == day:
+            buckets.setdefault(r.hour, []).append(
+                (r.solar_kw, r.home_kw, _num(r.row.get("battery_pct")), iv.kwh / r.interval_h))
 
     def avg(values, index):
         return round(sum(v[index] for v in values) / len(values), 2)
 
     return [
-        {"hour": hour, "solar_kw": avg(vals, 0), "home_kw": avg(vals, 1), "battery_pct": avg(vals, 2)}
+        {"hour": hour, "solar_kw": avg(vals, 0), "home_kw": avg(vals, 1), "battery_pct": avg(vals, 2),
+         "car_kw": avg(vals, 3)}
         for hour, vals in sorted(buckets.items())
     ]
 

@@ -18,6 +18,7 @@
   color-scheme: light;
   --page: #f9f9f7;
   --surface: #fcfcfb;
+  --surface-2: #f3f2ee;
   --ink: #0b0b0b;
   --ink-2: #52514e;
   --muted: #898781;
@@ -25,10 +26,15 @@
   --axis: #c3c2b7;
   --border: rgba(11,11,11,0.10);
   --track: #e1e0d9;
-  --home: #2a78d6;      /* series 1 */
+  /* One color per energy entity, everywhere on the page. */
+  --car: #2a78d6;       /* series 1 */
   --solar: #eb6834;     /* series 2 */
   --battery: #1baf7a;   /* series 3 */
-  --grid-src: #4a3aa7;  /* series 7 */
+  --grid-src: #898781;  /* neutral: the utility */
+  --home: #52514e;      /* neutral ink: the house total */
+  --rate-1: #86b6ef;    /* sequential blue: off-peak */
+  --rate-2: #3987e5;    /* partial-peak */
+  --rate-3: #184f95;    /* on-peak */
   --good: #0ca30c;
   --good-text: #006300;
   --warning: #fab219;
@@ -37,41 +43,34 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --page: #0d0d0d;
-    --surface: #1a1a19;
-    --ink: #ffffff;
-    --ink-2: #c3c2b7;
-    --grid: #2c2c2a;
-    --axis: #383835;
-    --border: rgba(255,255,255,0.10);
-    --track: #2c2c2a;
-    --home: #3987e5;
-    --solar: #d95926;
-    --battery: #199e70;
-    --grid-src: #9085e9;
-    --good-text: #0ca30c;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321; --ink: #f0efec; --ink-2: #c3c2b7;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --track: #2c2c2a;
+    --car: #3987e5; --solar: #d95926; --battery: #199e70; --grid-src: #898781; --home: #c3c2b7;
+    --rate-1: #184f95; --rate-2: #3987e5; --rate-3: #86b6ef; --good-text: #0ca30c;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321; --ink: #f0efec; --ink-2: #c3c2b7;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --track: #2c2c2a;
-  --home: #3987e5; --solar: #d95926; --battery: #199e70; --grid-src: #9085e9; --good-text: #0ca30c;
+  --car: #3987e5; --solar: #d95926; --battery: #199e70; --grid-src: #898781; --home: #c3c2b7;
+  --rate-1: #184f95; --rate-2: #3987e5; --rate-3: #86b6ef; --good-text: #0ca30c;
 }
 
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--page); color: var(--ink);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 main {
-  max-width: 1120px; margin: 0 auto;
+  max-width: 1180px; margin: 0 auto;
   /* Full-screen on iPhone draws under the status bar and home indicator. */
   padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
            calc(48px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
 }
 header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; margin-bottom: 20px; }
-h1 { font-size: 22px; font-weight: 600; margin: 0; }
+h1 { font-size: 24px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
 .sub { color: var(--ink-2); font-size: 13px; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
@@ -86,52 +85,102 @@ h1 { font-size: 22px; font-weight: 600; margin: 0; }
   border-radius: 10px; border: 1px solid var(--border); background: var(--surface); font-size: 14px; }
 .banner.show { display: flex; }
 
+.section-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .06em; margin: 28px 2px 10px; }
 .grid { display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; min-width: 0; }
 .span-2 { grid-column: span 2; }
 .span-3 { grid-column: 1 / -1; }
-@media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } .span-2 { grid-column: auto; } }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } .span-2 { grid-column: auto; } }
 
 .label { font-size: 13px; color: var(--ink-2); margin: 0 0 6px; }
-.card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
 .card-head h2 { font-size: 15px; font-weight: 600; margin: 0; }
-.headline { font-size: 26px; font-weight: 600; margin: 2px 0 14px; line-height: 1.2; }
-.hero { font-size: 56px; font-weight: 600; line-height: 1; margin: 4px 0 6px; }
-.hero small { font-size: 24px; color: var(--ink-2); font-weight: 500; }
+.headline { font-size: 24px; font-weight: 600; margin: 2px 0 14px; line-height: 1.25; }
+.hero { font-size: 52px; font-weight: 650; line-height: 1; margin: 4px 0 6px; letter-spacing: -0.02em; }
+.hero small { font-size: 22px; color: var(--ink-2); font-weight: 500; }
 
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 14px 18px; }
-.stat .v { font-size: 22px; font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 14px 18px; }
+.stat .v { font-size: 22px; font-weight: 600; white-space: nowrap; }
 .stat .v small { font-size: 14px; color: var(--ink-2); font-weight: 500; margin-left: 2px; }
 .stat .k { font-size: 13px; color: var(--ink-2); }
-.stat .k small.fine { display: block; font-size: 12px; color: var(--muted); }
-.stat .k small.fine span { white-space: nowrap; }
+.stat .k .fine { display: block; font-size: 12px; color: var(--muted); }
 .note { font-size: 13px; color: var(--ink-2); margin-top: 14px; }
+.fineprint { font-size: 12px; color: var(--muted); margin-top: 12px; }
 .divider { border-top: 1px solid var(--grid); margin: 16px 0; }
+
+/* Live energy flow */
+.flow svg { display: block; width: 100%; max-height: 300px; }
+.flow .node circle { fill: var(--surface-2); stroke: var(--border); }
+.flow .node .icon { fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.flow .name { font-size: 11px; fill: var(--ink-2); }
+.flow .val { font-size: 14px; font-weight: 600; fill: var(--ink); }
+.flow .wire { fill: none; stroke: var(--grid); stroke-width: 2; }
+.flow .stream { fill: none; stroke-linecap: round; stroke-dasharray: 2 9; animation: flow 1.1s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -11; } }
+@media (prefers-reduced-motion: reduce) { .flow .stream { animation: none; stroke-dasharray: none; } }
 
 /* Powerwall meter */
 .meter { position: relative; height: 10px; border-radius: 5px; background: var(--track); margin: 14px 0 26px; }
 .meter .fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--battery); }
 .tick { position: absolute; top: -4px; width: 2px; height: 18px; background: var(--ink-2); font-style: normal; }
 .tick span { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; }
-/* Stop and start sit close together, so their labels lean away from each other. */
 .tick.end span { left: auto; right: 0; transform: none; }
 .tick.start span { left: 0; transform: none; }
 
-/* EV energy source split */
-.split { display: flex; height: 10px; gap: 2px; margin: 8px 0 8px; }
+/* Source split bars */
+.split { display: flex; height: 10px; gap: 2px; margin: 8px 0; }
 .split div { border-radius: 2px; min-width: 2px; }
+.split.thin { height: 6px; margin: 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
-.key { width: 10px; height: 10px; border-radius: 2px; }
+.key { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
 .key.line { height: 2px; width: 14px; border-radius: 1px; }
+
+/* Rate strip */
+.rate-now { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.strip { position: relative; display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; margin: 18px 0 4px; }
+.strip div { height: 26px; border-radius: 3px; }
+.strip .now { position: absolute; top: -8px; bottom: -6px; width: 2px; background: var(--ink); border-radius: 1px; }
+.strip .now::before { content: ""; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top-color: var(--ink); }
+.band { position: relative; height: 6px; margin: 6px 0 2px; background: var(--track); border-radius: 3px; }
+.band i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.axis-hours { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+
+/* Bill */
+.lines { margin: 4px 0 0; padding: 0; list-style: none; font-size: 14px; }
+.lines li { display: flex; gap: 10px; padding: 7px 0; border-top: 1px solid var(--grid); }
+.lines li:first-child { border-top: 0; }
+.lines li span:first-child { flex: 1; color: var(--ink-2); }
+.lines li .d { color: var(--muted); font-size: 12px; align-self: center; }
+.lines li b { font-weight: 600; min-width: 64px; text-align: right; }
+.lines li.total { border-top: 1px solid var(--axis); font-weight: 600; }
+.lines li.total span:first-child { color: var(--ink); }
+.good { color: var(--good-text); }
+
+/* Sessions */
+.sessions { width: 100%; border-collapse: collapse; font-size: 14px; }
+.sessions th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 0 10px 8px 0; }
+.sessions td { padding: 10px 10px 10px 0; border-top: 1px solid var(--grid); vertical-align: middle; white-space: nowrap; }
+.sessions td.num, .sessions th.num { text-align: right; }
+.sessions td.bar { width: 26%; min-width: 120px; }
+.sessions .when b { display: block; font-weight: 600; }
+.sessions .when span { color: var(--muted); font-size: 12px; }
+@media (max-width: 640px) {
+  .sessions thead { display: none; }
+  .sessions tr { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--grid); }
+  .sessions td { border: 0; padding: 0; }
+  .sessions td.bar { grid-row: 2; grid-column: 1 / -1; width: auto; min-width: 0; }
+  .sessions td.hide-sm { display: none; }
+}
 
 /* Charts */
 .chart { position: relative; }
 .chart svg { display: block; width: 100%; overflow: visible; }
-.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart text { fill: var(--muted); font-size: 11px; }
 .tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12);
-  white-space: nowrap; opacity: 0; transition: opacity .1s; }
+  white-space: nowrap; opacity: 0; transition: opacity .1s; z-index: 2; }
 .tooltip b { display: block; margin-bottom: 4px; }
 .tooltip div { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
 .tooltip div strong { color: var(--ink); margin-left: auto; padding-left: 12px; font-weight: 600; }
@@ -160,9 +209,9 @@ dl.settings dd { margin: 0; font-weight: 600; }
   <div class="banner" id="banner"></div>
 
   <div class="grid">
-    <section class="card span-2" id="ev-card">
-      <div class="card-head"><h2>Car</h2><span class="chip" id="ev-chip"></span></div>
-      <div id="ev-body"></div>
+    <section class="card span-2">
+      <div class="card-head"><h2>Right now</h2><span class="sub" id="now-sub"></span></div>
+      <div class="flow" id="flow"></div>
     </section>
 
     <section class="card">
@@ -173,28 +222,69 @@ dl.settings dd { margin: 0; font-weight: 600; }
       <div class="sub" id="pw-note"></div>
     </section>
 
+    <section class="card span-2" id="ev-card">
+      <div class="card-head"><h2>Car</h2><span class="chip" id="ev-chip"></span></div>
+      <div id="ev-body"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Electricity rate today</h2></div>
+      <div id="rates"></div>
+    </section>
+  </div>
+
+  <div class="section-title">Today</div>
+  <div class="grid">
     <section class="card span-3">
-      <div class="card-head"><h2>Today</h2></div>
       <div class="stats" id="energy-stats"></div>
     </section>
 
-    <section class="card span-3">
-      <div class="card-head"><h2>Right now</h2><span class="sub" id="now-sub"></span></div>
-      <div class="stats" id="now-stats"></div>
-    </section>
-
     <section class="card span-2">
-      <div class="card-head"><h2>Solar vs home use today</h2><span class="sub">hourly average, kW</span></div>
+      <div class="card-head"><h2>Solar, home and car</h2><span class="sub">hourly average, kW</span></div>
       <div class="legend" style="margin-bottom:8px">
         <span><i class="key line" style="background:var(--solar)"></i>Solar</span>
         <span><i class="key line" style="background:var(--home)"></i>Home</span>
+        <span><i class="key line" style="background:var(--car)"></i>Car charging</span>
       </div>
       <div class="chart" id="power-chart"></div>
     </section>
 
     <section class="card">
-      <div class="card-head"><h2>Powerwall charge today</h2><span class="sub">%</span></div>
+      <div class="card-head"><h2>Powerwall charge</h2><span class="sub">%</span></div>
       <div class="chart" id="battery-chart"></div>
+    </section>
+  </div>
+
+  <div class="section-title" id="month-title">This month</div>
+  <div class="grid">
+    <section class="card">
+      <div class="card-head"><h2>Electric bill</h2><span class="sub" id="bill-sub"></span></div>
+      <div id="bill"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Car</h2><span class="sub">this month</span></div>
+      <div id="month-car"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Home</h2><span class="sub">this month</span></div>
+      <div id="month-home"></div>
+    </section>
+
+    <section class="card span-3">
+      <div class="card-head"><h2>Day by day</h2><span class="sub">kWh</span></div>
+      <div class="legend" style="margin-bottom:8px">
+        <span><i class="key" style="background:var(--solar)"></i>Solar made</span>
+        <span><i class="key" style="background:var(--grid-src)"></i>Bought from grid</span>
+        <span><i class="key" style="background:var(--car)"></i>Car charged</span>
+      </div>
+      <div class="chart" id="month-chart"></div>
+    </section>
+
+    <section class="card span-3">
+      <div class="card-head"><h2>Recent charging sessions</h2><span class="sub">last 30 days</span></div>
+      <div id="sessions"></div>
     </section>
 
     <section class="card span-3">
@@ -210,9 +300,14 @@ const token = new URLSearchParams(location.search).get("token");
 const apiUrl = "api/dashboard" + (token ? "?token=" + encodeURIComponent(token) : "");
 let data = null;
 
-const fmt = (v, d = 1) => (v === null || v === undefined || isNaN(v)) ? "–" : Number(v).toFixed(d);
-const money = (v) => (v === null || v === undefined) ? "–" : "$" + Number(v).toFixed(2);
+const missing = (v) => v === null || v === undefined || isNaN(v);
+const fmt = (v, d = 1) => missing(v) ? "–" : Number(v).toFixed(d);
+const money = (v) => missing(v) ? "–" : (v < 0 ? "−$" : "$") + Math.abs(Number(v)).toFixed(2);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const TOU = {on_peak: "On-peak", partial_peak: "Partial-peak", off_peak: "Off-peak"};
+const RATE_COLOR = {off_peak: "var(--rate-1)", partial_peak: "var(--rate-2)", on_peak: "var(--rate-3)"};
+const SOURCES = [["Solar", "solar_kwh", "var(--solar)"], ["Powerwall", "battery_kwh", "var(--battery)"], ["Grid", "grid_kwh", "var(--grid-src)"]];
+
 function duration(min) {
   min = Math.round(min || 0);
   if (min < 60) return min + " min";
@@ -227,25 +322,38 @@ function ago(iso) {
   return duration(min) + " ago";
 }
 function hourLabel(h) { return h === 0 ? "12a" : h < 12 ? h + "a" : h === 12 ? "12p" : (h - 12) + "p"; }
+function hourName(h) { h %= 24; return h === 0 ? "midnight" : h === 12 ? "noon" : (h % 12) + (h < 12 ? " AM" : " PM"); }
 function hourRange(a, b) { return `${hourLabel(a % 24)}–${hourLabel(b % 24)}`; }
+const clock = (iso) => new Date(iso).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
 function when(iso) {
   const d = new Date(iso);
   if (isNaN(d)) return iso || "–";
   const today = new Date(); const y = new Date(); y.setDate(today.getDate() - 1);
-  const time = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
-  if (d.toDateString() === today.toDateString()) return "today at " + time;
-  if (d.toDateString() === y.toDateString()) return "yesterday at " + time;
-  return d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}) + " at " + time;
+  if (d.toDateString() === today.toDateString()) return "today at " + clock(iso);
+  if (d.toDateString() === y.toDateString()) return "yesterday at " + clock(iso);
+  return d.toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}) + " at " + clock(iso);
 }
 const stat = (v, unit, k) => `<div class="stat"><div class="v">${v}${unit ? `<small>${unit}</small>` : ""}</div><div class="k">${k}</div></div>`;
 const chip = (el, color, html) => { el.innerHTML = (color ? `<i class="dot" style="background:${color}"></i>` : "") + `<span>${html}</span>`; };
 
+function splitBar(s, thin) {
+  const total = SOURCES.reduce((a, [, k]) => a + (s[k] || 0), 0);
+  if (!total) return "";
+  return `<div class="split${thin ? " thin" : ""}">${SOURCES.filter(([, k]) => s[k] > 0).map(([name, k, c]) =>
+    `<div title="${name}: ${fmt(s[k], 1)} kWh (${fmt(s[k] / total * 100, 0)}%)" style="flex:${s[k]};background:${c}"></div>`).join("")}</div>`;
+}
+function splitLegend(s) {
+  const total = SOURCES.reduce((a, [, k]) => a + (s[k] || 0), 0);
+  return `<div class="legend">${SOURCES.map(([name, k, c]) =>
+    `<span><i class="key" style="background:${c}"></i>${name} ${fmt(s[k], 1)} kWh${total ? ` · ${fmt(s[k] / total * 100, 0)}%` : ""}</span>`).join("")}</div>`;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
 function renderHeader(d) {
   const s = d.status;
   $("today").textContent = new Date(d.generated_at).toLocaleDateString([], {weekday: "long", month: "long", day: "numeric"});
   chip($("chip-mode"), s.mode === "manual" ? "var(--warning)" : "var(--good)", `<b>${s.mode === "manual" ? "Manual" : "Auto"}</b> mode`);
-  const tou = {on_peak: "On-peak", partial_peak: "Partial-peak", off_peak: "Off-peak"}[s.tou_period] || s.tou_period;
-  chip($("chip-tou"), null, `<b>${esc(tou)}</b> $${fmt(s.tou_rate, 3)}/kWh`);
+  chip($("chip-tou"), RATE_COLOR[s.tou_period], `<b>${esc(TOU[s.tou_period] || s.tou_period)}</b> $${fmt(s.tou_rate, 3)}/kWh`);
   renderUpdated();
 
   const issues = [];
@@ -265,65 +373,111 @@ function renderUpdated() {
   chip($("chip-updated"), null, `Updated <b>${ago(data.updated_at)}</b>${tail}`);
 }
 
-function sourceSplit(t) {
-  const parts = [["Solar", t.solar_kwh, "var(--solar)"], ["Powerwall", t.battery_kwh, "var(--battery)"], ["Grid", t.grid_kwh, "var(--grid-src)"]];
-  const total = parts.reduce((a, p) => a + (p[1] || 0), 0);
-  if (!total) return "";
-  return `<div class="label" style="margin-top:16px">Where the car's energy came from today</div>
-    <div class="split">${parts.filter(p => p[1] > 0).map(p => `<div title="${p[0]}: ${fmt(p[1], 1)} kWh" style="flex:${p[1]};background:${p[2]}"></div>`).join("")}</div>
-    <div class="legend">${parts.map(p => `<span><i class="key" style="background:${p[2]}"></i>${p[0]} ${fmt(p[1], 1)} kWh</span>`).join("")}</div>`;
+/* ── Live energy flow ───────────────────────────────────────────────────── */
+const ICONS = {
+  solar: `<circle cx="0" cy="0" r="5"/><path d="M0-11v3M0 8v3M-11 0h3M8 0h3M-7.8-7.8l2.1 2.1M5.7 5.7l2.1 2.1M-7.8 7.8l2.1-2.1M5.7-5.7l2.1-2.1"/>`,
+  grid: `<path d="M-6 11-2-11h4L6 11M-4 1h8M-5 6h10M-9-6h18"/>`,
+  battery: `<rect x="-6" y="-10" width="12" height="20" rx="2"/><path d="M-2-12h4M-3 2h6M-3 6h6"/>`,
+  car: `<path d="M-11 4v-4l3-6h16l3 6v4zM-11 4v3h4v-3M7 4v3h4v-3M-11 0h22"/>`,
+  home: `<path d="M-11 0 0-10 11 0M-8-2v12h16V-2M-3 10V3h6v7"/>`,
+};
+function renderFlow(d) {
+  const p = d.power, s = d.ev.session;
+  $("now-sub").textContent = d.updated_at ? "as of " + clock(d.updated_at) : "";
+  const W = 400, H = 248, hub = {x: 200, y: 112};
+  const kw = (v) => missing(v) ? null : Number(v);
+  const grid = kw(p.grid_kw), batt = kw(p.battery_kw), car = d.ev.charging ? kw(s && s.power_kw) : 0;
+  // Each spoke: where it sits, its kW, and whether energy flows into the house hub.
+  const nodes = [
+    {id: "solar", name: "Solar", x: 56, y: 40, color: "var(--solar)", kw: kw(p.solar_kw), inbound: true},
+    {id: "grid", name: grid < -0.05 ? "Sending to grid" : "From grid", x: 344, y: 40, color: "var(--grid-src)",
+     kw: grid === null ? null : Math.abs(grid), inbound: grid > 0},
+    {id: "battery", name: "Powerwall" + (missing(p.battery_pct) ? "" : ` · ${fmt(p.battery_pct, 0)}%`), x: 56, y: 184,
+     color: "var(--battery)", kw: batt === null ? null : Math.abs(batt), inbound: batt > 0},
+    {id: "car", name: d.ev.charging ? "Car charging" : d.ev.plugged_in ? "Car plugged in" : "Car", x: 344, y: 184,
+     color: "var(--car)", kw: car, inbound: false},
+  ];
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Live energy flow">`;
+  nodes.forEach((n) => {
+    // A gentle bend from the node into the hub reads as wiring, not as a chart.
+    const bend = `${n.x + (hub.x - n.x) * 0.55},${n.y}`;
+    const path = `M${n.x},${n.y} Q${bend} ${hub.x},${hub.y}`, back = `M${hub.x},${hub.y} Q${bend} ${n.x},${n.y}`;
+    svg += `<path class="wire" d="${path}"/>`;
+    if (n.kw > 0.05) svg += `<path class="stream" d="${n.inbound ? path : back}" stroke="${n.color}" stroke-width="${Math.min(6, 2 + n.kw * 0.5)}"/>`;
+  });
+  const node = (x, y, icon, color, r = 24) =>
+    `<g class="node" transform="translate(${x},${y})"><circle r="${r}"/><g class="icon" stroke="${color}">${ICONS[icon]}</g></g>`;
+  const caption = (x, y, value, name) =>
+    `<text class="val" x="${x}" y="${y}" text-anchor="middle">${value}</text><text class="name" x="${x}" y="${y + 15}" text-anchor="middle">${esc(name)}</text>`;
+  nodes.forEach((n) => {
+    svg += node(n.x, n.y, n.id, n.color) + caption(n.x, n.y + 44, n.kw === null ? "–" : fmt(n.kw, 1) + " kW", n.name);
+  });
+  svg += node(hub.x, hub.y, "home", "var(--home)", 30) +
+    caption(hub.x, hub.y + 52, missing(p.home_kw) ? "–" : fmt(p.home_kw, 1) + " kW",
+            "Home" + (missing(p.self_powered_pct) ? "" : ` · ${fmt(p.self_powered_pct, 0)}% self-powered`));
+  $("flow").innerHTML = svg + "</svg>";
 }
 
+/* ── Car ────────────────────────────────────────────────────────────────── */
 function renderEV(d) {
-  const ev = d.ev, t = ev.today, last = ev.last_session;
-  const plug = ev.plugged_in === null || ev.plugged_in === undefined ? null : ev.plugged_in;
+  const ev = d.ev, t = ev.today, last = ev.last_session, rate = d.status.tou_rate;
+  const plug = missing(ev.plugged_in) ? null : ev.plugged_in;
   if (ev.charging) chip($("ev-chip"), "var(--good)", "<b>Charging</b>");
-  else if (plug === true) chip($("ev-chip"), "var(--home)", "<b>Plugged in</b>, not charging");
+  else if (plug === true) chip($("ev-chip"), "var(--car)", "<b>Plugged in</b>, not charging");
   else if (plug === false) chip($("ev-chip"), "var(--muted)", "<b>Not plugged in</b>");
   else chip($("ev-chip"), "var(--muted)", "Charger status unknown");
 
   let html = "";
   if (ev.charging && ev.session) {
     const s = ev.session;
-    html += `<div class="headline">Charging for ${duration(s.minutes)}</div>
+    // The log's view of this session (source split, cost) trails the live meter by up to one cycle.
+    const logged = s.logged && s.start_time && new Date(s.logged.start_time) >= new Date(s.start_time) - 2 * d.interval_minutes * 60000 ? s.logged : null;
+    html += `<div class="headline">Charging for ${duration(s.minutes)}${s.power_kw ? ` at ${fmt(s.power_kw, 1)} kW` : ""}</div>
       <div class="stats">
-        ${stat("+" + fmt(s.miles, 0), "mi", "Range added this session")}
+        ${stat("+" + fmt(s.miles, 0), "mi", "Range added")}
         ${stat(fmt(s.energy_kwh, 1), "kWh", "Energy this session")}
-        ${stat(fmt(s.amperage, 0), "A", s.power_kw ? `Drawing ${fmt(s.power_kw, 1)} kW` : "Charge rate")}
-        ${s.start_time ? stat(new Date(s.start_time).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}), "", "Started") : ""}
+        ${logged ? stat(money(logged.cost), "", "Cost so far") : ""}
+        ${stat(fmt(s.amperage, 0), "A", s.start_time ? "Started " + clock(s.start_time) : "Charge rate")}
       </div>`;
-    if (t && t.sessions > 1) html += `<div class="note">Today in total: ${t.sessions} sessions, ${duration(t.minutes)}, about ${fmt(t.miles, 0)} mi.</div>`;
+    if (logged && logged.energy_kwh > 0) html += `<div class="label" style="margin-top:16px">Where this session's energy came from</div>${splitBar(logged)}${splitLegend(logged)}`;
+    html += `<div class="note">Grid power right now costs $${fmt(rate, 3)}/kWh (${esc(TOU[d.status.tou_period] || "")}).</div>`;
   } else if (t && t.sessions > 0) {
     html += `<div class="headline">Charged ${duration(t.minutes)} today, +${fmt(t.miles, 0)} mi</div>
       <div class="stats">
         ${stat("+" + fmt(t.miles, 0), "mi", "Range added today")}
-        ${stat(duration(t.minutes), "", "Time charging")}
         ${stat(fmt(t.energy_kwh, 1), "kWh", "Energy added")}
         ${stat(money(t.grid_cost), "", "Grid cost")}
-      </div>`;
+        ${stat(t.energy_kwh ? fmt(t.grid_cost / t.energy_kwh * 100, 1) : "–", "¢/kWh", "Effective price")}
+      </div>
+      <div class="label" style="margin-top:16px">Where today's car energy came from</div>${splitBar(t)}${splitLegend(t)}`;
     if (last) html += `<div class="note">Last session ended ${when(last.end_time)}${last.stop_reason ? ": " + esc(last.stop_reason) : ""}.</div>`;
   } else if (last) {
-    html += `<div class="headline">No charging today. Last charged ${when(last.start_time)}</div>
+    html += `<div class="headline">Last charged ${when(last.start_time)}</div>
       <div class="stats">
         ${stat("+" + fmt(last.miles_added, 0), "mi", "Range added")}
-        ${stat(duration(last.max_duration_minutes), "", "Duration")}
         ${stat(fmt(last.energy_kwh, 1), "kWh", "Energy added")}
-        ${stat(`${fmt(last.start_battery_pct, 0)}→${fmt(last.end_battery_pct, 0)}`, "%", "Powerwall during session")}
+        ${stat(money(last.cost), "", "Grid cost")}
+        ${stat(duration(last.max_duration_minutes), "", "Duration")}
       </div>
+      <div class="label" style="margin-top:16px">Where that session's energy came from</div>${splitBar(last)}${splitLegend(last)}
       ${last.stop_reason ? `<div class="note">Stopped because: ${esc(last.stop_reason)}</div>` : ""}`;
   } else {
-    html += `<div class="headline">No charging sessions in the recent log</div>`;
+    html += `<div class="headline">No charging sessions in the last 30 days</div>`;
   }
-  if (t && t.sessions > 0) html += sourceSplit(t);
   if (ev.goal) html += `<div class="note">🎯 Miles goal: ${esc(ev.goal)}.</div>`;
   $("ev-body").innerHTML = html;
 }
 
+/* ── Powerwall ──────────────────────────────────────────────────────────── */
 function renderPowerwall(d) {
   const p = d.power, pw = d.powerwall, pct = p.battery_pct;
-  $("pw-pct").innerHTML = pct === null || pct === undefined ? "–" : `${fmt(pct, 0)}<small>%</small>`;
-  $("pw-kwh").textContent = pct === null || pct === undefined ? "" : `About ${fmt(pct / 100 * pw.usable_kwh, 1)} of ${fmt(pw.usable_kwh, 1)} kWh stored`;
-  const kw = p.battery_kw || 0;
+  $("pw-pct").innerHTML = missing(pct) ? "–" : `${fmt(pct, 0)}<small>%</small>`;
+  const kw = p.battery_kw || 0, stored = missing(pct) ? null : pct / 100 * pw.usable_kwh;
+  let eta = "";
+  // At the current rate: hours until full (charging) or until the backup reserve (discharging).
+  if (stored !== null && kw < -0.05 && pct < 99) eta = ` · full in ~${duration((pw.usable_kwh - stored) / -kw * 60)}`;
+  if (stored !== null && kw > 0.05 && pct > pw.reserve_pct) eta = ` · ~${duration((stored - pw.reserve_pct / 100 * pw.usable_kwh) / kw * 60)} to reserve`;
+  $("pw-kwh").textContent = stored === null ? "" : `${fmt(stored, 1)} of ${fmt(pw.usable_kwh, 1)} kWh${eta}`;
   if (kw < -0.05) chip($("pw-chip"), "var(--good)", `<b>Charging</b> ${fmt(-kw, 1)} kW`);
   else if (kw > 0.05) chip($("pw-chip"), "var(--solar)", `<b>Discharging</b> ${fmt(kw, 1)} kW`);
   else chip($("pw-chip"), "var(--muted)", "<b>Idle</b>");
@@ -340,39 +494,116 @@ function renderPowerwall(d) {
     t.innerHTML = `<span>${text}</span>`;
     meter.appendChild(t);
   });
-  let note;
-  if (pct === null || pct === undefined) note = "";
-  else if (pct >= pw.start_pct) note = `Above the ${fmt(pw.start_pct, 0)}% start threshold. Solar charging is allowed.`;
+  let note = "";
+  if (missing(pct)) note = "";
+  else if (pct >= pw.start_pct) note = `Above the ${fmt(pw.start_pct, 0)}% start threshold, so solar charging of the car is allowed.`;
   else if (pct > pw.stop_pct) note = `Between the stop (${fmt(pw.stop_pct, 0)}%) and start (${fmt(pw.start_pct, 0)}%) thresholds.`;
-  else note = `Below the ${fmt(pw.stop_pct, 0)}% stop threshold. Car charging is held.`;
+  else note = `Below the ${fmt(pw.stop_pct, 0)}% stop threshold, so car charging is held.`;
   $("pw-note").textContent = note;
 }
 
-function renderEnergy(d) {
-  const e = d.energy_today;
-  if (!e) { $("energy-stats").innerHTML = `<div class="empty">No readings logged yet today.</div>`; return; }
-  $("energy-stats").innerHTML =
-    stat(fmt(e.solar_kwh, 1), "kWh", "Solar generated") +
-    stat(fmt(e.home_kwh, 1), "kWh", "Home consumed") +
-    stat(fmt(e.grid_import_kwh, 1), "kWh", "From grid") +
-    stat(fmt(e.grid_export_kwh, 1), "kWh", "Exported to grid") +
-    stat(fmt(e.self_powered_pct, 0), "%", "Self-powered") +
-    (e.energy_cost === null || e.energy_cost === undefined ? "" :
-      stat(money(e.energy_cost), "", `Energy cost today <small class="fine"><span>(+${money(e.fixed_charges)} fixed charges,</span> <span>−${money(e.solar_credit)} solar credit)</span></small>`));
+/* ── Rate today ─────────────────────────────────────────────────────────── */
+function renderRates(d) {
+  const tou = d.tou_today, now = new Date(d.generated_at), h = now.getHours(), cur = tou[h];
+  const next = tou.slice(h + 1).find((t) => t.period !== cur.period);
+  const nextText = next ? `${TOU[cur.period]} until ${hourName(next.hour)}, then ${TOU[next.period].toLowerCase()} at $${fmt(next.rate, 3)}`
+                        : `${TOU[cur.period]} for the rest of the day`;
+  const set = d.settings;
+  const windowSpan = (a, b) => a === b ? [] : a < b ? [[a, b]] : [[a, 24], [0, b]];
+  const band = (spans, color) => spans.map(([a, b]) => `<i style="left:${a / 24 * 100}%;width:${(b - a) / 24 * 100}%;background:${color}"></i>`).join("");
+  const charge = set.charge_window[0] === 0 && set.charge_window[1] === 24 ? [[0, 24]] : windowSpan(set.charge_window[0], set.charge_window[1]);
+  const pos = (h + now.getMinutes() / 60) / 24 * 100;
+  const periods = Object.keys(TOU).reverse().filter((k) => tou.some((t) => t.period === k));
+  $("rates").innerHTML = `
+    <div class="rate-now"><span class="hero" style="font-size:40px">${fmt(cur.rate * 100, 1)}<small>¢/kWh</small></span></div>
+    <div class="sub">${esc(nextText)}.</div>
+    <div class="strip">${tou.map((t) => `<div title="${hourRange(t.hour, t.hour + 1)}: ${TOU[t.period]} $${fmt(t.rate, 3)}" style="background:${RATE_COLOR[t.period]}"></div>`).join("")}
+      <i class="now" style="left:calc(${pos}% - 1px)"></i></div>
+    <div class="axis-hours"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>12a</span></div>
+    <div class="legend" style="margin-top:10px">${periods.map((k) => `<span><i class="key" style="background:${RATE_COLOR[k]}"></i>${TOU[k]} ${fmt(tou.find((t) => t.period === k).rate * 100, 1)}¢</span>`).join("")}</div>
+    <div class="label" style="margin-top:14px">When the car may charge</div>
+    <div class="band">${band(charge, "var(--car)")}${band(windowSpan(set.blackout[0], set.blackout[1]), "var(--critical)")}</div>
+    <div class="legend"><span><i class="key" style="background:var(--car)"></i>Charge window</span>${set.blackout[0] !== set.blackout[1] ? `<span><i class="key" style="background:var(--critical)"></i>Peak blackout (weekdays)</span>` : ""}</div>`;
 }
 
+/* ── Today ──────────────────────────────────────────────────────────────── */
+function renderEnergy(d) {
+  const e = d.energy_today, t = d.ev.today;
+  if (!e) { $("energy-stats").innerHTML = `<div class="empty">No Tesla energy history for today yet.</div>`; return; }
+  $("energy-stats").innerHTML =
+    stat(fmt(e.solar_kwh, 1), "kWh", "Solar made") +
+    stat(fmt(e.home_kwh, 1), "kWh", "Home used") +
+    stat(fmt(e.grid_import_kwh, 1), "kWh", "Bought from grid") +
+    stat(fmt(e.grid_export_kwh, 1), "kWh", "Sent to grid") +
+    stat(fmt(e.self_powered_pct, 0), "%", "Self-powered") +
+    stat(fmt(t ? t.energy_kwh : 0, 1), "kWh", "Into the car") +
+    stat(money(e.energy_cost), "", `Grid energy cost<span class="fine">before fixed charges and credit</span>`);
+}
 
-function renderNow(d) {
-  const p = d.power, g = p.grid_kw;
-  $("now-sub").textContent = d.updated_at ? "as of " + new Date(d.updated_at).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}) : "";
-  const gridLabel = g === null || g === undefined ? "Grid" : g > 0.05 ? "Pulling from grid" : g < -0.05 ? "Exporting to grid" : "Grid (balanced)";
-  $("now-stats").innerHTML =
-    stat(fmt(p.solar_kw, 1), "kW", "Solar") +
-    stat(fmt(p.home_kw, 1), "kW", "Home load") +
-    stat(fmt(g === null || g === undefined ? null : Math.abs(g), 1), "kW", gridLabel) +
-    stat(fmt(p.battery_kw === null || p.battery_kw === undefined ? null : Math.abs(p.battery_kw), 1), "kW",
-         (p.battery_kw || 0) < -0.05 ? "Into Powerwall" : (p.battery_kw || 0) > 0.05 ? "From Powerwall" : "Powerwall") +
-    stat(fmt(p.self_powered_pct, 0), "%", "Self-powered now");
+/* ── This month ─────────────────────────────────────────────────────────── */
+function renderMonth(d) {
+  const m = d.month, b = m.bill, car = m.car, set = d.settings;
+  $("month-title").textContent = m.label;
+  if (b) {
+    const day = m.days.length;
+    $("bill-sub").textContent = `day ${day} of ${b.days_in_month}`;
+    $("bill").innerHTML = `
+      <div class="label">Projected for the month</div>
+      <div class="hero">${money(b.projected)}</div>
+      <div class="sub">${money(b.to_date)} so far · ${esc(d.status.rate_plan)}</div>
+      <ul class="lines" style="margin-top:14px">
+        ${b.lines.map((l) => `<li><span>${esc(l.label)}</span><span class="d">${esc(l.detail)}</span><b class="${l.amount < 0 ? "good" : ""}">${money(l.amount)}</b></li>`).join("")}
+        <li class="total"><span>So far</span><b>${money(b.to_date)}</b></li>
+      </ul>
+      ${car.missed_kwh > 0.5 ? `<div class="fineprint">Includes ${fmt(car.missed_kwh, 0)} kWh of car charging that the Tesla Gateway did not see as grid import.</div>` : ""}
+      <div class="fineprint">Estimate from Tesla metering and the charger log. Your MID meter has the final say.</div>`;
+  } else {
+    $("bill-sub").textContent = "";
+    $("bill").innerHTML = `<div class="empty">No Tesla energy history for this month yet.</div>`;
+  }
+
+  const saved = car.gas_cost - car.cost;
+  $("month-car").innerHTML = car.kwh > 0 ? `
+    <div class="stats">
+      ${stat(fmt(car.kwh, 0), "kWh", "Charged")}
+      ${stat("+" + fmt(car.miles, 0), "mi", "Range added")}
+      ${stat(money(car.cost), "", "Grid cost")}
+      ${stat(car.miles ? fmt(car.cost / car.miles * 100, 1) : "–", "¢/mi", "Cost per mile")}
+    </div>
+    <div class="label" style="margin-top:16px">Energy sources</div>${splitBar(car)}${splitLegend(car)}
+    <div class="note">A ${fmt(set.gas_mpg, 0)} mpg gas car would have cost about <b>${money(car.gas_cost)}</b> in fuel at $${fmt(set.gas_price, 2)}/gal${saved > 0 ? `, so you saved <b class="good">${money(saved)}</b>` : ""}.</div>`
+    : `<div class="empty">No charging yet this month.</div>`;
+
+  $("month-home").innerHTML = m.has_home_data ? `
+    <div class="stats">
+      ${stat(fmt(m.solar_kwh, 0), "kWh", "Solar made")}
+      ${stat(fmt(m.home_kwh, 0), "kWh", "Home used")}
+      ${stat(fmt(m.grid_kwh, 0), "kWh", "Bought from grid")}
+      ${stat(fmt(m.export_kwh, 0), "kWh", "Sent to grid")}
+    </div>
+    <div class="label" style="margin-top:16px">Self-powered</div>
+    <div class="meter" style="margin:6px 0 8px"><div class="fill" style="width:${Math.max(0, Math.min(100, m.self_powered_pct || 0))}%"></div></div>
+    <div class="sub">${fmt(m.self_powered_pct, 0)}% of the home's energy came from solar and the Powerwall.</div>
+    ${m.solar_kwh > 0 ? `<div class="note">The car took ${fmt(car.solar_kwh / m.solar_kwh * 100, 0)}% of this month's solar directly.</div>` : ""}`
+    : `<div class="empty">No Tesla energy history for this month yet.</div>`;
+}
+
+/* ── Sessions ───────────────────────────────────────────────────────────── */
+function renderSessions(d) {
+  const list = d.ev.sessions || [];
+  if (!list.length) { $("sessions").innerHTML = `<div class="empty">No charging sessions in the last 30 days.</div>`; return; }
+  const day = (iso) => new Date(iso).toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"});
+  $("sessions").innerHTML = `<table class="sessions">
+    <thead><tr><th>When</th><th class="num">Energy</th><th class="num hide-sm">Range</th><th>Sources</th><th class="num hide-sm">¢/mi</th><th class="num">Cost</th></tr></thead>
+    <tbody>${list.map((s) => `<tr>
+      <td class="when"><b>${esc(day(s.start_time))}</b><span>${esc(clock(s.start_time))} · ${duration(s.max_duration_minutes)}</span></td>
+      <td class="num">${fmt(s.energy_kwh, 1)} kWh</td>
+      <td class="num hide-sm">+${fmt(s.miles_added, 0)} mi</td>
+      <td class="bar">${splitBar(s, true) || `<span class="sub">–</span>`}</td>
+      <td class="num hide-sm">${s.miles_added ? fmt(s.cost / s.miles_added * 100, 1) : "–"}</td>
+      <td class="num"><b>${money(s.cost)}</b></td>
+    </tr>`).join("")}</tbody></table>
+    <div class="legend" style="margin-top:10px">${SOURCES.map(([n, , c]) => `<span><i class="key" style="background:${c}"></i>${n}</span>`).join("")}</div>`;
 }
 
 function renderSettings(d) {
@@ -392,77 +623,116 @@ function renderSettings(d) {
   $("settings").innerHTML = rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
 }
 
-/* ── Charts: plain SVG, crosshair + tooltip ─────────────────────────────── */
-function lineChart(el, rows, series, {height = 200, yMax, yFormat = (v) => v}) {
-  if (!rows.length) { el.innerHTML = `<div class="empty">No readings yet today.</div>`; return; }
-  const W = Math.max(280, el.clientWidth), H = height;
-  const m = {t: 10, r: 12, b: 24, l: 34};
-  const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const top = yMax ?? niceMax(Math.max(...rows.flatMap((r) => series.map((s) => r[s.key] || 0)), 1));
-  const x = (h) => m.l + (h / 23) * iw;
-  const y = (v) => m.t + ih - (v / top) * ih;
-  const ticks = [0, top / 2, top];
-  let svg = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img">`;
-  ticks.forEach((t) => {
-    svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(${t === 0 ? "--axis" : "--grid"})" />`;
-    svg += `<text x="${m.l - 6}" y="${y(t) + 4}" text-anchor="end">${yFormat(t)}</text>`;
-  });
-  [0, 6, 12, 18, 23].forEach((h) => svg += `<text x="${x(h)}" y="${H - 6}" text-anchor="middle">${hourLabel(h)}</text>`);
-  series.forEach((s) => {
-    if (s.area) {
-      const pts = rows.map((r) => `${x(r.hour)},${y(r[s.key])}`).join(" ");
-      svg += `<polygon points="${x(rows[0].hour)},${y(0)} ${pts} ${x(rows[rows.length - 1].hour)},${y(0)}" fill="var(${s.color})" opacity="0.1" />`;
-    }
-    const d = rows.map((r, i) => `${i ? "L" : "M"}${x(r.hour)},${y(r[s.key])}`).join("");
-    svg += `<path d="${d}" fill="none" stroke="var(${s.color})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`;
-    const lastRow = rows[rows.length - 1];
-    svg += `<circle cx="${x(lastRow.hour)}" cy="${y(lastRow[s.key])}" r="4" fill="var(${s.color})" stroke="var(--surface)" stroke-width="2" />`;
-  });
-  svg += `<line class="xh" y1="${m.t}" y2="${m.t + ih}" stroke="var(--axis)" visibility="hidden" />`;
-  series.forEach((s, i) => svg += `<circle class="hd hd${i}" r="4" fill="var(${s.color})" stroke="var(--surface)" stroke-width="2" visibility="hidden" />`);
-  svg += `<rect x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent" class="hit" /></svg><div class="tooltip"></div>`;
-  el.innerHTML = svg;
-
-  const hit = el.querySelector(".hit"), tip = el.querySelector(".tooltip"), xh = el.querySelector(".xh");
-  const svgEl = el.querySelector("svg");
-  const move = (clientX) => {
-    const box = svgEl.getBoundingClientRect();
-    const px = (clientX - box.left) * (W / box.width);
-    const r = rows.reduce((a, b) => Math.abs(x(b.hour) - px) < Math.abs(x(a.hour) - px) ? b : a);
-    xh.setAttribute("x1", x(r.hour)); xh.setAttribute("x2", x(r.hour)); xh.setAttribute("visibility", "visible");
-    series.forEach((s, i) => {
-      const c = el.querySelector(".hd" + i);
-      c.setAttribute("cx", x(r.hour)); c.setAttribute("cy", y(r[s.key])); c.setAttribute("visibility", "visible");
-    });
-    tip.innerHTML = `<b>${hourLabel(r.hour)}–${hourLabel((r.hour + 1) % 24)}</b>` +
-      series.map((s) => `<div><i class="key line" style="background:var(${s.color})"></i>${s.label}<strong>${s.format(r[s.key])}</strong></div>`).join("");
-    const left = x(r.hour) * (box.width / W);
-    tip.style.left = Math.min(Math.max(0, left + 12), box.width - tip.offsetWidth) + "px";
-    tip.style.top = "0px"; tip.style.opacity = 1;
-  };
-  const hide = () => { tip.style.opacity = 0; xh.setAttribute("visibility", "hidden"); el.querySelectorAll(".hd").forEach((c) => c.setAttribute("visibility", "hidden")); };
-  hit.addEventListener("pointermove", (e) => move(e.clientX));
-  hit.addEventListener("pointerleave", hide);
-}
+/* ── Charts: plain SVG with a crosshair/hover tooltip ───────────────────── */
 function niceMax(v) {
   const step = Math.pow(10, Math.floor(Math.log10(v)));
   return [1, 2, 2.5, 5, 10].map((n) => n * step).find((n) => n >= v);
+}
+function frame(el, height, top, yFormat, xLabels) {
+  const W = Math.max(280, el.clientWidth), H = height, m = {t: 10, r: 12, b: 24, l: 36};
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const y = (v) => m.t + ih - (v / top) * ih;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img">`;
+  [0, top / 2, top].forEach((t) => {
+    svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(${t === 0 ? "--axis" : "--grid"})" />`;
+    svg += `<text x="${m.l - 6}" y="${y(t) + 4}" text-anchor="end">${yFormat(t)}</text>`;
+  });
+  return {W, H, m, iw, ih, y, svg};
+}
+function attachHover(el, f, xs, rows, title, body, onMove) {
+  el.innerHTML = f.svg + `<rect x="${f.m.l}" y="${f.m.t}" width="${f.iw}" height="${f.ih}" fill="transparent" class="hit" /></svg><div class="tooltip"></div>`;
+  const svgEl = el.querySelector("svg"), tip = el.querySelector(".tooltip");
+  const move = (clientX) => {
+    const box = svgEl.getBoundingClientRect(), px = (clientX - box.left) * (f.W / box.width);
+    let i = 0;
+    xs.forEach((x, j) => { if (Math.abs(x - px) < Math.abs(xs[i] - px)) i = j; });
+    onMove(i, true);
+    tip.innerHTML = `<b>${title(rows[i])}</b>` + body(rows[i]);
+    const left = xs[i] * (box.width / f.W);
+    tip.style.left = Math.min(Math.max(0, left + 12), box.width - tip.offsetWidth) + "px";
+    tip.style.top = "0px"; tip.style.opacity = 1;
+  };
+  const hit = el.querySelector(".hit");
+  hit.addEventListener("pointermove", (e) => move(e.clientX));
+  hit.addEventListener("pointerleave", () => { tip.style.opacity = 0; onMove(0, false); });
+}
+const tipRow = (color, label, value, line) => `<div><i class="key${line ? " line" : ""}" style="background:var(${color})"></i>${label}<strong>${value}</strong></div>`;
+
+function lineChart(el, rows, series, {height = 220, yMax, yFormat = (v) => v}) {
+  if (!rows.length) { el.innerHTML = `<div class="empty">No readings yet today.</div>`; return; }
+  const top = yMax ?? niceMax(Math.max(...rows.flatMap((r) => series.map((s) => r[s.key] || 0)), 1));
+  const f = frame(el, height, top, yFormat);
+  const x = (h) => f.m.l + (h / 23) * f.iw;
+  [0, 6, 12, 18, 23].forEach((h) => f.svg += `<text x="${x(h)}" y="${f.H - 6}" text-anchor="middle">${hourLabel(h)}</text>`);
+  series.forEach((s) => {
+    const pts = rows.map((r) => `${x(r.hour)},${f.y(r[s.key] || 0)}`);
+    if (s.area) f.svg += `<polygon points="${x(rows[0].hour)},${f.y(0)} ${pts.join(" ")} ${x(rows[rows.length - 1].hour)},${f.y(0)}" fill="var(${s.color})" opacity="0.1" />`;
+    f.svg += `<path d="M${pts.join("L")}" fill="none" stroke="var(${s.color})" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`;
+  });
+  f.svg += `<line class="xh" y1="${f.m.t}" y2="${f.m.t + f.ih}" stroke="var(--axis)" visibility="hidden" />`;
+  series.forEach((s, i) => f.svg += `<circle class="hd hd${i}" r="4" fill="var(${s.color})" stroke="var(--surface)" stroke-width="2" visibility="hidden" />`);
+  const xs = rows.map((r) => x(r.hour));
+  attachHover(el, f, xs, rows, (r) => `${hourLabel(r.hour)}–${hourLabel((r.hour + 1) % 24)}`,
+    (r) => series.map((s) => tipRow(s.color, s.label, s.format(r[s.key]), true)).join(""),
+    (i, show) => {
+      const vis = show ? "visible" : "hidden", xh = el.querySelector(".xh");
+      xh.setAttribute("x1", xs[i]); xh.setAttribute("x2", xs[i]); xh.setAttribute("visibility", vis);
+      series.forEach((s, j) => {
+        const c = el.querySelector(".hd" + j);
+        c.setAttribute("cx", xs[i]); c.setAttribute("cy", f.y(rows[i][s.key] || 0)); c.setAttribute("visibility", vis);
+      });
+    });
+}
+
+function barChart(el, rows, series, {height = 220}) {
+  const top = niceMax(Math.max(...rows.flatMap((r) => series.map((s) => r[s.key] || 0)), 1));
+  const f = frame(el, height, top, (v) => fmt(v, 0));
+  const slot = f.iw / rows.length, gap = 2, bw = Math.max(1.5, Math.min(10, (slot * 0.8 - gap * (series.length - 1)) / series.length));
+  const group = bw * series.length + gap * (series.length - 1);
+  const xs = rows.map((_, i) => f.m.l + slot * (i + 0.5));
+  f.svg += `<rect class="band-hl" y="${f.m.t}" height="${f.ih}" width="${slot}" fill="var(--grid)" opacity="0" />`;
+  rows.forEach((r, i) => {
+    series.forEach((s, j) => {
+      const v = r[s.key] || 0, h = f.ih - (f.y(v) - f.m.t);
+      if (v <= 0) return;
+      const bx = xs[i] - group / 2 + j * (bw + gap), r2 = Math.min(2, bw / 2, h);
+      // Rounded data end, square on the baseline.
+      f.svg += `<path d="M${bx},${f.y(0)}V${f.y(v) + r2}Q${bx},${f.y(v)} ${bx + r2},${f.y(v)}H${bx + bw - r2}Q${bx + bw},${f.y(v)} ${bx + bw},${f.y(v) + r2}V${f.y(0)}Z" fill="var(${s.color})" />`;
+    });
+  });
+  const every = Math.ceil(rows.length / Math.max(4, Math.floor(f.iw / 46)));
+  rows.forEach((r, i) => { if (i % every === 0) f.svg += `<text x="${xs[i]}" y="${f.H - 6}" text-anchor="middle">${new Date(r.date + "T12:00").getDate()}</text>`; });
+  attachHover(el, f, xs, rows,
+    (r) => new Date(r.date + "T12:00").toLocaleDateString([], {weekday: "short", month: "short", day: "numeric"}),
+    (r) => series.map((s) => tipRow(s.color, s.label, fmt(r[s.key], 1) + " kWh")).join("") +
+           `<div>Grid cost<strong>${money(r.cost)}</strong></div>`,
+    (i, show) => { const b = el.querySelector(".band-hl"); b.setAttribute("x", xs[i] - slot / 2); b.setAttribute("opacity", show ? 0.6 : 0); });
 }
 
 function renderCharts(d) {
   lineChart($("power-chart"), d.hourly, [
     {key: "solar_kw", label: "Solar", color: "--solar", area: true, format: (v) => fmt(v, 1) + " kW"},
     {key: "home_kw", label: "Home", color: "--home", format: (v) => fmt(v, 1) + " kW"},
-  ], {height: 220, yFormat: (v) => fmt(v, v < 10 && v % 1 ? 1 : 0)});
+    {key: "car_kw", label: "Car", color: "--car", format: (v) => fmt(v, 1) + " kW"},
+  ], {yFormat: (v) => fmt(v, v < 10 && v % 1 ? 1 : 0)});
   lineChart($("battery-chart"), d.hourly, [
     {key: "battery_pct", label: "Powerwall", color: "--battery", area: true, format: (v) => fmt(v, 0) + "%"},
-  ], {height: 220, yMax: 100, yFormat: (v) => v + "%"});
+  ], {yMax: 100, yFormat: (v) => v + "%"});
+  if (d.month.has_home_data || d.month.car.kwh > 0) {
+    barChart($("month-chart"), d.month.days, [
+      {key: "solar_kwh", label: "Solar made", color: "--solar"},
+      {key: "grid_kwh", label: "Bought from grid", color: "--grid-src"},
+      {key: "car_kwh", label: "Car charged", color: "--car"},
+    ], {});
+  } else {
+    $("month-chart").innerHTML = `<div class="empty">No energy history for this month yet.</div>`;
+  }
 }
 
 function render() {
   if (!data) return;
-  renderHeader(data); renderEV(data); renderPowerwall(data); renderEnergy(data);
-  renderNow(data); renderSettings(data); renderCharts(data);
+  renderHeader(data); renderFlow(data); renderPowerwall(data); renderEV(data); renderRates(data);
+  renderEnergy(data); renderMonth(data); renderSessions(data); renderSettings(data); renderCharts(data);
 }
 
 async function load() {
