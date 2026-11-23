@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from core import config, state
 from core import goal as charge_goal
 from core.tou import calculate_mid_bill_components, get_tou_period, get_tou_rate, is_in_night_blackout, provider_label
-from reporting import csv_logger, energy_history
+from reporting import csv_logger
 
 _TOU_KEYS = ("on_peak", "partial_peak", "off_peak")
 _TOU_NAMES = {"on_peak": "On-peak", "partial_peak": "Partial-peak", "off_peak": "Off-peak"}
@@ -75,27 +75,22 @@ def _bill(tou_kwh: dict, export_kwh: float, month: int, days: int) -> dict:
 
 
 def _month(now: datetime) -> dict:
-    """Month-to-date home energy, car energy and bill, day by day.
-
-    Tesla's metered history under-reads grid import while the car charges: the
-    Gateway misses the charger's load. So in each charging slot the grid import
-    is taken to be at least the car's own grid share (ChargePoint kWh less
-    solar and Powerwall). That adds nothing once the Gateway reads right.
-    """
+    """Month-to-date home energy, car energy and bill, day by day (Gateway-corrected grid import)."""
     today = now.date()
     start = today.replace(day=1)
-    metered = energy_history.daily_totals(start, today)
+    metered = csv_logger.metered_daily_totals(start, today)
     days = {start + timedelta(days=i): dict.fromkeys(
-        ("solar_kwh", "home_kwh", "grid_kwh", "export_kwh", "cost", "car_kwh"), 0.0) for i in range(today.day)}
+        ("solar_kwh", "home_kwh", "grid_kwh", "export_kwh", "cost", "car_kwh", "gateway_added_kwh"), 0.0) for i in range(today.day)}
     tou_kwh = dict.fromkeys(_TOU_KEYS, 0.0)
     for day, m in metered.items():
         d = days[day]
         d["solar_kwh"], d["home_kwh"], d["grid_kwh"] = m["solar_kwh"], m["home_kwh"], m["grid_import_kwh"]
         d["export_kwh"], d["cost"] = m["solar_export_kwh"], m["variable_grid_cost"]
+        d["gateway_added_kwh"] = m["grid_import_kwh"] - m["tesla_grid_import_kwh"]
         for key in _TOU_KEYS:
             tou_kwh[key] += m[f"{key}_grid_kwh"]
 
-    car = dict.fromkeys(("kwh", "solar_kwh", "battery_kwh", "grid_kwh", "cost", "missed_kwh"), 0.0)
+    car = dict.fromkeys(("kwh", "solar_kwh", "battery_kwh", "grid_kwh", "cost"), 0.0)
     for iv in csv_logger._ev_intervals_between(start, today):
         r = iv.reading
         if iv.session < 0 or r.day < start:
@@ -105,13 +100,6 @@ def _month(now: datetime) -> dict:
         for key, value in (("kwh", iv.kwh), ("solar_kwh", iv.solar_kwh), ("battery_kwh", iv.battery_kwh),
                            ("grid_kwh", iv.grid_kwh), ("cost", iv.grid_cost)):
             car[key] += value
-        if r.day in metered:
-            missed = max(0.0, iv.grid_kwh - r.grid_import_kw * r.interval_h)
-            car["missed_kwh"] += missed
-            d["grid_kwh"] += missed
-            d["home_kwh"] += missed
-            d["cost"] += missed * r.rate
-            tou_kwh[r.tou_period if r.tou_period in tou_kwh else "off_peak"] += missed
 
     home = sum(d["home_kwh"] for d in days.values())
     grid = sum(d["grid_kwh"] for d in days.values())
@@ -144,6 +132,7 @@ def _month(now: datetime) -> dict:
         "home_kwh": round(home, 1),
         "grid_kwh": round(grid, 1),
         "export_kwh": round(export, 1),
+        "gateway_added_kwh": round(sum(d["gateway_added_kwh"] for d in days.values()), 1),
         "self_powered_pct": round(max(0.0, 1 - grid / home) * 100) if home else None,
         "car": {**{k: round(v, 2) for k, v in car.items()},
                 "miles": round(miles), "gas_cost": round(miles / config.GAS_CAR_MPG * config.GAS_PRICE_PER_GALLON, 2)},
@@ -197,6 +186,22 @@ def _summary_cached(today) -> dict:
     return summary
 
 
+def _live_power(stats: dict, car_kw: float) -> dict:
+    """Live readings with grid import (and so home load) corrected like the bill; see metered_daily_totals."""
+    solar, battery, grid, home = (_num(stats.get(k)) for k in ("solar_kw", "battery_kw", "grid_kw", "home_kw"))
+    power = {"battery_pct": stats.get("battery_pct"), "battery_kw": battery, "solar_kw": solar,
+             "home_kw": home, "grid_kw": grid, "self_powered_pct": stats.get("self_powered_pct")}
+    if None in (solar, battery, grid, home):
+        return power
+    car_grid = max(0.0, car_kw - solar - max(0.0, battery))
+    imported = csv_logger.gateway_corrected_import(max(0.0, grid), car_grid)
+    if imported > 0:
+        power["grid_kw"] = round(imported, 2)
+        power["home_kw"] = round(home + imported - max(0.0, grid), 2)
+        power["self_powered_pct"] = round(max(0.0, 1 - imported / power["home_kw"]) * 100)
+    return power
+
+
 def get_dashboard_data() -> dict:
     now = datetime.now(config.TZ)
     stats, cp, updated_at = _live_or_last_row()
@@ -238,14 +243,7 @@ def get_dashboard_data() -> dict:
             "grid_draw_events": snap.grid_draw_count,
             "rate_plan": provider_label(),
         },
-        "power": {
-            "battery_pct": stats.get("battery_pct"),
-            "battery_kw": stats.get("battery_kw"),
-            "solar_kw": stats.get("solar_kw"),
-            "home_kw": stats.get("home_kw"),
-            "grid_kw": stats.get("grid_kw"),
-            "self_powered_pct": stats.get("self_powered_pct"),
-        },
+        "power": _live_power(stats, session["power_kw"] if session else 0.0),
         "powerwall": {
             "start_pct": cfg.BATTERY_START_PCT,
             "stop_pct": cfg.BATTERY_STOP_PCT,
@@ -275,5 +273,6 @@ def get_dashboard_data() -> dict:
             "miles_per_kwh": cfg.EV_MILES_PER_KWH,
             "gas_mpg": config.GAS_CAR_MPG,
             "gas_price": config.GAS_PRICE_PER_GALLON,
+            "gateway_read_pct": config.GATEWAY_GRID_READ_PCT,
         },
     }

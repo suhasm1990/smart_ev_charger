@@ -120,25 +120,44 @@ class TestMonth(DashboardTestCase):
     def month(self):
         return dashboard_data.get_dashboard_data()["month"]
 
-    def test_gateway_reading_the_car_needs_no_correction(self):
-        month = self.month()
-        today = month["days"][-1]
-        self.assertEqual(month["car"]["missed_kwh"], 0)
-        self.assertAlmostEqual(month["car"]["kwh"], 24.0, places=1)
-        self.assertGreater(today["car_kwh"], 0)
-        self.assertEqual(dashboard_data.get_dashboard_data()["energy_today"]["grid_import_kwh"], today["grid_kwh"])
+    def fixed_gateway(self):
+        self.mock._patch(config, "GATEWAY_GRID_READ_PCT", 100.0)
+        self.mock._patch(config, "HOUSE_BASELINE_KW", 0.0)
 
-    def test_car_grid_the_gateway_misses_is_added_to_import_and_bill(self):
-        for row in self.rows:
-            if row["charger_state"] == "CHARGING":
-                row["grid_kw"] = "0"  # Gateway blind to the charger
-        seed_energy_history(self.rows, self)
+    def test_a_gateway_that_reads_right_passes_tesla_import_through(self):
+        self.fixed_gateway()
         month = self.month()
         tesla_import = sum(max(0.0, float(r["grid_kw"])) * 0.25 for r in self.rows)
-        car_grid = month["car"]["grid_kwh"]
-        self.assertGreater(car_grid, 0)
-        self.assertAlmostEqual(month["car"]["missed_kwh"], car_grid, places=2)
-        self.assertAlmostEqual(month["grid_kwh"], tesla_import + car_grid, places=0)
+        self.assertAlmostEqual(month["grid_kwh"], tesla_import, places=0)
+        self.assertEqual(month["gateway_added_kwh"], 0)
+        self.assertAlmostEqual(month["car"]["kwh"], 24.0, places=1)
+        self.assertEqual(dashboard_data.get_dashboard_data()["energy_today"]["grid_import_kwh"],
+                         month["days"][-1]["grid_kwh"])
+
+    def test_car_import_comes_from_chargepoint_when_the_gateway_reads_low(self):
+        # Nov 14 2026: car at 7.7 kW overnight, Gateway showed 2.7 kW, MID billed 7.7-8.1 kWh/h.
+        self.fixed_gateway()
+        self.mock._patch(config, "GATEWAY_GRID_READ_PCT", 35.0)
+        for row in self.rows:
+            if row["charger_state"] == "CHARGING":
+                row.update(solar_kw="0", battery_kw="0", charger_amperage="32", home_kw="2.7", grid_kw="2.7")
+            else:
+                row.update(grid_kw="0", home_kw="0.5", solar_kw="0.5")
+        seed_energy_history(self.rows, self)
+        month = self.month()
+        car = month["car"]["grid_kwh"]
+        self.assertAlmostEqual(car, 20 * 0.25 * 7.68, places=1)
+        self.assertAlmostEqual(month["grid_kwh"], car, delta=0.5)  # MID-like, not Tesla's 13.5
+        self.assertGreater(month["gateway_added_kwh"], 20)
+
+    def test_idle_house_the_gateway_shows_as_nothing_gets_the_baseline(self):
+        self.fixed_gateway()
+        self.mock._patch(config, "HOUSE_BASELINE_KW", 0.2)
+        for row in self.rows:
+            row.update(solar_kw="0", home_kw="0", grid_kw="0", battery_kw="0",
+                       charger_state="IDLE", charger_amperage="0", session_active_minutes="0")
+        seed_energy_history(self.rows, self)
+        self.assertAlmostEqual(self.month()["grid_kwh"], 0.2 * 24, places=1)
 
     def test_bill_lines_add_up_and_projection_covers_the_month(self):
         bill = self.month()["bill"]

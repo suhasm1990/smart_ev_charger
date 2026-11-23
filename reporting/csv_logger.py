@@ -678,6 +678,70 @@ def _ev_totals(start: date, end: date) -> dict:
     return t
 
 
+_BUCKETS = ("on_peak", "partial_peak", "off_peak")
+
+
+def _bucket(period: str) -> str:
+    return period if period in _BUCKETS else "off_peak"
+
+
+def gateway_corrected_import(tesla_kwh: float, car_grid_kwh: float) -> float:
+    """True grid import given what the Gateway read and the car's own grid share (see below)."""
+    ratio = min(1.0, max(0.05, config.GATEWAY_GRID_READ_PCT / 100))
+    return car_grid_kwh + max(0.0, tesla_kwh - ratio * car_grid_kwh) / ratio
+
+
+def metered_daily_totals(start: date, end: date) -> dict[date, dict]:
+    """Tesla's metered daily totals with grid import corrected for the Gateway's under-reading.
+
+    Checked against the MID meter (Nov 14 2026, hourly): Tesla's grid clamp
+    read ~35% of the billed import (2.7 kW shown while the car drew 7.7 kW
+    overnight) and showed the ~0.2 kW evening house load as nothing. So, per
+    day and TOU bucket, grid import is rebuilt from three parts:
+      car       ChargePoint kWh less solar and Powerwall (accurate meters)
+      rest      Tesla's import less its share of the car, scaled up by the read ratio
+      baseline  HOUSE_BASELINE_KW for logged slots where Tesla shows no solar,
+                no home load and the car is idle
+    With GATEWAY_GRID_READ_PCT=100 and HOUSE_BASELINE_KW=0 (a fixed Gateway)
+    this is Tesla's import, plus any car import it still missed. Export is
+    left as Tesla metered it.
+    """
+    metered = energy_history.daily_totals(start, end)
+    # day -> bucket -> [kWh, cost]
+    car = {day: {b: [0.0, 0.0] for b in _BUCKETS} for day in metered}
+    floor = {day: {b: [0.0, 0.0] for b in _BUCKETS} for day in metered}
+    for iv in _ev_intervals_between(start, end):
+        r = iv.reading
+        if r.day not in metered:
+            continue
+        if iv.session >= 0:
+            part, kwh = car[r.day][_bucket(r.tou_period)], iv.grid_kwh
+        elif all(_num(r.row.get(k)) < 0.05 for k in ("solar_kw", "home_kw", "battery_kw")):  # raw, before night clamping
+            part, kwh = floor[r.day][_bucket(r.tou_period)], config.HOUSE_BASELINE_KW * r.interval_h
+        else:
+            continue
+        part[0] += kwh
+        part[1] += kwh * r.rate
+
+    out = {}
+    for day, m in metered.items():
+        d = dict(m, tesla_grid_import_kwh=m["grid_import_kwh"], grid_import_kwh=0.0, variable_grid_cost=0.0)
+        for b in _BUCKETS:
+            tesla_kwh, tesla_cost = m[f"{b}_grid_kwh"], m[f"{b}_grid_cost"]
+            car_kwh, car_cost = car[day][b]
+            floor_kwh, floor_cost = floor[day][b]
+            rest = gateway_corrected_import(tesla_kwh, car_kwh) - car_kwh
+            kwh = car_kwh + rest + floor_kwh
+            cost = car_cost + rest * (tesla_cost / tesla_kwh if tesla_kwh else 0.0) + floor_cost
+            d[f"{b}_grid_kwh"], d[f"{b}_grid_cost"] = kwh, cost
+            d["grid_import_kwh"] += kwh
+            d["variable_grid_cost"] += cost
+        # Solar and Powerwall read right, so whatever import was missed was also home use.
+        d["home_kwh"] = m["home_kwh"] + d["grid_import_kwh"] - m["grid_import_kwh"]
+        out[day] = d
+    return out
+
+
 def _sum(days: dict, field: str) -> float:
     return sum(d[field] for d in days.values())
 
@@ -695,7 +759,7 @@ def get_home_energy_summary(period: str = "today") -> dict:
     """Whole-home consumption, generation and bill from Tesla's metered history; EV share from the charger log."""
     start, end, label = _resolve_date_range(period)
     days = (end - start).days + 1
-    metered = energy_history.daily_totals(start, end)
+    metered = metered_daily_totals(start, end)
     if not metered:
         return _NO_HISTORY
 
@@ -747,7 +811,7 @@ def get_bill_breakdown(period: str = "today") -> dict:
     """Itemised utility charges accrued so far in a period, grouped like the bill, from Tesla's metered history."""
     start, end, label = _resolve_date_range(period)
     days = (end - start).days + 1
-    metered = energy_history.daily_totals(start, end)
+    metered = metered_daily_totals(start, end)
     if not metered:
         return _NO_HISTORY
 
@@ -896,7 +960,7 @@ def get_monthly_billing_data(period: str = "last_month") -> dict:
     start, end, _ = _resolve_date_range(period, now, default="last_month")
     if start > now.date():
         return {"error": f"Cannot generate a monthly report for a future month ({start.strftime('%B %Y')})."}
-    metered = energy_history.daily_totals(start, end)
+    metered = metered_daily_totals(start, end)
     if not metered:
         return {"error": f"No Tesla energy history for {start.strftime('%B %Y')}."}
 

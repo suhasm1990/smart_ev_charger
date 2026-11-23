@@ -555,7 +555,7 @@ function renderMonth(d) {
         ${b.lines.map((l) => `<li><span>${esc(l.label)}</span><span class="d">${esc(l.detail)}</span><b class="${l.amount < 0 ? "good" : ""}">${money(l.amount)}</b></li>`).join("")}
         <li class="total"><span>So far</span><b>${money(b.to_date)}</b></li>
       </ul>
-      ${car.missed_kwh > 0.5 ? `<div class="fineprint">Includes ${fmt(car.missed_kwh, 0)} kWh of car charging that the Tesla Gateway did not see as grid import.</div>` : ""}
+      ${m.gateway_added_kwh > 0.5 ? `<div class="fineprint">Grid import includes ${fmt(m.gateway_added_kwh, 0)} kWh that the Tesla Gateway under-read, rebuilt from the ChargePoint meter and the Gateway's measured ${fmt(set.gateway_read_pct, 0)}% read rate.</div>` : ""}
       <div class="fineprint">Estimate from Tesla metering and the charger log. Your MID meter has the final say.</div>`;
   } else {
     $("bill-sub").textContent = "";

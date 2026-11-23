@@ -208,6 +208,11 @@ DYNAMIC_CONFIG_SCHEMA: dict[str, tuple[type, str]] = {
     "MANUAL_GUARD_STOP_BATTERY_PCT": (_optional(float), "None"),
     "MANUAL_GUARD_STOP_TIME":        (_optional(str),   "None"),  # ISO datetime
     "EV_MILES_PER_KWH":              (float, "3.53"),
+    # The Tesla Gateway's grid clamp under-reads (Nov 2026: it saw ~35% of what
+    # the MID meter billed) and misses the house's small evening load. Set
+    # 100 and 0 in the Settings sheet once the installer fixes it.
+    "GATEWAY_GRID_READ_PCT":         (float, "35"),
+    "HOUSE_BASELINE_KW":             (float, "0.2"),
     "LLM_PROVIDER":                  (str,   ""),  # empty -> inferred from LLM_MODEL
     "LLM_MODEL":                     (_llm_model, ""),  # empty -> DEFAULT_LLM_MODEL
 }
@@ -224,6 +229,8 @@ ALLOWED_CHARGE_END_HOUR       = _env_int("ALLOWED_CHARGE_END_HOUR", "24")
 MANUAL_MODE_OVERRIDE          = _env("MANUAL_MODE_OVERRIDE", "default")  # 'manual', 'auto', or 'default'
 MANUAL_GUARD_STOP_BATTERY_PCT = None
 MANUAL_GUARD_STOP_TIME        = None
+GATEWAY_GRID_READ_PCT         = _env_float("GATEWAY_GRID_READ_PCT", "35")
+HOUSE_BASELINE_KW             = _env_float("HOUSE_BASELINE_KW", "0.2")
 
 # Guards every read-modify-write of the dynamic keys above. Static env-derived
 # keys are written once at import and need no locking.
@@ -244,6 +251,8 @@ class ConfigSnapshot:
     MANUAL_GUARD_STOP_BATTERY_PCT: float | None
     MANUAL_GUARD_STOP_TIME: str | None
     EV_MILES_PER_KWH: float
+    GATEWAY_GRID_READ_PCT: float
+    HOUSE_BASELINE_KW: float
     LLM_PROVIDER: str
     LLM_MODEL: str
 
